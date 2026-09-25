@@ -1,0 +1,2 @@
+anthropic==0.125.0
+strands-agents==1.57.0
