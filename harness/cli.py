@@ -1,18 +1,30 @@
-"""Command line entry point: start, resume, or chat about one task."""
+"""Command line entry point: start, resume, run, or chat about one task; list tasks."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import git, state
+from . import agent_sandbox, git, state
 from .agent import build_agent
-from .config import HarnessConfig
+from .agent_sandbox import AgentSandboxTarget
+from .config import CONFIG_FILENAME, HarnessConfig
 from .exec_target import DockerTarget, ExecTarget, KubectlTarget, LocalTarget
 from .tools import HarnessContext
+
+# Exit codes, so a Job's status means something. Any terminal state -- a PR, a
+# pause, an abandon -- is the harness working as designed, hence success.
+EXIT_DONE = 0
+EXIT_NO_TERMINAL_STATE = 1
+EXIT_NEEDS_INPUT = 3
+
+# Where a remote target's checkout lives when --repo is not given.
+DEFAULT_REMOTE_REPO = "/workspace/repo"
 
 NO_STRANDED_WORK = """You stopped without reaching a terminal state, and the working tree still has uncommitted changes:
 
@@ -66,6 +78,7 @@ def _run(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -> 
                 for itr in result.interrupts:
                     print(f"\n[agent needs input] {getattr(itr, 'reason', '(no detail)')}")
                 print("\nRe-run with `chat` to answer, or `resume --message '...'`.")
+                ctx.waiting = True
                 return result
             responses = []
             for itr in result.interrupts:
@@ -88,42 +101,8 @@ def _run(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -> 
         result = agent(NO_STRANDED_WORK.format(status=git.dirty_summary(ctx.target)))
 
 
-def _build_target(cfg: HarnessConfig, repo_arg: str) -> ExecTarget:
-    """Construct the execution target. For `local`, the path is resolved here."""
-    kind = cfg.target
-    if kind == "local":
-        return LocalTarget(repo=str(Path(repo_arg).expanduser().resolve()))
-    if kind == "docker":
-        if not cfg.docker_container:
-            raise SystemExit("--docker-container (or HARNESS_DOCKER_CONTAINER) is required for target=docker.")
-        return DockerTarget(repo=repo_arg, container=cfg.docker_container)
-    if kind == "sandbox":
-        from .agent_sandbox import claim
-        return claim(
-            repo=repo_arg,
-            warmpool=cfg.warmpool,
-            claim_name=cfg.claim_name,
-            namespace=cfg.namespace or "default",
-            connection=cfg.sandbox_connection,
-            gateway_name=cfg.gateway_name,
-            timeout=cfg.command_timeout,
-        )
-    if kind == "kubectl":
-        if not cfg.pod:
-            raise SystemExit("--pod (or HARNESS_POD) is required for target=kubectl.")
-        return KubectlTarget(
-            repo=repo_arg,
-            pod=cfg.pod,
-            namespace=cfg.namespace or None,
-            container=cfg.container or None,
-            context=cfg.kube_context or None,
-            kubectl=cfg.kubectl,
-        )
-    raise SystemExit(f"Unknown target {kind!r}. Use local, docker, kubectl, or sandbox.")
-
-
-def _prepare(args: argparse.Namespace) -> tuple[ExecTarget, HarnessConfig, str]:
-    overrides = {
+def _overrides(args: argparse.Namespace) -> dict[str, Any]:
+    return {
         "provider": args.provider,
         "model_id": args.model,
         "effort": args.effort,
@@ -134,31 +113,113 @@ def _prepare(args: argparse.Namespace) -> tuple[ExecTarget, HarnessConfig, str]:
         "auto_push": args.push,
         "offload_max_result_tokens": args.offload_max_tokens,
         "target": args.target,
+        "repo_url": args.repo_url,
         "pod": args.pod,
         "namespace": args.namespace,
         "container": args.container,
         "kube_context": args.kube_context,
         "docker_container": args.docker_container,
-        "warmpool": args.warmpool,
+        "pool": args.pool,
         "claim_name": args.claim,
-        "sandbox_connection": args.sandbox_connection,
+        "claim_ttl": args.claim_ttl,
+        "keep_claim": args.keep_claim,
     }
-    # The repo config file is only readable for a local target; remote repos are
-    # configured by env and flags.
-    probe = Path(args.repo).expanduser()
-    cfg = HarnessConfig.load(probe if probe.is_dir() else Path("/nonexistent"), overrides)
-    target = _build_target(cfg, args.repo)
 
-    if not git.is_repo(target):
-        raise SystemExit(f"No git repository at {target.describe()}.")
-    if not cfg.git_user_name and not cfg.git_user_email and not git.has_identity(target):
-        cfg = replace(
-            cfg,
-            git_user_name="burst-harness",
-            git_user_email="burst-harness@users.noreply.github.com",
+
+def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str) -> ExecTarget:
+    """Construct the execution target. For `local`, the path is resolved here."""
+    kind = cfg.target
+    if kind == "local":
+        return LocalTarget(repo=str(Path(repo_arg or ".").expanduser().resolve()))
+    repo = repo_arg or DEFAULT_REMOTE_REPO
+    if kind == "docker":
+        if not cfg.docker_container:
+            raise SystemExit("--docker-container (or HARNESS_DOCKER_CONTAINER) is required for target=docker.")
+        return DockerTarget(repo=repo, container=cfg.docker_container)
+    if kind == "agent-sandbox":
+        if not cfg.repo_url and not cfg.claim_name:
+            raise SystemExit("target=agent-sandbox starts from an empty sandbox: pass --repo-url.")
+        return agent_sandbox.acquire(cfg, repo=repo, slug=slug, branch=cfg.branch_prefix + slug)
+    if kind == "kubectl":
+        if not cfg.pod:
+            raise SystemExit("--pod (or HARNESS_POD) is required for target=kubectl.")
+        return KubectlTarget(
+            repo=repo,
+            pod=cfg.pod,
+            namespace=cfg.namespace or None,
+            container=cfg.container or None,
+            context=cfg.kube_context or None,
+            kubectl=cfg.kubectl,
         )
-        print(f"No git identity found; commits will be authored as {cfg.git_user_name}.")
-    return target, cfg, cfg.branch_prefix + args.slug
+    raise SystemExit(f"Unknown target {kind!r}. Use local, docker, kubectl, or agent-sandbox.")
+
+
+def _open(args: argparse.Namespace) -> HarnessContext:
+    """Resolve config, acquire the target, and make sure the repo is checked out."""
+    overrides = _overrides(args)
+    cfg = HarnessConfig.load(None, overrides)
+    repo_toml_read = False
+    if cfg.target == "local" and not cfg.repo_url:
+        # An existing local checkout: its config file is readable before anything else.
+        path = Path(args.repo or ".").expanduser() / CONFIG_FILENAME
+        if path.is_file():
+            cfg = HarnessConfig.load(path.read_text(), overrides)
+        repo_toml_read = True
+
+    target = _build_target(cfg, args.repo, args.slug)
+    try:
+        if cfg.repo_url:
+            if git.is_repo(target):
+                print(f"Using the existing checkout at {target.repo}.")
+            else:
+                print(git.clone(target, cfg.repo_url))
+        if not git.is_repo(target):
+            raise SystemExit(f"No git repository at {target.describe()}.")
+        if not repo_toml_read and (text := target.read_file(CONFIG_FILENAME)):
+            cfg = HarnessConfig.load(text, overrides)
+        if not cfg.git_user_name and not cfg.git_user_email and not git.has_identity(target):
+            cfg = replace(
+                cfg,
+                git_user_name="burst-harness",
+                git_user_email="burst-harness@users.noreply.github.com",
+            )
+            print(f"No git identity found; commits will be authored as {cfg.git_user_name}.")
+        url = git.remote_url(target, cfg.remote)
+        return HarnessContext(
+            target=target,
+            cfg=cfg,
+            slug=args.slug,
+            branch=cfg.branch_prefix + args.slug,
+            state_key=state.state_key(url, target.repo),
+            auth=git.auth_args(url),
+            repo_slug=git.repo_slug(url),
+        )
+    except BaseException:
+        if isinstance(target, AgentSandboxTarget) and target.owned:
+            agent_sandbox.delete_claim(cfg, target.claim)
+        raise
+
+
+def _close(ctx: HarnessContext) -> None:
+    """Release a claim this run created -- unless that would throw work away."""
+    target, cfg = ctx.target, ctx.cfg
+    if not isinstance(target, AgentSandboxTarget) or not target.owned:
+        return
+    if cfg.keep_claim:
+        print(f"Kept {target.claim} (--keep-claim). Attach with --claim {target.claim}.")
+        return
+    try:
+        dirty = git.is_dirty(target)
+    except git.GitError:
+        dirty = False  # the sandbox is gone or broken; nothing left to save
+    if dirty and not ctx.terminal:
+        print(
+            f"Kept {target.claim}: it has uncommitted work. Resume with --claim {target.claim}; "
+            "the controller deletes it at its deadline regardless."
+        )
+        return
+    agent_sandbox.delete_claim(cfg, target.claim)
+    print(f"Released {target.claim}.")
 
 
 def _finish(agent: Any, ctx: HarnessContext) -> int:
@@ -171,45 +232,50 @@ def _finish(agent: Any, ctx: HarnessContext) -> int:
         print(f"Paused. State: {state.doc_relpath(ctx.cfg, ctx.slug)}")
     elif ctx.terminal == "abandoned":
         print("Abandoned.")
+    elif ctx.waiting:
+        print("Waiting for an answer from the user.")
     else:
         print("Ended with no terminal state recorded.")
-    print(_report(agent, ctx.cfg.model_id))
-    return 0
+    if agent is not None:
+        print(_report(agent, ctx.cfg.model_id))
+    state_name = ctx.terminal or ("waiting" if ctx.waiting else "none")
+    # One machine-readable line for whatever launched this (a Job, a GUI).
+    print("HARNESS_RESULT " + json.dumps({
+        "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
+        "claim": ctx.target.claim if isinstance(ctx.target, AgentSandboxTarget) else None,
+    }))
+    if ctx.terminal:
+        return EXIT_DONE
+    return EXIT_NEEDS_INPUT if ctx.waiting else EXIT_NO_TERMINAL_STATE
 
 
-def _context(args: argparse.Namespace) -> tuple[HarnessContext, Any]:
-    target, cfg, branch = _prepare(args)
-    ctx = HarnessContext(target=target, cfg=cfg, slug=args.slug, branch=branch)
-    return ctx, cfg
+def _session(args: argparse.Namespace, body: Callable[[HarnessContext], Any]) -> int:
+    ctx = _open(args)
+    agent = None
+    try:
+        print(f"Working in: {ctx.target.describe()}")
+        agent = body(ctx)
+    finally:
+        _close(ctx)
+    return _finish(agent, ctx)
 
 
-def cmd_start(args: argparse.Namespace) -> int:
-    ctx, cfg = _context(args)
+def _start(ctx: HarnessContext, task: str) -> Any:
     if git.is_dirty(ctx.target):
         raise SystemExit(
             "The working tree has uncommitted changes. Commit or stash them first — "
             "the harness will not branch over your work."
         )
-    print(f"Working in: {ctx.target.describe()}")
     # Branch setup happens here, deterministically, rather than being asked of the model.
-    print(git.start_branch(ctx.target, ctx.branch, base=cfg.base_branch, remote=cfg.remote))
-    state.write(ctx.target, cfg, state.merge(state.read(ctx.target, cfg, args.slug), goal=args.task))
-
+    print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    state.write(ctx.target, ctx.cfg, state.merge(state.read(ctx.target, ctx.cfg, ctx.slug), goal=task))
     agent, _ = build_agent(ctx)
-    _run(agent, ctx, args.task, interactive=False)
-    return _finish(agent, ctx)
+    _run(agent, ctx, task, interactive=False)
+    return agent
 
 
-def _switch(ctx: HarnessContext) -> None:
-    if git.current_branch(ctx.target) != ctx.branch:
-        git.run(ctx.target, "switch", ctx.branch)
-        print(f"Switched to {ctx.branch}.")
-
-
-def cmd_resume(args: argparse.Namespace) -> int:
-    ctx, _ = _context(args)
-    print(f"Working in: {ctx.target.describe()}")
-    _switch(ctx)
+def _resume(ctx: HarnessContext, message: str | None) -> Any:
+    print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
     agent, _ = build_agent(ctx)
     restored = len(agent.messages)
     print(
@@ -217,30 +283,95 @@ def cmd_resume(args: argparse.Namespace) -> int:
         if restored
         else "No snapshot; resuming from the task document."
     )
-    _run(agent, ctx, args.message or RESUME_PROMPT, interactive=False)
-    return _finish(agent, ctx)
+    _run(agent, ctx, message or RESUME_PROMPT, interactive=False)
+    return agent
+
+
+def _branch_exists(ctx: HarnessContext) -> bool:
+    remote = git.remote_has_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth)
+    return remote or bool(git.run(ctx.target, "branch", "--list", ctx.branch))
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    return _session(args, lambda ctx: _start(ctx, args.task))
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    return _session(args, lambda ctx: _resume(ctx, args.message))
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Start the task if its branch does not exist yet, otherwise resume it.
+
+    Idempotent, so a CronJob or a button can fire the same command every time.
+    """
+    def body(ctx: HarnessContext) -> Any:
+        if _branch_exists(ctx):
+            print(f"{ctx.branch} exists; resuming.")
+            return _resume(ctx, args.message)
+        if not args.task:
+            raise SystemExit(f"{ctx.branch} does not exist yet, so --task is needed to start it.")
+        return _start(ctx, args.task)
+
+    return _session(args, body)
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    ctx, _ = _context(args)
-    print(f"Working in: {ctx.target.describe()}")
-    _switch(ctx)
-    agent, _ = build_agent(ctx)
-    restored = len(agent.messages)
-    print(f"Restored {restored} message(s)." if restored else "Fresh session.")
-    print("Type a message, or /quit to stop (state is saved after every turn).")
-    while not ctx.terminal:
-        try:
-            line = input("\nyou> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not line:
-            continue
-        if line in {"/quit", "/exit"}:
-            break
-        _run(agent, ctx, line, interactive=True)
-    return _finish(agent, ctx)
+    def body(ctx: HarnessContext) -> Any:
+        if _branch_exists(ctx):
+            print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
+        else:
+            print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+        agent, _ = build_agent(ctx)
+        restored = len(agent.messages)
+        print(f"Restored {restored} message(s)." if restored else "Fresh session.")
+        print("Type a message, or /quit to stop (state is saved after every turn).")
+        while not ctx.terminal:
+            try:
+                line = input("\nyou> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
+            if not line:
+                continue
+            if line in {"/quit", "/exit"}:
+                break
+            _run(agent, ctx, line, interactive=True)
+        return agent
+
+    return _session(args, body)
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """Tasks in flight: sandbox claims and harness Jobs, found by their labels."""
+    cfg = HarnessConfig.load(None, _overrides(args))
+    rows = [("KIND", "NAME", "TASK", "STATUS", "DETAIL")]
+    for claim in agent_sandbox.list_claims(cfg):
+        meta, status = claim["metadata"], claim.get("status", {})
+        ready = next((c for c in status.get("conditions", []) if c.get("type") == "Ready"), {})
+        rows.append((
+            "claim",
+            meta["name"],
+            meta.get("labels", {}).get(agent_sandbox.LABEL_TASK, "?"),
+            "ready" if ready.get("status") == "True" else ready.get("reason", "pending"),
+            f"until {claim['spec'].get('lifecycle', {}).get('shutdownTime', '?')}  "
+            f"{meta.get('annotations', {}).get(agent_sandbox.ANNOTATION_REPO, '')}",
+        ))
+    for job in agent_sandbox.list_jobs(cfg):
+        meta, status = job["metadata"], job.get("status", {})
+        phase = "running" if status.get("active") else "succeeded" if status.get("succeeded") else \
+            "failed" if status.get("failed") else "pending"
+        rows.append((
+            "job",
+            f"{meta['namespace']}/{meta['name']}",
+            meta.get("labels", {}).get(agent_sandbox.LABEL_TASK, "?"),
+            phase,
+            f"started {status.get('startTime', '-')}",
+        ))
+    widths = [max(len(row[i]) for row in rows) for i in range(4)]
+    for row in rows:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)) + "  " + row[4])
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -249,21 +380,26 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         epilog="Every setting is also a HARNESS_* environment variable; see HarnessConfig.env_var_names().",
     )
-    parser.add_argument("--repo", default=".", help="Repo path. For remote targets, the path inside the container or pod.")
+    parser.add_argument("--repo", help=f"Repo path. Local default: the current directory. "
+                                       f"For remote targets, the path inside the container or pod "
+                                       f"(default {DEFAULT_REMOTE_REPO}).")
+    parser.add_argument("--repo-url", dest="repo_url",
+                        help="Clone this into the target first. Required for agent-sandbox.")
 
     where = parser.add_argument_group("where work happens")
-    where.add_argument("--target", choices=["local", "docker", "kubectl", "sandbox"],
+    where.add_argument("--target", choices=["local", "docker", "kubectl", "agent-sandbox"],
                        help="Execution target (default: local).")
     where.add_argument("--pod", help="Pod name, for target=kubectl.")
-    where.add_argument("--namespace", help="Pod namespace.")
+    where.add_argument("--namespace", help="Namespace of the pod, or of the sandbox claims.")
     where.add_argument("--container", help="Container within the pod.")
     where.add_argument("--kube-context", dest="kube_context", help="kubeconfig context.")
     where.add_argument("--docker-container", dest="docker_container", help="Container, for target=docker.")
-    where.add_argument("--warmpool", help="Claim a new agent-sandbox from this SandboxWarmPool.")
-    where.add_argument("--claim", help="Attach to an existing SandboxClaim by name.")
-    where.add_argument("--sandbox-connection", dest="sandbox_connection",
-                       choices=["local-tunnel", "in-cluster", "gateway", "direct", "pod-tunnel"],
-                       help="How to reach the sandbox router (default: local-tunnel).")
+    where.add_argument("--pool", help="SandboxWarmPool to claim a sandbox from, for target=agent-sandbox.")
+    where.add_argument("--claim", help="Attach to an existing SandboxClaim instead of claiming a new one.")
+    where.add_argument("--claim-ttl", type=int, dest="claim_ttl",
+                       help="Seconds until the controller deletes the claim regardless (default 4h).")
+    where.add_argument("--keep-claim", dest="keep_claim", action=argparse.BooleanOptionalAction, default=None,
+                       help="Keep the claim after the run instead of releasing it.")
 
     model = parser.add_argument_group("model")
     model.add_argument("--provider", help="anthropic (default), openai, bedrock, llamacpp, ollama, gemini, "
@@ -293,9 +429,18 @@ def main(argv: list[str] | None = None) -> int:
     resume.add_argument("--message", help="Instruction for this burst.")
     resume.set_defaults(func=cmd_resume)
 
-    chat = sub.add_parser("chat", help="Drive a task interactively.")
+    run = sub.add_parser("run", help="Start the task if its branch is new, else resume it. For Jobs and cron.")
+    run.add_argument("slug")
+    run.add_argument("--task", help="What to do. Needed only when the task has not started yet.")
+    run.add_argument("--message", help="Instruction for this burst, when resuming.")
+    run.set_defaults(func=cmd_run)
+
+    chat = sub.add_parser("chat", help="Drive a task interactively, starting it if needed.")
     chat.add_argument("slug")
     chat.set_defaults(func=cmd_chat)
+
+    ls = sub.add_parser("list", help="Show sandbox claims and harness Jobs in flight.")
+    ls.set_defaults(func=cmd_list)
 
     args = parser.parse_args(argv)
     return args.func(args)

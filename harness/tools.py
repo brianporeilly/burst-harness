@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 
 from strands import tool
 
@@ -20,14 +19,17 @@ class HarnessContext:
     cfg: HarnessConfig
     slug: str
     branch: str
+    # Harness-side snapshot directory name for this repo (see state.state_key).
+    state_key: str
+    # `git -c` credentials for the harness's own fetch/push; never the agent's.
+    auth: git.Auth = ()
+    # host/owner/repo for `gh --repo`, or None if the remote isn't recognised.
+    repo_slug: str | None = None
     terminal: str | None = None  # "pr" | "pushed_no_pr" | "paused" | "abandoned"
     pr_url: str | None = None
+    # Set when a headless run stopped on a question for the user.
+    waiting: bool = False
     notes: list[str] = field(default_factory=list)
-
-    @property
-    def state_key(self) -> str:
-        """Stable name for this repo's harness-side snapshot directory."""
-        return PurePosixPath(self.target.repo).name or "repo"
 
 
 def make_tools(ctx: HarnessContext) -> list:
@@ -43,7 +45,7 @@ def make_tools(ctx: HarnessContext) -> list:
         steps = [git.commit_all(target, message, name=cfg.git_user_name, email=cfg.git_user_email)]
         if cfg.auto_push:
             try:
-                steps.append(git.push(target, ctx.branch, remote=cfg.remote))
+                steps.append(git.push(target, ctx.branch, remote=cfg.remote, auth=ctx.auth))
             except git.GitError as err:
                 steps.append(f"Push failed (work is committed locally): {err}")
         return steps
@@ -115,8 +117,11 @@ def make_tools(ctx: HarnessContext) -> list:
             return f"Rejected: {err}"
         steps = _wrap_up(title)
         try:
+            if not ctx.repo_slug:
+                raise git.GitError(f"the {cfg.remote} remote is not a recognisable host/owner/repo URL")
             url = git.open_pr(
-                target, title=title, body=body, base=cfg.base_branch, draft=cfg.pr_draft
+                repo=ctx.repo_slug, head=ctx.branch, title=title, body=body,
+                base=cfg.base_branch, draft=cfg.pr_draft,
             )
         except git.GitError as err:
             # The work is committed and pushed; only the PR step failed. That is

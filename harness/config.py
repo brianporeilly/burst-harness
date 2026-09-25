@@ -1,4 +1,4 @@
-"""Layered configuration: dataclass defaults -> repo .harness.toml -> CLI overrides."""
+"""Layered configuration: defaults -> user file -> repo .harness.toml -> env -> CLI."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_FILENAME = ".harness.toml"
+USER_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser() / "burst-harness" / "config.toml"
 
 # Every field is settable as HARNESS_<FIELD_NAME_UPPERCASED>, which is how a
 # container image gets configured: the CLI subcommand is the entrypoint, and
@@ -70,19 +71,24 @@ class HarnessConfig:
     context_window_limit: int = 1_000_000
 
     # --- where work happens ---
-    target: str = "local"
+    target: str = "local"  # local | docker | kubectl | agent-sandbox
+    # Clone this into the target rather than expecting a checkout to be there.
+    # Required for agent-sandbox, whose sandboxes start empty.
+    repo_url: str = ""
     pod: str = ""
     namespace: str = ""
     container: str = ""
     kube_context: str = ""
     docker_container: str = ""
     kubectl: str = "kubectl"
-    # target=sandbox (kubernetes-sigs/agent-sandbox)
-    warmpool: str = ""
+    # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
+    pool: str = ""
     claim_name: str = ""
-    sandbox_connection: str = "local-tunnel"
-    gateway_name: str = ""
-    command_timeout: int = 900
+    # Hard deadline on a claim: the controller deletes it after this even if the
+    # driver died mid-burst. Longer than any burst, shorter than forgotten.
+    claim_ttl: int = 4 * 3600
+    # Keep the claim after a terminal state (e.g. to inspect the sandbox).
+    keep_claim: bool = False
 
     # --- git / PR ---
     base_branch: str = "main"
@@ -118,17 +124,35 @@ class HarnessConfig:
     require_clean_tree: bool = True
 
     @classmethod
-    def load(cls, repo: Path, overrides: dict[str, Any] | None = None) -> "HarnessConfig":
+    def load(
+        cls,
+        repo_toml: str | None = None,
+        overrides: dict[str, Any] | None = None,
+        *,
+        user_config: Path | None = USER_CONFIG,
+    ) -> "HarnessConfig":
         """Build config in increasing order of specificity.
 
-        defaults -> the repo's .harness.toml -> HARNESS_* env vars -> CLI flags.
-        Env beats the repo file so a deployment can override a repo's checked-in
-        preference; CLI beats everything because it is the most specific.
+        defaults -> the user's config file -> the repo's .harness.toml ->
+        HARNESS_* env vars -> CLI flags. Env beats the repo file so a deployment
+        can override a repo's checked-in preference; CLI beats everything because
+        it is the most specific.
+
+        The repo file is limited to REPO_SETTABLE: it is written by whoever
+        controls the repo, and settings like token_command or base_url would let
+        it run commands on, or redirect credentials from, the driver.
         """
         cfg = cls()
-        path = repo / CONFIG_FILENAME
-        if path.is_file():
-            cfg = cfg._merge(tomllib.loads(path.read_text()), source=str(path))
+        if user_config is not None and user_config.is_file():
+            cfg = cfg._merge(tomllib.loads(user_config.read_text()), source=str(user_config))
+        if repo_toml:
+            values = tomllib.loads(repo_toml)
+            if refused := sorted(set(values) - REPO_SETTABLE):
+                raise ValueError(
+                    f"{CONFIG_FILENAME} may not set: {', '.join(refused)}. Those are driver "
+                    f"settings; put them in {USER_CONFIG}, HARNESS_* env vars, or flags."
+                )
+            cfg = cfg._merge(values, source=CONFIG_FILENAME)
         cfg = cfg._merge(cfg._env_values(), source="environment")
         if overrides:
             cfg = cfg._merge({k: v for k, v in overrides.items() if v is not None}, source="command line")
@@ -170,3 +194,16 @@ class HarnessConfig:
         pod being driven -- a pod is disposable and the snapshot must outlive it.
         """
         return Path(self.state_dir).expanduser() / name
+
+
+# What a repo's own .harness.toml may set: how work on that repo is done, never
+# where it runs, what it authenticates with, or what the driver executes.
+REPO_SETTABLE = frozenset({
+    "model_id", "max_tokens", "effort", "thinking", "context_window_limit",
+    "base_branch", "branch_prefix", "protected_branches", "remote", "pr_draft",
+    "git_user_name", "git_user_email", "auto_push",
+    "docs_dir", "doc_max_bytes", "skills_dir",
+    "offload_max_result_tokens", "offload_preview_tokens", "window_size", "pin_first",
+    "proactive_compression", "cache_ttl",
+    "max_fixup_attempts", "require_clean_tree",
+})

@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from pathlib import PurePosixPath
+
+from . import git
 from .config import HarnessConfig
 from .exec_target import ExecTarget
 
@@ -54,6 +57,21 @@ class TaskDoc:
                 cleaned = body.strip()
                 found[field] = "" if cleaned == _PLACEHOLDER else cleaned
         return cls(slug=slug, **found)
+
+
+def state_key(remote_url: str, repo_path: str) -> str:
+    """Name of a repo's harness-side snapshot directory.
+
+    From the remote when there is one, so two checkouts that share a basename
+    (every sandbox's `/workspace/repo`, two local `api` repos) never share
+    snapshots, while a fresh clone of the same repo finds its old ones.
+    """
+    source = (
+        git.repo_slug(remote_url)
+        or PurePosixPath(git.redact_url(remote_url).rstrip("/")).name.removesuffix(".git")
+        or PurePosixPath(repo_path).name
+    )
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", source).strip("_") or "repo"
 
 
 def doc_relpath(cfg: HarnessConfig, slug: str) -> str:

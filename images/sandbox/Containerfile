@@ -1,0 +1,29 @@
+# Burst Harness sandbox — the image an agent-sandbox SandboxTemplate runs.
+#
+# The contract with the harness (checked at claim time, see
+# harness/agent_sandbox.py REQUIRED_COMMANDS): a POSIX sh, git, and coreutils
+# (base64, mkdir, dirname, ls, rm, cat, env), a writable /workspace, and a
+# process that keeps the pod alive. Everything else is for the task: add the
+# toolchains your repos need.
+#
+# Deliberately absent: credentials of any kind, and gh. The harness clones and
+# pushes with a token it passes per command, and opens PRs from the driver, so
+# nothing in here can push or exfiltrate a token.
+FROM registry.fedoraproject.org/fedora:44
+
+RUN dnf -y install --setopt=install_weak_deps=False \
+      git-core coreutils findutils grep sed gawk diffutils patch which procps-ng \
+      tar gzip unzip jq ripgrep \
+      python3 python3-pip nodejs npm make gcc gcc-c++ \
+ && dnf clean all
+
+# UID 1000 matches the SandboxTemplate's runAsUser; a real HOME avoids tools
+# writing config to / (the OpenHands UID/HOME class of bug).
+RUN useradd --uid 1000 --create-home --home-dir /home/agent agent \
+ && mkdir -p /workspace && chown agent:agent /workspace
+USER 1000
+ENV HOME=/home/agent
+WORKDIR /workspace
+
+# Driven from outside with exec; nothing to run on its own.
+CMD ["sleep", "infinity"]

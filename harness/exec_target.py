@@ -52,9 +52,9 @@ class ExecTarget(ABC):
 
     @abstractmethod
     def run_shell(
-        self, command: str, *, check: bool = True, stdin: str | None = None
+        self, command: str, *, check: bool = True, stdin: str | None = None, cwd: str | None = None
     ) -> CommandResult:
-        """Run a shell command in the repo."""
+        """Run a shell command in the repo, or in `cwd` (for work before the repo exists)."""
 
     @abstractmethod
     def sandbox(self) -> "Sandbox":
@@ -65,10 +65,19 @@ class ExecTarget(ABC):
         """One line naming where work happens, for the system prompt and logs."""
 
     def run(
-        self, argv: list[str], *, check: bool = True, stdin: str | None = None
+        self, argv: list[str], *, check: bool = True, stdin: str | None = None, cwd: str | None = None
     ) -> CommandResult:
         """Run an argv in the repo, quoting it into a shell string."""
-        return self.run_shell(shlex.join(argv), check=check, stdin=stdin)
+        return self.run_shell(shlex.join(argv), check=check, stdin=stdin, cwd=cwd)
+
+    def exists(self) -> bool:
+        """True if the repo directory exists in the target."""
+        return self.run_shell(f"test -d {shlex.quote(self.repo)}", check=False, cwd="/").returncode == 0
+
+    def missing_commands(self, names: tuple[str, ...]) -> list[str]:
+        """Which of `names` are not on the target's PATH."""
+        probe = "; ".join(f"command -v {shlex.quote(n)} >/dev/null || echo {shlex.quote(n)}" for n in names)
+        return self.run_shell(probe, check=False, cwd="/").stdout.split()
 
     def _check(self, command: str, result: CommandResult, *, check: bool) -> CommandResult:
         if check and result.returncode != 0:
@@ -105,13 +114,13 @@ class SubprocessTarget(ExecTarget):
     """A target reached by spawning a local process (sh, docker, kubectl)."""
 
     @abstractmethod
-    def _wrap(self, command: str, *, stdin: bool) -> list[str]:
-        """Argv that runs `command` as a shell string inside the target, in the repo."""
+    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
+        """Argv that runs `command` as a shell string inside the target, in `cwd`."""
 
     def run_shell(
-        self, command: str, *, check: bool = True, stdin: str | None = None
+        self, command: str, *, check: bool = True, stdin: str | None = None, cwd: str | None = None
     ) -> CommandResult:
-        argv = self._wrap(command, stdin=stdin is not None)
+        argv = self._wrap(command, stdin=stdin is not None, cwd=cwd or self.repo)
         proc = subprocess.run(argv, capture_output=True, text=True, input=stdin)
         return self._check(command, CommandResult(proc.returncode, proc.stdout, proc.stderr), check=check)
 
@@ -120,8 +129,8 @@ class SubprocessTarget(ExecTarget):
 class LocalTarget(SubprocessTarget):
     """Run on this machine. Bypasses the shell for file access."""
 
-    def _wrap(self, command: str, *, stdin: bool) -> list[str]:
-        return ["sh", "-c", f"cd {shlex.quote(self.repo)} && {command}"]
+    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
+        return ["sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
 
     def sandbox(self) -> "Sandbox":
         from .repo_env import RepoEnvironment
@@ -143,12 +152,12 @@ class LocalTarget(SubprocessTarget):
 
 @dataclass(frozen=True)
 class DockerTarget(SubprocessTarget):
-    """Run inside a Docker container via `docker exec`."""
+    """Run inside a container via `docker exec`. For podman, put a `docker` shim on PATH."""
 
     container: str = ""
 
-    def _wrap(self, command: str, *, stdin: bool) -> list[str]:
-        argv = ["docker", "exec", "-w", self.repo]
+    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
+        argv = ["docker", "exec", "-w", cwd]
         if stdin:
             argv.append("-i")
         # `--` so a container named like a flag is still positional.
@@ -173,7 +182,7 @@ class KubectlTarget(SubprocessTarget):
     context: str | None = None
     kubectl: str = "kubectl"
 
-    def _wrap(self, command: str, *, stdin: bool) -> list[str]:
+    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
         argv = [self.kubectl, "exec"]
         if self.context:
             argv += ["--context", self.context]
@@ -185,7 +194,7 @@ class KubectlTarget(SubprocessTarget):
         if self.container:
             argv += ["-c", self.container]
         # kubectl has no -w, so the cd goes into the shell string.
-        return [*argv, "--", "sh", "-c", f"cd {shlex.quote(self.repo)} && {command}"]
+        return [*argv, "--", "sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
 
     def sandbox(self) -> "Sandbox":
         from .kube_sandbox import KubectlSandbox

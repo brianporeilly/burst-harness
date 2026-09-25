@@ -5,7 +5,8 @@
 # provider plugin reads. Nothing is baked into the image.
 FROM python:3.13-slim
 
-# git and gh are load-bearing: gh is how finish_with_pr opens a pull request.
+# git and gh are load-bearing: git for local-target work, gh because
+# finish_with_pr opens pull requests from the driver.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git gnupg \
  && mkdir -p -m 755 /etc/apt/keyrings \
@@ -16,6 +17,16 @@ RUN apt-get update \
       > /etc/apt/sources.list.d/github-cli.list \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
+
+# kubectl drives the kubectl and agent-sandbox targets (claims, exec). Pinned to
+# the cluster's minor version and checksum-verified; in a pod it uses the
+# in-cluster ServiceAccount with no kubeconfig.
+ARG KUBECTL_VERSION=v1.36.4
+RUN arch="$(dpkg --print-architecture)" \
+ && curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl" \
+ && echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl.sha256")  /usr/local/bin/kubectl" \
+      | sha256sum -c - \
+ && chmod 755 /usr/local/bin/kubectl
 
 WORKDIR /opt/harness
 COPY requirements.txt .
