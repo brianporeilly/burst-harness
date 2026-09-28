@@ -62,10 +62,10 @@ def _require(module: str, cls: str, extra: str) -> Any:
 
 
 def _json_overrides(cfg: HarnessConfig) -> dict[str, Any]:
-    if not cfg.model_params_json:
+    if not cfg.model_params:
         return {}
     try:
-        extra = json.loads(cfg.model_params_json)
+        extra = json.loads(cfg.model_params)
     except json.JSONDecodeError as err:
         raise ProviderError(f"HARNESS_MODEL_PARAMS is not valid JSON: {err}") from err
     if not isinstance(extra, dict):
@@ -180,7 +180,7 @@ def _llamacpp(cfg: HarnessConfig) -> "Model":
     """A self-hosted llama.cpp server."""
     LlamaCppModel = _require("strands.models.llamacpp", "LlamaCppModel", "llamacpp")
     base_url = cfg.base_url or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")
-    return LlamaCppModel(base_url=base_url, **model_kwargs(cfg, LlamaCppModel))
+    return LlamaCppModel(base_url=base_url, timeout=cfg.model_timeout, **model_kwargs(cfg, LlamaCppModel))
 
 
 def _ollama(cfg: HarnessConfig) -> "Model":

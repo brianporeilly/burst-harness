@@ -178,6 +178,27 @@ an API key, set `HARNESS_TOKEN_COMMAND` (stdout is the token, re-run to refresh)
 or `HARNESS_TOKEN_FILE` (re-read to refresh), with `--base-url` pointing at it.
 JWT expiry is read so the token refreshes before it lapses.
 
+### llama.cpp
+
+`llamacpp` talks to llama-server's `/v1/chat/completions`; point `base_url` at the
+server root (no `/v1`). Effort, thinking, and prompt caching are Anthropic
+features and are not sent. Four settings matter:
+
+```toml
+# ~/.config/burst-harness/config.toml  (or HARNESS_* env vars of the same names)
+provider = "llamacpp"
+base_url = "http://llm.example.lan:8080"
+model_id = "qwen3-coder-30b"          # a label: llama-server serves whatever it loaded
+context_window_limit = 65536          # = llama-server --ctx-size; the default 1M
+                                      #   would stop context management ever firing
+model_params = '{"max_tokens": 8192}' # llama.cpp has no top-level max_tokens
+model_timeout = 900                   # seconds; LlamaCppModel's own default is 30s,
+                                      #   far shorter than a long prefill
+```
+
+The server must run with `--jinja` for tool calls, and the model has to be able to
+close a multi-step tool loop — small instruct models often cannot.
+
 ### Provider plugins
 
 Anything more involved — an OAuth grant, a vendor CLI, a custom client — is a

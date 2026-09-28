@@ -61,7 +61,11 @@ class HarnessConfig:
     token_file: str = ""
     # Raw JSON merged into the provider's sampling params, last. The escape
     # hatch for any knob the harness does not model (temperature, top_p, ...).
-    model_params_json: str = ""
+    model_params: str = ""
+    # Seconds to wait on a model request. Only llama.cpp needs it set: Strands'
+    # LlamaCppModel defaults to 30s, and prompt prefill on a modest GPU can take
+    # minutes. The other providers' SDKs already default to ~10 minutes.
+    model_timeout: int = 600
     model_id: str = "claude-opus-5-5"
     max_tokens: int = 32000
     effort: str = "high"
