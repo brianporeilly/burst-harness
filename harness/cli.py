@@ -10,12 +10,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import agent_sandbox, git, state
+from . import agent_sandbox, containers, git, state
 from .agent import build_agent
-from .agent_sandbox import AgentSandboxTarget
+from .claude_code import ClaudeCodeEngine
 from .config import CONFIG_FILENAME, HarnessConfig
-from .exec_target import DockerTarget, ExecTarget, KubectlTarget, LocalTarget
-from .tools import HarnessContext
+from .context import HarnessContext
+from .exec_target import ExecTarget, KubectlTarget, LocalTarget
+
+ENGINES = ("strands", "claude-code")
 
 # Exit codes, so a Job's status means something. Any terminal state -- a PR, a
 # pause, an abandon -- is the harness working as designed, hence success.
@@ -119,6 +121,11 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "container": args.container,
         "kube_context": args.kube_context,
         "docker_container": args.docker_container,
+        "image": args.image,
+        "engine": args.engine,
+        "claude_json": args.claude_json,
+        "claude_settings": args.claude_settings,
+        "claude_permission_mode": args.permission_mode,
         "pool": args.pool,
         "claim_name": args.claim,
         "claim_ttl": args.claim_ttl,
@@ -132,10 +139,10 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str) -> ExecTa
     if kind == "local":
         return LocalTarget(repo=str(Path(repo_arg or ".").expanduser().resolve()))
     repo = repo_arg or DEFAULT_REMOTE_REPO
-    if kind == "docker":
-        if not cfg.docker_container:
-            raise SystemExit("--docker-container (or HARNESS_DOCKER_CONTAINER) is required for target=docker.")
-        return DockerTarget(repo=repo, container=cfg.docker_container)
+    if kind in ("docker", "podman"):
+        if not cfg.docker_container and not cfg.repo_url:
+            raise SystemExit(f"target={kind} starts a fresh container: pass --repo-url (or --docker-container to attach).")
+        return containers.acquire(cfg, binary=kind, repo=repo, slug=slug)
     if kind == "agent-sandbox":
         if not cfg.repo_url and not cfg.claim_name:
             raise SystemExit("target=agent-sandbox starts from an empty sandbox: pass --repo-url.")
@@ -151,13 +158,15 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str) -> ExecTa
             context=cfg.kube_context or None,
             kubectl=cfg.kubectl,
         )
-    raise SystemExit(f"Unknown target {kind!r}. Use local, docker, kubectl, or agent-sandbox.")
+    raise SystemExit(f"Unknown target {kind!r}. Use local, docker, podman, kubectl, or agent-sandbox.")
 
 
 def _open(args: argparse.Namespace) -> HarnessContext:
     """Resolve config, acquire the target, and make sure the repo is checked out."""
     overrides = _overrides(args)
     cfg = HarnessConfig.load(None, overrides)
+    if cfg.engine not in ENGINES:
+        raise SystemExit(f"Unknown engine {cfg.engine!r}. Use {' or '.join(ENGINES)}.")
     repo_toml_read = False
     if cfg.target == "local" and not cfg.repo_url:
         # An existing local checkout: its config file is readable before anything else.
@@ -195,34 +204,33 @@ def _open(args: argparse.Namespace) -> HarnessContext:
             repo_slug=git.repo_slug(url),
         )
     except BaseException:
-        if isinstance(target, AgentSandboxTarget) and target.owned:
-            agent_sandbox.delete_claim(cfg, target.claim)
+        target.release()
         raise
 
 
 def _close(ctx: HarnessContext) -> None:
-    """Release a claim this run created -- unless that would throw work away."""
+    """Remove a target this run created -- unless that would throw work away."""
     target, cfg = ctx.target, ctx.cfg
-    if not isinstance(target, AgentSandboxTarget) or not target.owned:
+    if not target.owned:
         return
+    hint = f"Reattach with: harness {target.attach_hint()} ... {ctx.slug}"
     if cfg.keep_claim:
-        print(f"Kept {target.claim} (--keep-claim). Attach with --claim {target.claim}.")
+        print(f"Kept {target.describe()} (--keep-claim). {hint}")
+        return
+    if ctx.detached:
+        print(f"Kept {target.describe()}: a session is still running in it. {hint}")
         return
     try:
         dirty = git.is_dirty(target)
     except git.GitError:
-        dirty = False  # the sandbox is gone or broken; nothing left to save
+        dirty = False  # the target is gone or broken; nothing left to save
     if dirty and not ctx.terminal:
-        print(
-            f"Kept {target.claim}: it has uncommitted work. Resume with --claim {target.claim}; "
-            "the controller deletes it at its deadline regardless."
-        )
+        print(f"Kept {target.describe()}: it has uncommitted work. {hint}")
         return
-    agent_sandbox.delete_claim(cfg, target.claim)
-    print(f"Released {target.claim}.")
+    print(target.release())
 
 
-def _finish(agent: Any, ctx: HarnessContext) -> int:
+def _finish(report: str | None, ctx: HarnessContext) -> int:
     print("\n" + "-" * 60)
     if ctx.terminal == "pr":
         print(f"Finished: {ctx.pr_url}")
@@ -236,31 +244,53 @@ def _finish(agent: Any, ctx: HarnessContext) -> int:
         print("Waiting for an answer from the user.")
     else:
         print("Ended with no terminal state recorded.")
-    if agent is not None:
-        print(_report(agent, ctx.cfg.model_id))
+    if report:
+        print(report)
     state_name = ctx.terminal or ("waiting" if ctx.waiting else "none")
     # One machine-readable line for whatever launched this (a Job, a GUI).
     print("HARNESS_RESULT " + json.dumps({
         "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
-        "claim": ctx.target.claim if isinstance(ctx.target, AgentSandboxTarget) else None,
+        "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None,
     }))
     if ctx.terminal:
         return EXIT_DONE
     return EXIT_NEEDS_INPUT if ctx.waiting else EXIT_NO_TERMINAL_STATE
 
 
-def _session(args: argparse.Namespace, body: Callable[[HarnessContext], Any]) -> int:
+def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | None]) -> int:
     ctx = _open(args)
-    agent = None
+    report = None
     try:
-        print(f"Working in: {ctx.target.describe()}")
-        agent = body(ctx)
+        print(f"Working in: {ctx.target.describe()} (engine: {ctx.cfg.engine})")
+        report = body(ctx)
     finally:
         _close(ctx)
-    return _finish(agent, ctx)
+    return _finish(report, ctx)
 
 
-def _start(ctx: HarnessContext, task: str) -> Any:
+def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
+    """Run one headless burst with the configured engine. Returns the usage report."""
+    if ctx.cfg.engine == "claude-code":
+        engine = ClaudeCodeEngine(ctx)
+        try:
+            engine.prepare()
+            engine.headless(prompt)
+        finally:
+            engine.cleanup()
+        return engine.report()
+    agent, _ = build_agent(ctx)
+    if resume:
+        restored = len(agent.messages)
+        print(
+            f"Restored {restored} message(s) from snapshot."
+            if restored
+            else "No snapshot; resuming from the task document."
+        )
+    _run(agent, ctx, prompt, interactive=False)
+    return _report(agent, ctx.cfg.model_id)
+
+
+def _start(ctx: HarnessContext, task: str) -> str | None:
     if git.is_dirty(ctx.target):
         raise SystemExit(
             "The working tree has uncommitted changes. Commit or stash them first — "
@@ -269,22 +299,12 @@ def _start(ctx: HarnessContext, task: str) -> Any:
     # Branch setup happens here, deterministically, rather than being asked of the model.
     print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
     state.write(ctx.target, ctx.cfg, state.merge(state.read(ctx.target, ctx.cfg, ctx.slug), goal=task))
-    agent, _ = build_agent(ctx)
-    _run(agent, ctx, task, interactive=False)
-    return agent
+    return _drive(ctx, task, resume=False)
 
 
-def _resume(ctx: HarnessContext, message: str | None) -> Any:
+def _resume(ctx: HarnessContext, message: str | None) -> str | None:
     print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
-    agent, _ = build_agent(ctx)
-    restored = len(agent.messages)
-    print(
-        f"Restored {restored} message(s) from snapshot."
-        if restored
-        else "No snapshot; resuming from the task document."
-    )
-    _run(agent, ctx, message or RESUME_PROMPT, interactive=False)
-    return agent
+    return _drive(ctx, message or RESUME_PROMPT, resume=True)
 
 
 def _branch_exists(ctx: HarnessContext) -> bool:
@@ -305,7 +325,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     Idempotent, so a CronJob or a button can fire the same command every time.
     """
-    def body(ctx: HarnessContext) -> Any:
+    def body(ctx: HarnessContext) -> str | None:
         if _branch_exists(ctx):
             print(f"{ctx.branch} exists; resuming.")
             return _resume(ctx, args.message)
@@ -317,11 +337,19 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    def body(ctx: HarnessContext) -> Any:
+    def body(ctx: HarnessContext) -> str | None:
         if _branch_exists(ctx):
             print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
         else:
             print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+        if ctx.cfg.engine == "claude-code":
+            engine = ClaudeCodeEngine(ctx)
+            try:
+                engine.prepare()
+                engine.interactive()
+            finally:
+                engine.cleanup()
+            return None
         agent, _ = build_agent(ctx)
         restored = len(agent.messages)
         print(f"Restored {restored} message(s)." if restored else "Fresh session.")
@@ -337,7 +365,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             if line in {"/quit", "/exit"}:
                 break
             _run(agent, ctx, line, interactive=True)
-        return agent
+        return _report(agent, ctx.cfg.model_id)
 
     return _session(args, body)
 
@@ -346,7 +374,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     """Tasks in flight: sandbox claims and harness Jobs, found by their labels."""
     cfg = HarnessConfig.load(None, _overrides(args))
     rows = [("KIND", "NAME", "TASK", "STATUS", "DETAIL")]
-    for claim in agent_sandbox.list_claims(cfg):
+    for item in containers.list_containers():
+        rows.append((item["binary"], item["name"], item["task"], item["status"], item["image"]))
+    try:
+        claims = agent_sandbox.list_claims(cfg)
+    except agent_sandbox.AgentSandboxError as err:
+        claims = []
+        print(f"(sandbox claims unavailable: {err})", file=sys.stderr)
+    for claim in claims:
         meta, status = claim["metadata"], claim.get("status", {})
         ready = next((c for c in status.get("conditions", []) if c.get("type") == "Ready"), {})
         rows.append((
@@ -387,19 +422,32 @@ def main(argv: list[str] | None = None) -> int:
                         help="Clone this into the target first. Required for agent-sandbox.")
 
     where = parser.add_argument_group("where work happens")
-    where.add_argument("--target", choices=["local", "docker", "kubectl", "agent-sandbox"],
+    where.add_argument("--target", choices=["local", "docker", "podman", "kubectl", "agent-sandbox"],
                        help="Execution target (default: local).")
     where.add_argument("--pod", help="Pod name, for target=kubectl.")
     where.add_argument("--namespace", help="Namespace of the pod, or of the sandbox claims.")
     where.add_argument("--container", help="Container within the pod.")
     where.add_argument("--kube-context", dest="kube_context", help="kubeconfig context.")
-    where.add_argument("--docker-container", dest="docker_container", help="Container, for target=docker.")
+    where.add_argument("--docker-container", dest="docker_container",
+                       help="Attach to this container, for target=docker/podman. Default: start a fresh one.")
+    where.add_argument("--image", help="Image a fresh docker/podman container starts from.")
     where.add_argument("--pool", help="SandboxWarmPool to claim a sandbox from, for target=agent-sandbox.")
     where.add_argument("--claim", help="Attach to an existing SandboxClaim instead of claiming a new one.")
     where.add_argument("--claim-ttl", type=int, dest="claim_ttl",
                        help="Seconds until the controller deletes the claim regardless (default 4h).")
     where.add_argument("--keep-claim", dest="keep_claim", action=argparse.BooleanOptionalAction, default=None,
                        help="Keep the claim after the run instead of releasing it.")
+
+    engine = parser.add_argument_group("engine")
+    engine.add_argument("--engine", choices=list(ENGINES),
+                        help="strands (default): the harness's own agent. claude-code: Claude Code in the target.")
+    engine.add_argument("--claude-json", dest="claude_json",
+                        help="JSON file merged into the target's ~/.claude.json (engine=claude-code).")
+    engine.add_argument("--claude-settings", dest="claude_settings",
+                        help="JSON file merged into the target's ~/.claude/settings.json (engine=claude-code).")
+    engine.add_argument("--permission-mode", dest="permission_mode",
+                        choices=["default", "acceptEdits", "plan"],
+                        help="Claude Code permission mode (default: acceptEdits).")
 
     model = parser.add_argument_group("model")
     model.add_argument("--provider", help="anthropic (default), openai, bedrock, llamacpp, ollama, gemini, "

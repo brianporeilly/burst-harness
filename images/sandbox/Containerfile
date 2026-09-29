@@ -25,26 +25,39 @@ RUN useradd --uid 1000 --create-home --home-dir /home/agent agent \
  && mkdir -p /workspace && chown agent:agent /workspace
 USER 1000
 ENV HOME=/home/agent \
-    PATH=/home/agent/.local/bin:$PATH \
     DISABLE_AUTOUPDATER=1
 WORKDIR /workspace
 
 # Claude Code, for the harness's claude-code engine and for interactive use
 # (`kubectl exec -it <pod> -- tmux new -A -s main`, then `claude`). Pinned: the
 # image is immutable, so the in-place auto-updater is off and a new version is
-# a rebuild. Installed as the agent user into ~/.local, no root or npm needed.
+# a rebuild. The installer runs as the agent user; the binary then moves to
+# /usr/local/bin and everything the install left in $HOME is removed -- so a
+# tmpfs $HOME can't hide it, and no machineID/userID is baked into every
+# container.
 # Holds no credentials: pass CLAUDE_CODE_OAUTH_TOKEN (from `claude
 # setup-token`) or ANTHROPIC_API_KEY at run time.
 ARG CLAUDE_CODE_VERSION=2.1.285
-RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}" \
- && claude --version \
- && { cat ~/.claude.json 2>/dev/null || echo '{}'; } \
-      | jq '. + {hasCompletedOnboarding: true}' > /tmp/claude.json \
- && mv /tmp/claude.json ~/.claude.json
-# hasCompletedOnboarding: without it, interactive `claude` runs first-run
-# onboarding (theme, then login screens) even when CLAUDE_CODE_OAUTH_TOKEN is
-# set, which looks like the token being ignored. `claude -p` never onboards.
-# A read-only root with a tmpfs over $HOME hides this file; recreate it there.
+RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"
+USER root
+RUN install -m 755 "$(readlink -f /home/agent/.local/bin/claude)" /usr/local/bin/claude \
+ && rm -rf /home/agent/.local /home/agent/.claude /home/agent/.claude.json /home/agent/.cache /home/agent/.npm \
+ && claude --version
+USER 1000
 
-# Driven from outside with exec; nothing to run on its own.
+# Claude Code config is composed at container start by burst-sandbox-init from
+# layers: image defaults (claude/ here), a mounted /config/claude directory,
+# CLAUDE_JSON / CLAUDE_SETTINGS_JSON env, and files the harness uploads. See the
+# script's header. Composed at start rather than baked in, so it also works with
+# a read-only root and a tmpfs $HOME.
+#
+# Default claude.json sets hasCompletedOnboarding: without it, interactive
+# `claude` runs first-run onboarding (theme, then login screens) even when
+# CLAUDE_CODE_OAUTH_TOKEN is set, which looks like the token being ignored.
+COPY claude/ /etc/burst-harness/claude/
+COPY burst-sandbox-init /usr/local/bin/burst-sandbox-init
+
+# Driven from outside with exec; nothing to run on its own. A pod spec must set
+# `args`, not `command`, or the entrypoint (and so the config) is skipped.
+ENTRYPOINT ["burst-sandbox-init", "--"]
 CMD ["sleep", "infinity"]

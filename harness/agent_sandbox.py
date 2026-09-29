@@ -139,6 +139,18 @@ class AgentSandboxTarget(KubectlTarget):
     def describe(self) -> str:
         return f"agent-sandbox {self.claim} (pod {self.pod}) at {self.repo}"
 
+    def release(self) -> str:
+        if not self.owned:
+            return ""
+        subprocess.run(
+            [*self.kubectl_base(), "delete", "sandboxclaim", self.claim, "--wait=false", "--ignore-not-found"],
+            capture_output=True,
+        )
+        return f"Released {self.claim}."
+
+    def attach_hint(self) -> str:
+        return f"--target agent-sandbox --claim {self.claim}"
+
 
 def acquire(cfg: HarnessConfig, *, repo: str, slug: str, branch: str) -> AgentSandboxTarget:
     """Attach to `cfg.claim_name`, or claim a fresh sandbox from `cfg.pool`."""

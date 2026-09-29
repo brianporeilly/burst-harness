@@ -74,8 +74,13 @@ class HarnessConfig:
     # utilization gate at a fifth of the real window on a 1M-context model.
     context_window_limit: int = 1_000_000
 
+    # --- which agent loop ---
+    # strands: the harness's own Strands agent, driven from outside the target.
+    # claude-code: Claude Code running inside the target, headless or in tmux.
+    engine: str = "strands"
+
     # --- where work happens ---
-    target: str = "local"  # local | docker | kubectl | agent-sandbox
+    target: str = "local"  # local | docker | podman | kubectl | agent-sandbox
     # Clone this into the target rather than expecting a checkout to be there.
     # Required for agent-sandbox, whose sandboxes start empty.
     repo_url: str = ""
@@ -83,7 +88,12 @@ class HarnessConfig:
     namespace: str = ""
     container: str = ""
     kube_context: str = ""
+    # target=docker/podman: attach to this container, or else start one from
+    # `image` for the run and remove it afterwards.
     docker_container: str = ""
+    image: str = "ghcr.io/brianporeilly/burst-harness-sandbox:main"
+    # Extra `run` flags for a started container (resource limits, --network...).
+    container_args: str = ""
     kubectl: str = "kubectl"
     # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
     pool: str = ""
@@ -91,8 +101,19 @@ class HarnessConfig:
     # Hard deadline on a claim: the controller deletes it after this even if the
     # driver died mid-burst. Longer than any burst, shorter than forgotten.
     claim_ttl: int = 4 * 3600
-    # Keep the claim after a terminal state (e.g. to inspect the sandbox).
+    # Keep the claim or started container after a terminal state (to inspect it).
     keep_claim: bool = False
+
+    # --- engine=claude-code ---
+    # Claude Code permission mode for headless runs: default | acceptEdits | plan.
+    # What it may run beyond that comes from your settings (claude_settings).
+    claude_permission_mode: str = "acceptEdits"
+    # Driver-side JSON files merged into the target's ~/.claude.json and
+    # ~/.claude/settings.json (over the image's defaults) before the run.
+    claude_json: str = ""
+    claude_settings: str = ""
+    # Extra arguments for every `claude` invocation, e.g. "--model opus".
+    claude_args: str = ""
 
     # --- git / PR ---
     base_branch: str = "main"

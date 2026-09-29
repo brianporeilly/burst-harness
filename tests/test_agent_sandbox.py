@@ -24,8 +24,13 @@ def test_label_value_limits():
     assert label_value("--") == "task"
 
 
-def test_kubectl_target_cwd():
+def test_kubectl_target_argv():
     t = KubectlTarget(repo="/workspace/repo", pod="p", namespace="ns")
-    argv = t._wrap("git status", stdin=False, cwd="/")
-    assert argv[:5] == ["kubectl", "exec", "-n", "ns", "p"]
-    assert argv[-1] == "cd / && git status"
+    assert t._wrap("git status", cwd="/") == ["kubectl", "-n", "ns", "exec", "p", "--", "sh", "-c", "cd / && git status"]
+    assert t.exec_prefix(stdin=True, tty=True) == ["kubectl", "-n", "ns", "exec", "-i", "-t", "p", "--"]
+
+
+def test_docker_target_argv():
+    from harness.exec_target import DockerTarget
+    t = DockerTarget(repo="/workspace/repo", container="c", binary="podman")
+    assert t._wrap("ls") == ["podman", "exec", "c", "sh", "-c", "cd /workspace/repo && ls"]

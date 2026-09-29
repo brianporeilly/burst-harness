@@ -15,6 +15,7 @@ from __future__ import annotations
 import shlex
 import subprocess
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
@@ -41,6 +42,18 @@ class ExecTarget(ABC):
     """A filesystem plus a way to run commands in it, rooted at a repo."""
 
     repo: str
+
+    # A target the harness created for this run (a sandbox claim, a container)
+    # and so may remove afterwards. Subclasses that create targets override it.
+    owned = False
+
+    def release(self) -> str:
+        """Remove a target this run created. Returns what was done, for the log."""
+        return ""
+
+    def attach_hint(self) -> str:
+        """Flags that reattach a later run to this same target."""
+        return ""
 
     @property
     def root(self) -> PurePosixPath:
@@ -111,26 +124,54 @@ class ExecTarget(ABC):
 
 @dataclass(frozen=True)
 class SubprocessTarget(ExecTarget):
-    """A target reached by spawning a local process (sh, docker, kubectl)."""
+    """A target reached by spawning a local process (sh, docker/podman, kubectl).
+
+    Everything goes through `exec_prefix()` -- the argv that gets a command into
+    the target -- so the harness's own commands, the agent's tools, streamed
+    runs, and interactive sessions all land in the same place by construction.
+    """
 
     @abstractmethod
-    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
-        """Argv that runs `command` as a shell string inside the target, in `cwd`."""
+    def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
+        """Argv prefix that runs what follows inside the target. Empty for local."""
+
+    def _wrap(self, command: str, *, stdin: bool = False, tty: bool = False, cwd: str | None = None) -> list[str]:
+        return [*self.exec_prefix(stdin=stdin, tty=tty), "sh", "-c", f"cd {shlex.quote(cwd or self.repo)} && {command}"]
 
     def run_shell(
         self, command: str, *, check: bool = True, stdin: str | None = None, cwd: str | None = None
     ) -> CommandResult:
-        argv = self._wrap(command, stdin=stdin is not None, cwd=cwd or self.repo)
+        argv = self._wrap(command, stdin=stdin is not None, cwd=cwd)
         proc = subprocess.run(argv, capture_output=True, text=True, input=stdin)
         return self._check(command, CommandResult(proc.returncode, proc.stdout, proc.stderr), check=check)
+
+    def stream_shell(self, command: str, on_line: Callable[[str], None], *, cwd: str | None = None) -> int:
+        """Run a command, handing each stdout line to `on_line` as it arrives.
+
+        stderr passes straight through to the driver's own stderr.
+        """
+        with subprocess.Popen(self._wrap(command, cwd=cwd), stdout=subprocess.PIPE, text=True) as proc:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                on_line(line.rstrip("\n"))
+        return proc.returncode
+
+    def interactive_shell(self, command: str, *, cwd: str | None = None) -> int:
+        """Run a command attached to this terminal (a TTY is allocated in the target)."""
+        return subprocess.call(self._wrap(command, stdin=True, tty=True, cwd=cwd))
+
+    def sandbox(self) -> "Sandbox":
+        from .exec_sandbox import CommandSandbox
+
+        return CommandSandbox(self.exec_prefix(), working_dir=self.repo, where=self.describe())
 
 
 @dataclass(frozen=True)
 class LocalTarget(SubprocessTarget):
     """Run on this machine. Bypasses the shell for file access."""
 
-    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
-        return ["sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
+    def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
+        return []
 
     def sandbox(self) -> "Sandbox":
         from .repo_env import RepoEnvironment
@@ -152,24 +193,32 @@ class LocalTarget(SubprocessTarget):
 
 @dataclass(frozen=True)
 class DockerTarget(SubprocessTarget):
-    """Run inside a container via `docker exec`. For podman, put a `docker` shim on PATH."""
+    """Run inside a container via `docker exec` or `podman exec`."""
 
     container: str = ""
+    binary: str = "docker"
+    # True when the harness started this container (see containers.py).
+    owned: bool = False
 
-    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
-        argv = ["docker", "exec", "-w", cwd]
+    def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
+        argv = [self.binary, "exec"]
         if stdin:
             argv.append("-i")
-        # `--` so a container named like a flag is still positional.
-        return [*argv, "--", self.container, "sh", "-c", command]
-
-    def sandbox(self) -> "Sandbox":
-        from strands.sandbox.docker import DockerSandbox
-
-        return DockerSandbox(self.container, working_dir=self.repo)
+        if tty:
+            argv.append("-t")
+        return [*argv, self.container]
 
     def describe(self) -> str:
-        return f"Docker container {self.container} at {self.repo}"
+        return f"{self.binary} container {self.container} at {self.repo}"
+
+    def release(self) -> str:
+        if not self.owned:
+            return ""
+        subprocess.run([self.binary, "rm", "-f", "-t", "0", self.container], capture_output=True)
+        return f"Removed container {self.container}."
+
+    def attach_hint(self) -> str:
+        return f"--target {self.binary} --docker-container {self.container}"
 
 
 @dataclass(frozen=True)
@@ -182,31 +231,25 @@ class KubectlTarget(SubprocessTarget):
     context: str | None = None
     kubectl: str = "kubectl"
 
-    def _wrap(self, command: str, *, stdin: bool, cwd: str) -> list[str]:
-        argv = [self.kubectl, "exec"]
+    def kubectl_base(self) -> list[str]:
+        argv = [self.kubectl]
         if self.context:
             argv += ["--context", self.context]
         if self.namespace:
             argv += ["-n", self.namespace]
+        return argv
+
+    def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
+        argv = [*self.kubectl_base(), "exec"]
         if stdin:
             argv.append("-i")
+        if tty:
+            argv.append("-t")
         argv.append(self.pod)
         if self.container:
             argv += ["-c", self.container]
-        # kubectl has no -w, so the cd goes into the shell string.
-        return [*argv, "--", "sh", "-c", f"cd {shlex.quote(cwd)} && {command}"]
-
-    def sandbox(self) -> "Sandbox":
-        from .kube_sandbox import KubectlSandbox
-
-        return KubectlSandbox(
-            self.pod,
-            namespace=self.namespace,
-            container=self.container,
-            context=self.context,
-            working_dir=self.repo,
-            kubectl=self.kubectl,
-        )
+        # `--` ends kubectl's flag parsing so the command is never read as flags.
+        return [*argv, "--"]
 
     def describe(self) -> str:
         where = self.pod + (f"/{self.container}" if self.container else "")

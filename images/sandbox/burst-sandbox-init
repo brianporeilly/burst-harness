@@ -1,0 +1,73 @@
+#!/bin/sh
+# burst-sandbox-init: compose Claude Code's config in $HOME from layers, then
+# optionally exec a command. The image ENTRYPOINT is `burst-sandbox-init --`, so
+# it runs once at container start; the harness re-runs it to apply your files.
+#
+#   burst-sandbox-init [--claude-json FILE] [--settings FILE] [-- COMMAND...]
+#
+# Two files, each built the same way:
+#   claude.json   -> ~/.claude.json            (onboarding, UI state, projects)
+#   settings.json -> ~/.claude/settings.json   (permissions, hooks, env, model)
+#
+# Layers, lowest precedence first, deep-merged: objects merge key by key, any
+# other value (arrays included) is replaced by the later layer.
+#   1. the file already in $HOME            Claude's own state survives a re-run
+#   2. /etc/burst-harness/claude/<file>     image defaults
+#   3. $BURST_CLAUDE_CONFIG_DIR/<file>      default /config/claude: mount a
+#                                           directory here (read-only is fine)
+#   4. $CLAUDE_JSON, $CLAUDE_SETTINGS_JSON  inline JSON from the environment
+#   5. --claude-json FILE, --settings FILE  what the harness uploads
+# Every layer is optional; each one present must be a JSON object.
+set -eu
+
+defaults=/etc/burst-harness/claude
+user_dir=${BURST_CLAUDE_CONFIG_DIR:-/config/claude}
+cli_claude_json=
+cli_settings=
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --claude-json) cli_claude_json=$2; shift 2 ;;
+    --settings) cli_settings=$2; shift 2 ;;
+    --) shift; break ;;
+    *) echo "burst-sandbox-init: unknown argument: $1" >&2; exit 64 ;;
+  esac
+done
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# compose DEST NAME INLINE_VAR CLI_FILE
+compose() {
+  dest=$1 name=$2 inline_var=$3 cli=$4
+  n=0
+  for layer in "$dest" "$defaults/$name" "$user_dir/$name" inline "$cli"; do
+    label=$layer
+    if [ "$layer" = inline ]; then
+      eval "inline=\${$inline_var:-}"
+      [ -n "$inline" ] || continue
+      printf '%s' "$inline" > "$work/inline.json"
+      layer=$work/inline.json label=\$$inline_var
+    fi
+    [ -n "$layer" ] && [ -f "$layer" ] || continue
+    if ! jq -e 'type == "object"' "$layer" > /dev/null 2>&1; then
+      echo "burst-sandbox-init: $label is not a JSON object (for $dest)" >&2
+      exit 65
+    fi
+    n=$((n + 1))
+    cp "$layer" "$work/$name.$n"
+  done
+  [ "$n" -gt 0 ] || return 0
+  mkdir -p "$(dirname "$dest")"
+  i=1 files=
+  while [ "$i" -le "$n" ]; do files="$files $work/$name.$i"; i=$((i + 1)); done
+  # shellcheck disable=SC2086
+  jq -s 'reduce .[] as $layer ({}; . * $layer)' $files > "$work/$name.out"
+  chmod 600 "$work/$name.out"
+  mv "$work/$name.out" "$dest"
+}
+
+compose "$HOME/.claude.json" claude.json CLAUDE_JSON "$cli_claude_json"
+compose "$HOME/.claude/settings.json" settings.json CLAUDE_SETTINGS_JSON "$cli_settings"
+
+[ $# -eq 0 ] || exec "$@"
