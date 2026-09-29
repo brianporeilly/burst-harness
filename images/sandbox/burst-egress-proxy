@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""burst-egress-proxy: an HTTPS CONNECT proxy that only reaches allowlisted hosts.
+
+Run as a sidecar next to a sandbox that has no route of its own (a podman
+`--internal` network): the sandbox's HTTPS_PROXY points here, and this is the
+only way out. Plain-HTTP proxying is refused, so everything that leaves is TLS
+to a host named in the allowlist.
+
+    EGRESS_ALLOW   comma-separated hosts; "*.example.com" matches subdomains
+                   (not example.com itself -- list both if you need both)
+    EGRESS_PORTS   comma-separated destination ports (default 443)
+    EGRESS_LISTEN  port to listen on (default 3128)
+
+Every decision is logged to stdout, one line each: `podman logs` is the audit
+trail.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import fnmatch
+import os
+import sys
+import time
+
+ALLOW = [h.strip().lower().rstrip(".") for h in os.environ.get("EGRESS_ALLOW", "").split(",") if h.strip()]
+PORTS = {int(p) for p in os.environ.get("EGRESS_PORTS", "443").split(",") if p.strip()}
+LISTEN = int(os.environ.get("EGRESS_LISTEN", "3128"))
+
+
+def log(verdict: str, peer: str, target: str, detail: str = "") -> None:
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"{stamp} {verdict:5} {peer} {target} {detail}".rstrip(), flush=True)
+
+
+def allowed(host: str, port: int) -> bool:
+    return port in PORTS and any(fnmatch.fnmatchcase(host, pattern) for pattern in ALLOW)
+
+
+async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        while data := await reader.read(65536):
+            writer.write(data)
+            await writer.drain()
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        writer.close()
+
+
+async def refuse(writer: asyncio.StreamWriter, status: str) -> None:
+    writer.write(f"HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".encode())
+    await writer.drain()
+    writer.close()
+
+
+async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    peer = "%s:%s" % (writer.get_extra_info("peername") or ("?", "?"))[:2]
+    try:
+        request = (await asyncio.wait_for(reader.readline(), 30)).decode("latin-1").strip()
+        while (await asyncio.wait_for(reader.readline(), 30)) not in (b"\r\n", b"\n", b""):
+            pass  # discard request headers
+        method, target, _ = (request.split(" ", 2) + ["", ""])[:3]
+        if method.upper() != "CONNECT":
+            log("DENY", peer, target or "-", f"method {method or '-'} (only CONNECT/HTTPS)")
+            return await refuse(writer, "405 Method Not Allowed")
+        host, _, port_text = target.rpartition(":")
+        host = host.strip("[]").lower().rstrip(".")
+        port = int(port_text) if port_text.isdigit() else -1
+        if not allowed(host, port):
+            log("DENY", peer, target)
+            return await refuse(writer, "403 Forbidden")
+        try:
+            up_reader, up_writer = await asyncio.wait_for(asyncio.open_connection(host, port), 15)
+        except (OSError, asyncio.TimeoutError) as err:
+            log("FAIL", peer, target, str(err) or type(err).__name__)
+            return await refuse(writer, "502 Bad Gateway")
+        log("ALLOW", peer, target)
+        writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        await writer.drain()
+        await asyncio.gather(pipe(reader, up_writer), pipe(up_reader, writer))
+    except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
+        writer.close()
+
+
+async def main() -> None:
+    if not ALLOW:
+        print("burst-egress-proxy: EGRESS_ALLOW is empty; everything will be refused.", file=sys.stderr)
+    server = await asyncio.start_server(handle, "0.0.0.0", LISTEN)
+    print(f"burst-egress-proxy listening on :{LISTEN}; ports {sorted(PORTS)}; allow {', '.join(ALLOW) or '(nothing)'}",
+          flush=True)
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

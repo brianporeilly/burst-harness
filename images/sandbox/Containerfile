@@ -56,6 +56,9 @@ USER 1000
 # CLAUDE_CODE_OAUTH_TOKEN is set, which looks like the token being ignored.
 COPY claude/ /etc/burst-harness/claude/
 COPY burst-sandbox-init /usr/local/bin/burst-sandbox-init
+# Optional egress allowlist: the same image runs as the proxy sidecar
+# (`--egress allowlist` in the harness). Unused otherwise.
+COPY burst-egress-proxy /usr/local/bin/burst-egress-proxy
 
 # Driven from outside with exec; nothing to run on its own. A pod spec must set
 # `args`, not `command`, or the entrypoint (and so the config) is skipped.

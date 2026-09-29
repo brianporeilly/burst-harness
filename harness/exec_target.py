@@ -199,6 +199,10 @@ class DockerTarget(SubprocessTarget):
     binary: str = "docker"
     # True when the harness started this container (see containers.py).
     owned: bool = False
+    # With egress=allowlist: the proxy sidecar and the internal network, both
+    # removed along with the container.
+    proxy: str = ""
+    network: str = ""
 
     def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
         argv = [self.binary, "exec"]
@@ -209,13 +213,18 @@ class DockerTarget(SubprocessTarget):
         return [*argv, self.container]
 
     def describe(self) -> str:
-        return f"{self.binary} container {self.container} at {self.repo}"
+        egress = f" (egress via {self.proxy})" if self.proxy else ""
+        return f"{self.binary} container {self.container} at {self.repo}{egress}"
 
     def release(self) -> str:
         if not self.owned:
             return ""
-        subprocess.run([self.binary, "rm", "-f", "-t", "0", self.container], capture_output=True)
-        return f"Removed container {self.container}."
+        removed = [name for name in (self.container, self.proxy) if name]
+        subprocess.run([self.binary, "rm", "-f", "-t", "0", *removed], capture_output=True)
+        if self.network:
+            subprocess.run([self.binary, "network", "rm", self.network], capture_output=True)
+            removed.append(f"network {self.network}")
+        return f"Removed {', '.join(removed)}."
 
     def attach_hint(self) -> str:
         return f"--target {self.binary} --docker-container {self.container}"

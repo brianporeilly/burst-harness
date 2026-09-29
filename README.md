@@ -29,9 +29,10 @@ Useful flags: `--draft-pr`, `--no-push`, `--model`, `--effort`, `--base-branch`,
 - **The branch.** `start` runs `git fetch` and branches from `<remote>/<base>`
   itself, before the model runs. There is no path by which it branches from a
   stale local ref.
-- **Guardrails.** A `BeforeToolCallEvent` intervention refuses commits on
-  protected branches, branch creation, force-pushes to protected branches, and
-  `reset --hard` on them. Denials return to the model as correctable errors.
+- **Guardrails.** `git_policy.py` refuses commits on protected branches, branch
+  creation, force-pushes to protected branches, and `reset --hard` on them.
+  Denials return to the model as correctable errors — through a Strands
+  intervention, or as a Claude Code `PreToolUse` hook (the same file, uploaded).
 - **No stranded work.** A run that ends with a dirty tree and no terminal state
   is re-prompted (up to `max_fixup_attempts`) to commit or pause.
 
@@ -104,7 +105,7 @@ directory and the real work would never be recorded.
 | Target | Flags | Use |
 |---|---|---|
 | `local` | — | Work on this machine. |
-| `docker` | `--docker-container` | Work in a running container. For podman, symlink `docker` to `podman`. |
+| `podman` / `docker` | `--image`, `--egress`, or `--docker-container` | Start a fresh container for the run and remove it after, or attach to a running one. |
 | `kubectl` | `--pod`, `--namespace`, `--container`, `--kube-context` | Work in an existing pod. |
 | `agent-sandbox` | `--pool` or `--claim`, `--repo-url`, `--claim-ttl`, `--keep-claim` | Claim a kubernetes-sigs/agent-sandbox sandbox, work in it, release it. |
 
@@ -114,6 +115,30 @@ checkout. For the remote targets `--repo` is the path **inside** the container o
 pod, and the agent's tools become `sandbox_shell` / `sandbox_file_editor`, bound
 to it. The conversation snapshot stays harness-side under `state_dir` — a pod is
 disposable and the snapshot has to outlive it.
+
+### Local containers (`--target podman`)
+
+```bash
+python -m harness --target podman --repo-url https://github.com/me/scratch.git \
+  run my-slug --task "..."
+```
+
+Starts a container from `--image` (default
+`ghcr.io/brianporeilly/burst-harness-sandbox:main`) with no host mounts, no
+capabilities, and `no-new-privileges`, clones into it, works, and removes it —
+the local twin of an agent-sandbox claim. `container_args` adds `run` flags
+(`--memory 4g`, ...). A container with uncommitted work and no terminal state is
+kept; `harness list` shows it and `harness --target podman --docker-container
+NAME release` removes it.
+
+**Optional egress allowlist** (`--egress allowlist`; default `open`). The
+container is attached only to its own `--internal` network — no route out, and
+on podman no DNS — and a proxy sidecar (the same image running
+`burst-egress-proxy`) is the only way out: HTTPS `CONNECT` to allowlisted hosts on
+port 443, nothing else. Every decision is logged; `podman logs <name>-egress` is
+the audit trail. The default list is `api.anthropic.com`, GitHub, PyPI, and npm;
+`--egress-allow a.com,*.b.com` replaces it, and the repo's host (and
+`ANTHROPIC_BASE_URL`'s) are always added. Repos must be cloned over HTTPS.
 
 ### The driver holds every secret
 
@@ -165,6 +190,56 @@ in-cluster ServiceAccount on its own.
 `dirname`, `ls`, `rm`, `cat`, `env`), a writable parent of `--repo`, and a process
 that keeps the pod up. `images/sandbox/Containerfile` is a Fedora image meeting
 it, plus Python, Node, and a C toolchain for tasks. No credentials, no `gh`.
+
+## Engines
+
+`--engine` picks the agent loop; everything around it — target, clone, branch,
+commit, push, PR, release — is the same.
+
+| Engine | Loop runs | Model |
+|---|---|---|
+| `strands` (default) | on the driver, tools exec into the target | any provider below |
+| `claude-code` | inside the target, as `claude` | Anthropic API, or a subscription token |
+
+### Claude Code (`--engine claude-code`)
+
+- **Headless** (`start`, `resume`, `run`): `claude -p` with stream-json output,
+  summarised as it goes. Claude ends by writing `.harness/outcome.json` (finish,
+  pause, or abandon — the shapes are in its instructions); the harness applies it
+  exactly as the Strands terminal tools would, and asks again (up to
+  `max_fixup_attempts`) if it is missing or invalid. A failing `claude` (not logged
+  in, API down) ends the run rather than being retried.
+- **Interactive** (`chat`): `claude` in a tmux session attached to your terminal.
+  Detach with `Ctrl-b d` and it keeps running (the target is kept); `chat` again
+  reattaches. When the session ends, its outcome is applied, or uncommitted work
+  is paused.
+- **Permissions are Claude Code's own.** Headless runs use
+  `--permission-mode` (default `acceptEdits`: file edits allowed); what else Claude
+  may run comes from the settings you supply. The harness never passes a
+  permission-bypass flag or answers a prompt for you.
+- **Credentials.** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`),
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_BASE_URL` are copied
+  from the driver's environment into a 0600 file in the target for the run and
+  removed after. Unlike the Strands engine the loop runs in the target, so the
+  credential is there while it runs. The git token never is.
+
+**Your Claude Code config.** The sandbox image composes `~/.claude.json` and
+`~/.claude/settings.json` at start (`burst-sandbox-init`), deep-merging layers,
+lowest first: what is already there → image defaults → a mounted
+`/config/claude/{claude.json,settings.json}` (read-only is fine) →
+`CLAUDE_JSON` / `CLAUDE_SETTINGS_JSON` env → files the harness uploads from
+`--claude-json` / `--claude-settings`. Objects merge key by key, so a file only
+needs the keys it changes:
+
+```jsonc
+// my-settings.json → --claude-settings my-settings.json
+{ "permissions": { "allow": ["Bash(npm test:*)", "Bash(pytest:*)", "Bash(make:*)"] } }
+```
+
+The image default sets `hasCompletedOnboarding`: without it, interactive `claude`
+runs first-run onboarding even with `CLAUDE_CODE_OAUTH_TOKEN` set, which looks like
+the token being ignored. On the `local` target none of this applies — Claude runs
+as you, with your own `~/.claude`.
 
 ## Providers
 

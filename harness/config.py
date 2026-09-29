@@ -94,6 +94,16 @@ class HarnessConfig:
     image: str = "ghcr.io/brianporeilly/burst-harness-sandbox:main"
     # Extra `run` flags for a started container (resource limits, --network...).
     container_args: str = ""
+    # Network access for a started container. "open": its normal network.
+    # "allowlist": no route out at all except an HTTPS proxy sidecar that
+    # reaches only egress_allow (plus the repo's host and ANTHROPIC_BASE_URL's).
+    egress: str = "open"
+    egress_allow: tuple[str, ...] = (
+        "api.anthropic.com",
+        "github.com", "*.githubusercontent.com",
+        "pypi.org", "files.pythonhosted.org",
+        "registry.npmjs.org",
+    )
     kubectl: str = "kubectl"
     # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
     pool: str = ""

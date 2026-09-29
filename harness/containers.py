@@ -8,15 +8,25 @@ container instead and leaves it alone afterwards.
 
 The container gets no host mounts, no capabilities, and no credentials; the
 harness clones into it and pushes out of it with a token passed per command.
+
+Optional egress allowlist (`--egress allowlist`): the container is attached
+only to its own `--internal` network (no route out, and no DNS on podman), and
+a proxy sidecar -- the same image running burst-egress-proxy -- sits on that
+network and the normal one. HTTPS_PROXY points at the sidecar by IP; it allows
+CONNECT to listed hosts on port 443 and logs every decision, so `podman logs
+<name>-egress` is the audit trail. Sidecar and network are removed with the
+container.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import shlex
 import shutil
 import subprocess
+from urllib.parse import urlsplit
 
 from .agent_sandbox import LABEL_MANAGED_BY, LABEL_TASK, MANAGED_BY, REQUIRED_COMMANDS, label_value
 from .config import HarnessConfig
@@ -27,16 +37,86 @@ class ContainerError(RuntimeError):
     """The container could not be started or lacks required commands."""
 
 
-def run_argv(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> list[str]:
+PROXY_PORT = 3128
+# The runtime's default network, which has a route out.
+DEFAULT_NETWORK = {"podman": "podman", "docker": "bridge"}
+
+
+def _labels(slug: str) -> list[str]:
+    return ["--label", f"{LABEL_MANAGED_BY}={MANAGED_BY}", "--label", f"{LABEL_TASK}={label_value(slug)}"]
+
+
+def run_argv(cfg: HarnessConfig, *, binary: str, name: str, slug: str, network_args: list[str] | tuple[str, ...] = ()) -> list[str]:
     return [
-        binary, "run", "--detach", "--name", name,
-        "--label", f"{LABEL_MANAGED_BY}={MANAGED_BY}",
-        "--label", f"{LABEL_TASK}={label_value(slug)}",
+        binary, "run", "--detach", "--name", name, *_labels(slug),
         # Nothing in the sandbox needs privileges: git, a shell, the agent's tools.
         "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        *network_args,
         *shlex.split(cfg.container_args),
         cfg.image,
     ]
+
+
+def allowlist(cfg: HarnessConfig) -> list[str]:
+    """egress_allow plus the hosts this run needs to reach no matter what."""
+    hosts = list(cfg.egress_allow)
+    for url in (cfg.repo_url, os.environ.get("ANTHROPIC_BASE_URL", "")):
+        parts = urlsplit(url)
+        if parts.scheme == "https" and parts.hostname and parts.hostname not in hosts:
+            hosts.append(parts.hostname)
+        elif url and parts.scheme != "https" and url == cfg.repo_url:
+            raise ContainerError(
+                f"--egress allowlist only passes HTTPS; {url} is not an https:// URL."
+            )
+    return hosts
+
+
+def _run(binary: str, *args: str) -> str:
+    proc = subprocess.run([binary, *args], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ContainerError(f"{binary} {' '.join(args[:3])} failed: {proc.stderr.strip()}")
+    return proc.stdout.strip()
+
+
+def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tuple[str, str, list[str]]:
+    """Create the internal network and proxy sidecar.
+
+    Returns (network, proxy, run flags that put a container behind them).
+    """
+    network, proxy = f"{name}-net", f"{name}-egress"
+    create = ["network", "create", "--internal", network]
+    if binary == "podman":
+        # No DNS at all on the sandbox's network: it reaches the proxy by IP and
+        # can't even resolve anything else.
+        create.insert(3, "--disable-dns")
+    _run(binary, *create)
+    hosts = allowlist(cfg)
+    try:
+        _run(
+            binary, "run", "--detach", "--name", proxy, *_labels(slug),
+            "--network", DEFAULT_NETWORK.get(binary, "bridge"),
+            "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
+            "--entrypoint", "burst-egress-proxy",
+            "-e", f"EGRESS_ALLOW={','.join(hosts)}", "-e", f"EGRESS_LISTEN={PROXY_PORT}",
+            cfg.image,
+        )
+        _run(binary, "network", "connect", network, proxy)
+        ip = _run(binary, "inspect", proxy, "--format",
+                  "{{(index .NetworkSettings.Networks \"%s\").IPAddress}}" % network)
+    except ContainerError:
+        subprocess.run([binary, "rm", "-f", "-t", "0", proxy], capture_output=True)
+        subprocess.run([binary, "network", "rm", network], capture_output=True)
+        raise
+    url = f"http://{ip}:{PROXY_PORT}"
+    env = [f"{k}={url}" for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")]
+    env += ["NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1",
+            # Claude Code's telemetry and update checks would only be refused.
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"]
+    flags = ["--network", network]
+    for item in env:
+        flags += ["-e", item]
+    print(f"Egress allowlist via {proxy}: {', '.join(hosts)}")
+    return network, proxy, flags
 
 
 def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerTarget:
@@ -45,15 +125,24 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
         return DockerTarget(repo=repo, container=cfg.docker_container, binary=binary)
     if not cfg.image:
         raise ContainerError(f"target={binary} needs --docker-container or --image.")
+    if cfg.egress not in ("open", "allowlist"):
+        raise ContainerError(f"egress must be open or allowlist (got {cfg.egress!r}).")
+    if not shutil.which(binary):
+        raise ContainerError(f"{binary} is not installed or not on PATH.")
     name = f"burst-{label_value(slug)[:40]}-{secrets.token_hex(3)}"
-    try:
-        proc = subprocess.run(run_argv(cfg, binary=binary, name=name, slug=slug), capture_output=True, text=True)
-    except FileNotFoundError as err:
-        raise ContainerError(f"{binary} is not installed or not on PATH.") from err
+    network = proxy = ""
+    network_args: list[str] = []
+    if cfg.egress == "allowlist":
+        network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug)
+    proc = subprocess.run(
+        run_argv(cfg, binary=binary, name=name, slug=slug, network_args=network_args),
+        capture_output=True, text=True,
+    )
+    target = DockerTarget(repo=repo, container=name, binary=binary, owned=True, proxy=proxy, network=network)
     if proc.returncode != 0:
+        target.release()
         raise ContainerError(f"{binary} run {cfg.image} failed: {proc.stderr.strip()}")
     print(f"Started {name} from {cfg.image}.")
-    target = DockerTarget(repo=repo, container=name, binary=binary, owned=True)
     try:
         if missing := target.missing_commands(REQUIRED_COMMANDS):
             raise ContainerError(
@@ -64,6 +153,17 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
         target.release()
         raise
     return target
+
+
+def kept(cfg: HarnessConfig, *, binary: str) -> DockerTarget:
+    """A container an earlier run kept, with its egress sidecar and network if it has them."""
+    name = cfg.docker_container
+    proxy, network = f"{name}-egress", f"{name}-net"
+    has_proxy = subprocess.run([binary, "container", "exists" if binary == "podman" else "inspect", proxy],
+                               capture_output=True).returncode == 0
+    has_network = subprocess.run([binary, "network", "inspect", network], capture_output=True).returncode == 0
+    return DockerTarget(repo="/", container=name, binary=binary, owned=True,
+                        proxy=proxy if has_proxy else "", network=network if has_network else "")
 
 
 def list_containers() -> list[dict[str, str]]:

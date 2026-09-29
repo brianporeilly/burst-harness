@@ -67,6 +67,13 @@ compose() {
   mv "$work/$name.out" "$dest"
 }
 
+if ! { mkdir -p "$HOME/.claude" && [ -w "$HOME" ]; } 2>/dev/null; then
+  echo "burst-sandbox-init: $HOME is not writable; Claude Code config not composed." >&2
+  echo "burst-sandbox-init: with a read-only root, mount a tmpfs at $HOME." >&2
+  [ $# -eq 0 ] || exec "$@"
+  exit 0
+fi
+
 compose "$HOME/.claude.json" claude.json CLAUDE_JSON "$cli_claude_json"
 compose "$HOME/.claude/settings.json" settings.json CLAUDE_SETTINGS_JSON "$cli_settings"
 

@@ -122,6 +122,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "kube_context": args.kube_context,
         "docker_container": args.docker_container,
         "image": args.image,
+        "egress": args.egress,
+        "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
         "engine": args.engine,
         "claude_json": args.claude_json,
         "claude_settings": args.claude_settings,
@@ -409,6 +411,22 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_release(args: argparse.Namespace) -> int:
+    """Remove a target a run kept: a sandbox claim, or a container with its egress sidecar."""
+    cfg = HarnessConfig.load(None, _overrides(args))
+    if cfg.claim_name:
+        target: ExecTarget = agent_sandbox.AgentSandboxTarget(
+            repo=DEFAULT_REMOTE_REPO, pod="", claim=cfg.claim_name, owned=True,
+            namespace=cfg.namespace or None, context=cfg.kube_context or None, kubectl=cfg.kubectl,
+        )
+    elif cfg.docker_container:
+        target = containers.kept(cfg, binary=cfg.target if cfg.target in ("docker", "podman") else "podman")
+    else:
+        raise SystemExit("Name what to release: --claim NAME, or --docker-container NAME (with --target docker/podman).")
+    print(target.release())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="harness",
@@ -431,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--docker-container", dest="docker_container",
                        help="Attach to this container, for target=docker/podman. Default: start a fresh one.")
     where.add_argument("--image", help="Image a fresh docker/podman container starts from.")
+    where.add_argument("--egress", choices=["open", "allowlist"],
+                       help="Network for a fresh docker/podman container. allowlist: no route out except an "
+                            "HTTPS proxy to --egress-allow hosts (default: open).")
+    where.add_argument("--egress-allow", dest="egress_allow",
+                       help="Comma-separated hosts for --egress allowlist; replaces the default list. "
+                            "'*.example.com' matches subdomains. The repo's host is always added.")
     where.add_argument("--pool", help="SandboxWarmPool to claim a sandbox from, for target=agent-sandbox.")
     where.add_argument("--claim", help="Attach to an existing SandboxClaim instead of claiming a new one.")
     where.add_argument("--claim-ttl", type=int, dest="claim_ttl",
@@ -487,8 +511,11 @@ def main(argv: list[str] | None = None) -> int:
     chat.add_argument("slug")
     chat.set_defaults(func=cmd_chat)
 
-    ls = sub.add_parser("list", help="Show sandbox claims and harness Jobs in flight.")
+    ls = sub.add_parser("list", help="Show containers, sandbox claims, and harness Jobs in flight.")
     ls.set_defaults(func=cmd_list)
+
+    release = sub.add_parser("release", help="Remove a kept target (--claim, or --docker-container).")
+    release.set_defaults(func=cmd_release)
 
     args = parser.parse_args(argv)
     return args.func(args)
