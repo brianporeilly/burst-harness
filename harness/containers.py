@@ -112,9 +112,22 @@ def run_argv(cfg: HarnessConfig, *, binary: str, name: str, slug: str, network_a
     ]
 
 
+def approved_path(cfg: HarnessConfig) -> Path:
+    """Hosts approved for good with `harness egress`: added to every allowlist from then on."""
+    return Path(cfg.state_dir).expanduser() / "egress" / "approved.json"
+
+
+def approved(cfg: HarnessConfig) -> list[str]:
+    path = approved_path(cfg)
+    try:
+        return [str(host) for host in json.loads(path.read_text()).get("allow", [])] if path.is_file() else []
+    except (OSError, ValueError, AttributeError) as err:
+        raise ContainerError(f"{path}: {err}") from err
+
+
 def allowlist(cfg: HarnessConfig, extra: tuple[str, ...] = ()) -> list[str]:
-    """egress_allow plus the hosts this run needs to reach no matter what."""
-    hosts = list(dict.fromkeys((*cfg.egress_allow, *extra)))
+    """egress_allow, what has been approved for good, and the hosts this run needs to reach no matter what."""
+    hosts = list(dict.fromkeys((*cfg.egress_allow, *approved(cfg), *extra)))
     for url in (cfg.repo_url, os.environ.get("ANTHROPIC_BASE_URL", "")):
         parts = urlsplit(url)
         if parts.scheme == "https" and parts.hostname and parts.hostname not in hosts:
@@ -239,15 +252,20 @@ def start_egress(
     if cfg.egress == "allowlist":
         hosts = allowlist(cfg, allow)
         policy, summary = ["-e", f"EGRESS_ALLOW={','.join(hosts)}"], f"allowlist: {', '.join(hosts)}"
+        if cfg.egress_webhook:
+            policy += ["-e", f"EGRESS_WEBHOOK={cfg.egress_webhook}"]
     else:
         check_reachable(cfg)
         policy, summary = [], "everything passes and is recorded"
     secrets_env: dict[str, str] = {}
+    # The gateway's one writable place: its CA when it adds credentials, and
+    # approvals made while it runs (`harness egress approve`).
+    policy += ["--tmpfs", f"{GATEWAY_CA_DIR}:rw,mode=1777"]
     if rules := inject_rules(cfg):
         # By name only: the value comes from this process's environment, so the
         # token is not in the argv of the command that starts the gateway.
         secrets_env["EGRESS_INJECT"] = json.dumps(rules)
-        policy += ["-e", "EGRESS_INJECT", "--tmpfs", f"{GATEWAY_CA_DIR}:rw,mode=1777"]
+        policy += ["-e", "EGRESS_INJECT"]
         summary += "; adds credentials for " + ", ".join(sorted({str(rule["host"]) for rule in rules}))
     network, proxy = f"{name}-net", f"{name}-egress"
     # Only podman can give a network a route (`network create --route`); on

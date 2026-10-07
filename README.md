@@ -197,6 +197,31 @@ gateway process itself runs unprivileged. On docker there is no way to give the
 network a route, so software that ignores the proxy simply has no route: its
 lookups are recorded and refused, and a connection to a bare IP leaves no trace.
 
+**Approving what was refused** (`allowlist`). A refusal is immediate — nothing
+is held open — and carries an id, in its event and in the 403 the agent sees,
+which tells it not to retry and how you can approve it.
+
+```bash
+python -m harness egress pending                  # what running gateways have refused
+python -m harness egress approve a1b2c3-7         # let that destination through
+python -m harness egress approve a1b2c3-7 --scope once | session | 2h | permanent
+python -m harness egress allow llm.lan:8080       # for good, without an id
+python -m harness egress revoke llm.lan:8080
+python -m harness egress list                     # what is allowed for good
+```
+
+An approval takes effect on the next request, with nothing restarted, and only
+ever adds to the allowlist. `once` is one connection; `session` (the default)
+lasts until that gateway stops — for a `harness session`, until you next stop
+it; a duration expires; `permanent` is also kept in
+`<state_dir>/egress/approved.json`, which every allowlist includes from then on.
+When a task's container is removed, the hosts it was refused are listed, since
+by then there is no gateway left to approve them on.
+
+`--egress-webhook URL` (or `egress_webhook` in your config) has the gateway POST
+each refusal to a URL as JSON — the event, plus the command that approves it. A
+destination is reported once every few minutes however often it is retried.
+
 **Credentials the container never holds** (`--egress-inject git,model`, with
 `log` or `allowlist`). The gateway terminates TLS to the host a credential is
 for and adds it there.

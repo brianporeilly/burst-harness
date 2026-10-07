@@ -219,3 +219,48 @@ def test_closing_a_connection_is_not_activity(capsys):
     gw.emit("connect", "close", id="x-1", host="a.com", port=443)
     assert gw._ACTIVE == stamp
     capsys.readouterr()
+
+
+def test_approvals_add_to_the_allowlist_and_are_reread(tmp_path, monkeypatch):
+    path = tmp_path / "approvals.json"
+    monkeypatch.setattr(gw, "POLICY", gw.Policy(allow=(("github.com", 0),)))
+    monkeypatch.setattr(gw, "APPROVALS", gw.Approvals(str(path)))
+    assert gw.permitted("github.com", 443) and not gw.permitted("example.com", 443)
+    assert not gw.resolvable("example.com")
+    path.write_text(json.dumps({"approvals": [{"allow": "example.com", "id": "a-1"}, {"allow": "llm.lan:8080"}]}))
+    assert gw.permitted("example.com", 443) and gw.resolvable("example.com")
+    assert not gw.permitted("example.com", 8443)
+    assert gw.permitted("llm.lan", 8080) and not gw.permitted("llm.lan", 443) and gw.resolvable("llm.lan")
+    path.write_text(json.dumps({"approvals": []}) + " ")
+    assert not gw.permitted("example.com", 443)
+
+
+def test_a_once_approval_is_spent_by_one_connection_but_not_by_a_lookup(tmp_path, monkeypatch):
+    path = tmp_path / "approvals.json"
+    path.write_text(json.dumps({"approvals": [{"allow": "example.com", "once": True, "id": "a-1"}]}))
+    monkeypatch.setattr(gw, "POLICY", gw.Policy())
+    monkeypatch.setattr(gw, "APPROVALS", gw.Approvals(str(path)))
+    assert gw.resolvable("example.com") and gw.resolvable("example.com")
+    assert gw.permitted("example.com", 443)
+    assert not gw.permitted("example.com", 443) and not gw.resolvable("example.com")
+
+
+def test_expired_and_malformed_approvals_allow_nothing(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "approvals.json"
+    path.write_text(json.dumps({"approvals": [{"allow": "old.com", "expires": 1}, {"allow": "new.com", "expires": 4102444800}]}))
+    monkeypatch.setattr(gw, "POLICY", gw.Policy())
+    monkeypatch.setattr(gw, "APPROVALS", gw.Approvals(str(path)))
+    assert not gw.permitted("old.com", 443) and gw.permitted("new.com", 443)
+    path.write_text("{ not json")
+    assert gw.permitted("new.com", 443)  # what was read before stands
+    assert "ignoring" in capsys.readouterr().err
+
+
+def test_webhook_is_told_of_a_destination_once_in_a_while(monkeypatch):
+    monkeypatch.setattr(gw, "_NOTIFIED", {})
+    event = {"verdict": "deny", "id": "a-1", "host": "example.com", "port": 443}
+    assert gw.should_notify(event, 1000)
+    assert not gw.should_notify(event, 1100)
+    assert gw.should_notify({**event, "host": "other.com"}, 1100)
+    assert gw.should_notify(event, 1000 + gw.NOTIFY_EVERY)
+    assert not gw.should_notify({"verdict": "allow", "id": "a-2", "host": "x.com"}, 5000)

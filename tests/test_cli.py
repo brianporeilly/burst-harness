@@ -15,7 +15,7 @@ def _args(**kw):
         namespace=None, container=None, kube_context=None, docker_container=None, pool=None,
         claim=None, claim_ttl=None, keep_claim=None, repo=None, slug="t",
         image=None, engine=None, claude_json=None, claude_settings=None, permission_mode=None,
-        egress=None, egress_allow=None, gateway_image=None, egress_inject=None, root=None,
+        egress=None, egress_allow=None, gateway_image=None, egress_inject=None, root=None, egress_webhook=None,
     )
     base.update(kw)
     return argparse.Namespace(**base)

@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import agent_sandbox, containers, git, session, state
+from . import agent_sandbox, containers, egress, git, session, state
 from .agent import build_agent
 from .claude_code import ClaudeCodeEngine
 from .config import CONFIG_FILENAME, HarnessConfig
@@ -126,6 +126,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "egress": args.egress,
         "gateway_image": args.gateway_image,
         "egress_inject": tuple(w.strip() for w in args.egress_inject.split(",") if w.strip()) if args.egress_inject else None,
+        "egress_webhook": args.egress_webhook,
         "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
         "engine": args.engine,
         "claude_json": args.claude_json,
@@ -449,6 +450,34 @@ def cmd_session(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_egress(args: argparse.Namespace) -> int:
+    """What gateways refused, and approving it: see egress.py."""
+    cfg = HarnessConfig.load(None, _overrides(args))
+    try:
+        if args.action == "pending":
+            rows = egress.pending()
+            if not rows:
+                print("Nothing refused and unapproved on a running gateway.")
+            for row in rows:
+                print(f"{row['id']:<12} {row['destination']:<36} x{row['times']:<4} {row['last']}  {row['sandbox']}")
+            if rows:
+                print("\nApprove one with: harness egress approve ID [--scope once|session|2h|permanent]")
+        elif args.action == "list":
+            hosts = containers.approved(cfg)
+            print("\n".join(hosts) if hosts else "Nothing is allowed for good beyond egress_allow.")
+        elif not args.what:
+            raise SystemExit(f"harness egress {args.action} needs {'an id' if args.action == 'approve' else 'a host'}.")
+        elif args.action == "approve":
+            print(egress.approve(cfg, args.what, args.scope))
+        elif args.action == "allow":
+            print(egress.allow(cfg, args.what))
+        else:
+            print(egress.revoke(cfg, args.what))
+    except (egress.EgressError, containers.ContainerError) as err:
+        raise SystemExit(str(err)) from err
+    return 0
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     """Remove a target a run kept: a sandbox claim, or a container with its egress sidecar."""
     cfg = HarnessConfig.load(None, _overrides(args))
@@ -498,6 +527,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="Comma-separated credentials the gateway adds so the container never holds them. "
                             "git: the driver's git token, on requests to the repo. model: Claude Code's API "
                             "key or token (engine=claude-code). Needs --egress log or allowlist.")
+    where.add_argument("--egress-webhook", dest="egress_webhook",
+                       help="URL the gateway POSTs each refusal to, as JSON (--egress allowlist).")
     where.add_argument("--gateway-image", dest="gateway_image",
                        help="Image of the gateway sidecar, for --egress log/allowlist.")
     where.add_argument("--egress-allow", dest="egress_allow",
@@ -581,6 +612,16 @@ def main(argv: list[str] | None = None) -> int:
     sess.add_argument("--opencode-config", dest="opencode_config",
                       help="An opencode.json to use as is, instead of one written from the harness's model settings.")
     sess.set_defaults(func=cmd_session)
+
+    eg = sub.add_parser("egress", help="See what a gateway refused, and approve it.")
+    eg.add_argument("action", choices=["pending", "approve", "allow", "revoke", "list"],
+                    help="pending: refusals on running gateways. approve ID: let one through. allow / revoke "
+                         "HOST[:PORT]: for good. list: what is allowed for good.")
+    eg.add_argument("what", nargs="?", help="A refusal's id (approve), or a host (allow, revoke).")
+    eg.add_argument("--scope", default="session",
+                    help="For approve: once, session (until that gateway stops; the default), a duration "
+                         "(90m, 2h, 1d), or permanent.")
+    eg.set_defaults(func=cmd_egress)
 
     release = sub.add_parser("release", help="Remove a kept target (--claim, or --docker-container).")
     release.set_defaults(func=cmd_release)

@@ -20,6 +20,9 @@ the harness.
     EGRESS_DNS      UDP port of the resolver (default 53; 0 turns it off)
     EGRESS_REDIRECT port that redirected connections arrive on (default 0: off)
     EGRESS_SANDBOX  name of the sandbox this gateway serves, stamped on events
+    EGRESS_APPROVALS file of approvals added while running (default
+                    /run/burst-gateway/approvals.json), re-read when it changes
+    EGRESS_WEBHOOK  URL that each refusal is POSTed to as JSON (default none)
     EGRESS_IDLE     exit after this many seconds with no event (default 0: never)
     EGRESS_LIFETIME exit this many seconds after starting (default 0: never)
     EGRESS_INJECT   JSON list of credentials to add on the way out (default none):
@@ -61,6 +64,20 @@ whose Host header names some other host is refused, so a credential cannot be
 steered to a different site behind the same front end. Every other host is
 tunnelled untouched, as before. Each request is one connection, HTTP/1.1.
 
+Approvals (EGRESS_APPROVALS). A refusal is immediate and final for that
+request: nothing is held open waiting for an answer. Its event and its 403 carry
+an id, and whoever runs the sandbox can approve what was refused by adding to
+the approvals file, which is read again whenever it changes:
+
+    {"approvals": [{"allow": "example.com", "id": "a1b2c3-7"},
+                   {"allow": "llm.lan:8080", "expires": 1790000000},
+                   {"allow": "pypi.org", "once": true, "id": "a1b2c3-9"}]}
+
+`allow` is an EGRESS_ALLOW entry. `expires` is a Unix time after which it no
+longer counts; `once` lets one connection through and is then spent. These add
+to EGRESS_ALLOW and never take away from it. EGRESS_WEBHOOK, if set, is told of
+each refusal -- once per destination every few minutes, not once per retry.
+
 Stopping by itself (EGRESS_IDLE, EGRESS_LIFETIME). The gateway sees everything
 that goes in or out, so it is the one place that knows a sandbox has gone quiet.
 Any event but the close of a connection counts as activity: a request going
@@ -98,7 +115,9 @@ import ssl
 import struct
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -135,6 +154,67 @@ class Policy:
             fnmatch.fnmatchcase(host, pattern) and (port == only if only else port in self.ports)
             for pattern, only in self.allow
         )
+
+
+class Approvals:
+    """Allowances added while running, from a file re-read whenever it changes."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.stamp: tuple[int, int] | None = None
+        self.entries: list[dict[str, object]] = []
+        self.spent: set[str] = set()
+
+    def load(self) -> None:
+        try:
+            info = os.stat(self.path)
+        except OSError:
+            self.stamp, self.entries = None, []
+            return
+        stamp = (info.st_mtime_ns, info.st_size)
+        if stamp == self.stamp:
+            return
+        self.stamp = stamp
+        try:
+            with open(self.path) as handle:
+                raw = json.load(handle).get("approvals", [])
+            self.entries = [
+                {**item, "match": allow_entry(str(item["allow"])), "key": str(item.get("id") or item["allow"])}
+                for item in raw
+            ]
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as err:
+            # A file that is half-written or wrong approves nothing new; what was read before stands.
+            print(f"burst-gateway: ignoring {self.path}: {err}", file=sys.stderr, flush=True)
+
+    def find(self, host: str, port: int | None, ports: frozenset[int]) -> dict[str, object] | None:
+        """A live approval covering host (on port; any port when None)."""
+        self.load()
+        now = time.time()
+        for entry in self.entries:
+            pattern, only = entry["match"]  # type: ignore[misc]
+            if entry.get("expires") and float(str(entry["expires"])) <= now:
+                continue
+            if entry.get("once") and entry["key"] in self.spent:
+                continue
+            if fnmatch.fnmatchcase(host, pattern) and (port is None or (port == only if only else port in ports)):
+                return entry
+        return None
+
+
+def permitted(host: str, port: int) -> bool:
+    """The policy's answer for a connection: the allowlist, or an approval (a `once` is spent by this)."""
+    if POLICY.allowed(host, port):
+        return True
+    if entry := APPROVALS.find(host, port, POLICY.ports):
+        if entry.get("once"):
+            APPROVALS.spent.add(str(entry["key"]))
+        return True
+    return False
+
+
+def resolvable(host: str) -> bool:
+    """Whether a name may resolve at all: allowed, or approved, on some port. Spends nothing."""
+    return POLICY.host_allowed(host) or APPROVALS.find(host, None, POLICY.ports) is not None
 
 
 def allow_entry(text: str) -> tuple[str, int]:
@@ -205,6 +285,8 @@ def with_credentials(headers: list[bytes], rule: Inject | None) -> tuple[list[by
 
 
 POLICY = Policy()
+APPROVALS = Approvals("")
+WEBHOOK = ""
 INJECT: tuple[Inject, ...] = ()
 SANDBOX = ""
 REDIRECT = 0
@@ -226,13 +308,46 @@ def next_id() -> str:
 _ACTIVE = time.monotonic()
 
 
+# When each destination was last reported to the webhook: an agent retrying a
+# refused host should not page anyone every time.
+_NOTIFIED: dict[tuple[object, object], float] = {}
+NOTIFY_EVERY = 300
+
+
+def should_notify(event: dict[str, object], now: float) -> bool:
+    """True for a refusal of a destination not reported in the last few minutes."""
+    if event.get("verdict") != "deny" or "id" not in event:
+        return False
+    key = (event.get("host"), event.get("port"))
+    if now - _NOTIFIED.get(key, -NOTIFY_EVERY) < NOTIFY_EVERY:
+        return False
+    _NOTIFIED[key] = now
+    return True
+
+
+def notify(event: dict[str, object]) -> None:
+    """POST a refusal to the webhook, off the event loop and without waiting on it."""
+    def post() -> None:
+        body = json.dumps({**event, "approve": f"harness egress approve {event['id']}"}).encode()
+        request = urllib.request.Request(WEBHOOK, data=body, headers={"Content-Type": "application/json"})
+        try:
+            urllib.request.urlopen(request, timeout=10).close()
+        except (OSError, ValueError) as err:
+            print(f"burst-gateway: webhook failed: {err}", file=sys.stderr, flush=True)
+
+    threading.Thread(target=post, daemon=True).start()
+
+
 def emit(kind: str, verdict: str, **fields: object) -> None:
     global _ACTIVE
     if verdict != "close":
         _ACTIVE = time.monotonic()
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     event = {"ts": stamp, "sandbox": SANDBOX, "kind": kind, "verdict": verdict, **fields}
-    print(json.dumps({k: v for k, v in event.items() if v not in ("", None)}), flush=True)
+    event = {k: v for k, v in event.items() if v not in ("", None)}
+    print(json.dumps(event), flush=True)
+    if WEBHOOK and should_notify(event, time.monotonic()):
+        notify(event)
 
 
 # --- proxy ---
@@ -310,8 +425,9 @@ async def deny(writer: asyncio.StreamWriter, kind: str, detail: str = "", **fiel
         "request_id": request_id,
         "host": fields.get("host"),
         "port": fields.get("port"),
-        "message": "Blocked by this sandbox's egress policy. Retrying will not help; "
-                   "report the host you need instead.",
+        "message": "Blocked by this sandbox's egress policy, and recorded for whoever runs it to approve "
+                   f"(`harness egress approve {request_id}`). Retrying will not help until they do: carry on "
+                   "with what does not need this host, or say that you are waiting on it.",
     })
 
 
@@ -362,7 +478,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         method, target, version = (head[0].decode("latin-1").strip().split(" ", 2) + ["", ""])[:3]
         if method.upper() == "CONNECT":
             host, port = parse_connect(target)
-            if not POLICY.allowed(host, port):
+            if not permitted(host, port):
                 return await deny(writer, "connect", peer=peer, host=host, port=port)
             return await relay("connect", reader, writer, peer=peer, host=host, port=port,
                                to_client=b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -372,7 +488,7 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         host, port, path = parsed
         # The query string is not recorded: it is where tokens end up.
         fields = dict(peer=peer, host=host, port=port, method=method, path=path.split("?", 1)[0])
-        if not POLICY.allowed(host, port):
+        if not permitted(host, port):
             return await deny(writer, "http", **fields)
         await relay("http", reader, writer, to_upstream=origin_request(method, path, version, head[1:]), **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
@@ -591,7 +707,7 @@ async def handle_redirected(reader: asyncio.StreamReader, writer: asyncio.Stream
         host = name or (dialled if dialled != here else "")
         if not host:
             return await deny(writer, kind, "no server name to identify the destination", host="-", **fields)
-        if not POLICY.allowed(host, port):
+        if not permitted(host, port):
             return await deny(writer, kind, host=host, **fields)
         await relay(kind, reader, writer, to_upstream=opening, host=host, **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
@@ -637,7 +753,7 @@ def dns_answer(packet: bytes, here: str) -> tuple[bytes, dict[str, object]]:
     if not here:
         return dns_reply(packet, end, rcode=3), dict(
             fields, verdict="deny", detail="no DNS in the sandbox; this lookup did not go through the proxy")
-    if not POLICY.host_allowed(name):
+    if not resolvable(name):
         return dns_reply(packet, end, rcode=3), dict(fields, verdict="deny")
     if qtype == 1:
         return dns_reply(packet, end, address=here), dict(fields, verdict="allow", detail="answered with the gateway")
@@ -684,9 +800,11 @@ async def watch(idle: int, lifetime: int) -> None:
 
 
 async def main() -> None:
-    global POLICY, INJECT, SANDBOX, REDIRECT, INTERCEPT
+    global POLICY, APPROVALS, WEBHOOK, INJECT, SANDBOX, REDIRECT, INTERCEPT
     POLICY = Policy.from_env()
     SANDBOX = os.environ.get("EGRESS_SANDBOX", "")
+    APPROVALS = Approvals(os.environ.get("EGRESS_APPROVALS", "/run/burst-gateway/approvals.json"))
+    WEBHOOK = os.environ.get("EGRESS_WEBHOOK", "")
     INJECT = Inject.parse(os.environ.get("EGRESS_INJECT", ""))
     listen = int(os.environ.get("EGRESS_LISTEN", "3128"))
     dns_port = int(os.environ.get("EGRESS_DNS", "53"))

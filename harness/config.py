@@ -113,6 +113,9 @@ class HarnessConfig:
     # placeholders, made real at the gateway. Without it they are written to a
     # file in the target for the run.
     egress_inject: tuple[str, ...] = ()
+    # A URL the gateway POSTs each refusal to, as JSON (an ntfy topic, a chat
+    # webhook). Once per destination every few minutes.
+    egress_webhook: str = ""
     egress_allow: tuple[str, ...] = (
         "api.anthropic.com",
         "github.com", "*.githubusercontent.com",

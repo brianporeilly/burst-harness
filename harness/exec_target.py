@@ -12,6 +12,7 @@ the harness. Choose one and everything follows it.
 
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 from abc import ABC, abstractmethod
@@ -239,10 +240,28 @@ class DockerTarget(SubprocessTarget):
         path = Path(self.events)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(proc.stdout)
-        return f" Egress events: {path}"
+        return f" Egress events: {path}{refused_summary(proc.stdout)}"
 
     def attach_hint(self) -> str:
         return f"--target {self.binary} --docker-container {self.container}"
+
+
+def refused_summary(events: bytes, limit: int = 8) -> str:
+    """A line naming the destinations a gateway refused, for the end of a run."""
+    refused: dict[str, None] = {}
+    for line in events.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("verdict") == "deny" and event.get("kind") != "request" and event.get("host") not in (None, "-"):
+            port = event.get("port")
+            refused[str(event["host"]) if port in (None, 443) else f"{event['host']}:{port}"] = None
+    if not refused:
+        return ""
+    names = list(refused)
+    shown = ", ".join(names[:limit]) + (f", and {len(names) - limit} more" if len(names) > limit else "")
+    return f"\nRefused: {shown}. `harness egress allow HOST` permits one from the next run on."
 
 
 @dataclass(frozen=True)

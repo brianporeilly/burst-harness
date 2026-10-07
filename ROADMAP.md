@@ -150,6 +150,14 @@ podman, and TLS for the UIs (they are plain HTTP behind a password or token).
 
 ### 5. Approvals
 
+Done on podman/docker: `harness egress pending | approve | allow | revoke |
+list`, an approvals file each gateway re-reads when it changes, scopes of once,
+session, a duration, or permanent, and `--egress-webhook`.
+
+Not done: surfacing a refusal as a `handoff_to_user` pause in `run`. For now a
+finished task lists what it was refused, and the 403 tells the agent to carry on
+or say it is waiting.
+
 - Policy file the gateway reloads without a restart; `harness egress approve
   <request-id>` with a scope of once, session, TTL, or permanent.
 - In `run`, a blocked host can surface as the existing `handoff_to_user` pause.
