@@ -14,13 +14,16 @@ only to its own `--internal` network (no route out), and a gateway sidecar --
 `gateway_image`, see gateway/ -- sits on that network and the normal one. The
 container's proxy variables and its resolver point at the sidecar by IP. `log`
 lets everything through; `allowlist` allows CONNECT to listed hosts on port
-443. Either way every decision is an event on the sidecar's stdout, so `podman
+443. On podman the sidecar is also the network's default route, and redirects
+whatever arrives into itself, so software that ignores the proxy is held to the
+same policy and recorded like the rest. Either way every decision is an event on the sidecar's stdout, so `podman
 logs <name>-egress` is the audit trail, saved under `state_dir`/egress when the
 sidecar and network are removed with the container.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import secrets
@@ -40,6 +43,8 @@ class ContainerError(RuntimeError):
 
 
 PROXY_PORT = 3128
+REDIRECT_PORT = 3129
+DNS_PORT = 53
 EGRESS_MODES = ("open", "log", "allowlist")
 # The runtime's default network, which has a route out.
 DEFAULT_NETWORK = {"podman": "podman", "docker": "bridge"}
@@ -92,6 +97,20 @@ def _run(binary: str, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _routed_network(binary: str, network: str) -> tuple[str, str]:
+    """Create `network` routing everything to one address on it. Returns (subnet, that address)."""
+    # The route is fixed at creation and needs an address in a subnet podman
+    # has not chosen yet: let it choose, then recreate the network with the route.
+    create = ["network", "create", "--internal", "--disable-dns"]
+    _run(binary, *create, network)
+    subnet = _run(binary, "network", "inspect", network, "--format", "{{range .Subnets}}{{.Subnet}}{{end}}")
+    _run(binary, "network", "rm", network)
+    gateway = str(ipaddress.ip_network(subnet)[-2])
+    # A worse metric than the gateway's own default route, which it has to keep.
+    _run(binary, *create, "--subnet", subnet, "--route", f"0.0.0.0/0,{gateway},500", network)
+    return subnet, gateway
+
+
 def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tuple[str, str, list[str]]:
     """Create the internal network and gateway sidecar.
 
@@ -104,26 +123,35 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
         check_reachable(cfg)
         policy, summary = [], "everything passes and is recorded"
     network, proxy = f"{name}-net", f"{name}-egress"
-    create = ["network", "create", "--internal", network]
-    if binary == "podman":
-        # The network's own resolver is off: the sandbox reaches the gateway by
-        # IP, and its only resolver is the gateway's DNS sink.
-        create.insert(3, "--disable-dns")
-    _run(binary, *create)
+    # Only podman can give a network a route (`network create --route`); on
+    # docker the sandbox has no route at all and only the proxy gets out.
+    redirect = binary == "podman"
+    subnet = address = ""
+    if redirect:
+        subnet, address = _routed_network(binary, network)
+        # NET_ADMIN is for burst-gateway-netinit, run as root below; the
+        # gateway's own process is unprivileged and never holds it. With
+        # forwarding off, what the rules do not redirect goes nowhere.
+        policy += ["--cap-add=NET_ADMIN", "--sysctl", "net.ipv4.ip_forward=0", "-e", f"EGRESS_REDIRECT={REDIRECT_PORT}"]
+    else:
+        _run(binary, "network", "create", "--internal", network)
     try:
         _run(
             binary, "run", "--detach", "--name", proxy, *_labels(slug),
             "--network", DEFAULT_NETWORK.get(binary, "bridge"),
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
-            # Lets the unprivileged gateway bind its DNS sink to port 53.
+            # Lets the unprivileged gateway bind its resolver to port 53.
             "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
             "-e", f"EGRESS_MODE={cfg.egress}", "-e", f"EGRESS_LISTEN={PROXY_PORT}",
             "-e", f"EGRESS_SANDBOX={name}", *policy,
             cfg.gateway_image,
         )
-        _run(binary, "network", "connect", network, proxy)
-        ip = _run(binary, "inspect", proxy, "--format",
-                  "{{(index .NetworkSettings.Networks \"%s\").IPAddress}}" % network)
+        _run(binary, "network", "connect", *(["--ip", address] if address else []), network, proxy)
+        if redirect:
+            _run(binary, "exec", "--user", "0", proxy, "burst-gateway-netinit",
+                 subnet, address, str(PROXY_PORT), str(REDIRECT_PORT), str(DNS_PORT))
+        ip = address or _run(binary, "inspect", proxy, "--format",
+                             "{{(index .NetworkSettings.Networks \"%s\").IPAddress}}" % network)
     except ContainerError:
         subprocess.run([binary, "rm", "-f", "-t", "0", proxy], capture_output=True)
         subprocess.run([binary, "network", "rm", network], capture_output=True)

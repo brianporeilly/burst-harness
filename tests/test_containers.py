@@ -34,3 +34,17 @@ def test_log_mode_refuses_ssh_repo():
 def test_events_path_is_under_state_dir(tmp_path):
     cfg = HarnessConfig(state_dir=str(tmp_path))
     assert containers.events_path(cfg, "burst-t-abc") == str(tmp_path / "egress" / "burst-t-abc.jsonl")
+
+
+def test_routed_network_recreates_with_a_route_to_its_gateway(monkeypatch):
+    calls = []
+
+    def fake_run(binary, *args):
+        calls.append(args)
+        return "10.89.3.0/24" if args[:2] == ("network", "inspect") else ""
+
+    monkeypatch.setattr(containers, "_run", fake_run)
+    assert containers._routed_network("podman", "n-net") == ("10.89.3.0/24", "10.89.3.254")
+    assert calls[2] == ("network", "rm", "n-net")
+    assert calls[3] == ("network", "create", "--internal", "--disable-dns",
+                        "--subnet", "10.89.3.0/24", "--route", "0.0.0.0/0,10.89.3.254,500", "n-net")

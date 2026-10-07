@@ -1,0 +1,30 @@
+#!/bin/sh
+# burst-gateway-netinit: make this gateway the place a sandbox's traffic lands.
+#
+#   burst-gateway-netinit SUBNET GATEWAY_IP PROXY_PORT REDIRECT_PORT DNS_PORT
+#
+# Run as root in the gateway's network namespace, with NET_ADMIN, once the
+# gateway is on the sandbox's network and that network routes everything to
+# GATEWAY_IP. The gateway process itself stays unprivileged: the harness runs
+# this with `exec --user 0`.
+#
+# From SUBNET: DNS to any server goes to the gateway's resolver, the proxy port
+# is left alone, and every other TCP connection, to any address, is redirected
+# to REDIRECT_PORT. Nothing is forwarded (the harness keeps ip_forward off), so
+# what these rules do not redirect goes nowhere -- and so does everything, if
+# they are missing.
+set -eu
+[ $# -eq 5 ] || { echo "usage: burst-gateway-netinit SUBNET GATEWAY_IP PROXY_PORT REDIRECT_PORT DNS_PORT" >&2; exit 64; }
+
+nft -f - <<EOF
+table ip burst_gateway
+delete table ip burst_gateway
+table ip burst_gateway {
+  chain prerouting {
+    type nat hook prerouting priority dstnat;
+    ip saddr $1 udp dport 53 redirect to :$5
+    ip saddr $1 ip daddr $2 tcp dport $3 accept
+    ip saddr $1 meta l4proto tcp redirect to :$4
+  }
+}
+EOF

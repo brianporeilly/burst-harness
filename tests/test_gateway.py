@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import ssl
 import struct
 import sys
 from pathlib import Path
@@ -59,15 +60,52 @@ def _query(name: str, qtype: int = 1) -> bytes:
     return struct.pack("!HHHHHH", 0xBEEF, 0x0100, 1, 0, 0, 0) + labels + b"\x00" + struct.pack("!HH", qtype, 1)
 
 
-def test_dns_question_and_nxdomain():
+def test_dns_without_redirect_refuses_and_records():
     packet = _query("Direct.Example.com", 28)
     name, qtype, end = gw.dns_question(packet)
     assert (name, qtype, end) == ("direct.example.com", 28, len(packet))
-    reply = gw.dns_nxdomain(packet, end)
+    reply, event = gw.dns_answer(packet, "")
     ident, flags, questions, answers = struct.unpack("!HHHH", reply[:8])
     assert ident == 0xBEEF and questions == 1 and answers == 0
     assert flags & 0x8000 and flags & 0x0100 and flags & 0x000F == 3  # a response, RD echoed, NXDOMAIN
     assert reply[12:] == packet[12:]
+    assert event["verdict"] == "deny" and event["host"] == "direct.example.com" and event["qtype"] == "AAAA"
+
+
+def test_dns_with_redirect_answers_allowed_names_with_the_gateway(monkeypatch):
+    monkeypatch.setattr(gw, "POLICY", gw.Policy(allow=("github.com",)))
+    packet = _query("github.com")
+    reply, event = gw.dns_answer(packet, "10.89.1.254")
+    flags, _, answers = struct.unpack("!HHH", reply[2:8])
+    assert flags & 0x000F == 0 and answers == 1 and reply.endswith(bytes([10, 89, 1, 254]))
+    assert event["verdict"] == "allow"
+    # No IPv6 route: the name exists, with no AAAA.
+    reply, _ = gw.dns_answer(_query("github.com", 28), "10.89.1.254")
+    assert struct.unpack("!HHH", reply[2:8])[0] & 0x000F == 0 and struct.unpack("!HHH", reply[2:8])[2] == 0
+    # A name the policy would refuse does not resolve at all.
+    reply, event = gw.dns_answer(_query("evil.com"), "10.89.1.254")
+    assert struct.unpack("!H", reply[2:4])[0] & 0x000F == 3 and event["verdict"] == "deny"
+
+
+def _client_hello(server_name: str | None) -> bytes:
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = ssl.create_default_context().wrap_bio(incoming, outgoing, server_hostname=server_name)
+    with pytest.raises(ssl.SSLWantReadError):
+        tls.do_handshake()
+    return outgoing.read()
+
+
+def test_tls_server_name():
+    assert gw.tls_server_name(_client_hello("API.Example.com")) == "api.example.com"
+    hello = _client_hello("api.example.com")
+    assert gw.tls_server_name(hello[:60]) == ""  # truncated: no name, no exception
+    assert gw.tls_server_name(b"GET / HTTP/1.1\r\n\r\n") == ""
+
+
+def test_http_host():
+    assert gw.http_host(b"GET / HTTP/1.1\r\nAccept: */*\r\nHOST: Example.com:8080\r\n\r\n") == "example.com"
+    assert gw.http_host(b"GET / HTTP/1.1\r\nHost: [::1]:80\r\n\r\n") == "::1"
+    assert gw.http_host(b"GET / HTTP/1.0\r\n\r\n") == ""
 
 
 def test_dns_question_rejects_garbage():

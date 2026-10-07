@@ -80,19 +80,27 @@ answer and forwarding would open a way out that the allowlist does not have.
   where they outlive the container.
 - The gateway answers and logs the sandbox's DNS.
 
-### 2. Spike: traffic that ignores the proxy
+### 2. Traffic that ignores the proxy
 
-Today it is blocked (no route, no DNS) but not logged. Compare, on rootless
-podman with capabilities dropped:
+Done for podman. Three approaches were run on rootless podman 5.8 with the
+sandbox's capabilities dropped:
 
-- **DNS steering**: the gateway answers every lookup with its own address and
-  routes by SNI / Host. Logs anything that resolves a name.
-- **Shared network namespace** with a redirect rule, sidecar-style.
-- **Staying explicit**, with the DNS log as the only trace.
+| Approach | Result |
+|---|---|
+| **Gateway as the network's default route** (`network create --route`), redirect rules in the gateway's namespace | Chosen. The sandbox needs nothing; every TCP connection is seen with the address it dialled; with the rules removed nothing gets out. Costs the gateway `NET_ADMIN` in its own namespace. |
+| **Shared network namespace**, redirect by UID | Works, but fails open: without the rules the sandbox has the gateway's route out. UID matching also breaks once root-in-container is allowed. |
+| **Staying explicit**, DNS sink only | What phase 1 had, and what docker still has (it cannot give a network a route). Bare-IP connections leave no trace. |
 
-In the cluster, Calico (open source: no FQDN policy) can log denied packets by
-IP and port with a `Log` rule beside default-deny. Pick one approach per
-platform and record it here.
+DNS steering goes with the chosen approach: the gateway answers allowed names
+with its own address and resolves nothing for the sandbox, so names work for
+software that ignores the proxy without opening a DNS channel out.
+
+Still unseen: UDP other than DNS, and non-TCP protocols (dropped, no event).
+
+For the cluster (phase 6), not yet tried: the same redirect needs an init
+container with `NET_ADMIN` in the sandbox pod, which a warm-pool template may
+not want. Start there with Calico default-deny plus a `Log` rule (open-source
+Calico has no FQDN policy) and the gateway as the pod's resolver, and revisit.
 
 ### 3. Interception and credential injection
 

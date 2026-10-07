@@ -134,18 +134,21 @@ NAME release` removes it.
 **Optional gateway** (`--egress log` or `--egress allowlist`; default `open`).
 The container is attached only to its own `--internal` network — no route out —
 and a gateway sidecar (`--gateway-image`, built from `gateway/`) is the only way
-out. Its proxy variables and its resolver point at the sidecar.
+out. Its proxy variables and its resolver point at the sidecar. On podman the
+sidecar is also the network's default route, so software that ignores the proxy
+variables lands there all the same.
 
 | `--egress` | Passes | Use |
 |---|---|---|
 | `open` | everything, unrecorded | the container's normal network |
-| `log` | everything through the proxy, HTTP and HTTPS | see what an agent reaches for before writing an allowlist |
-| `allowlist` | HTTPS `CONNECT` to listed hosts on port 443 | hold it to that list |
+| `log` | every TCP connection | see what an agent reaches for before writing an allowlist |
+| `allowlist` | TLS to listed hosts on port 443 | hold it to that list |
 
 In `allowlist` the default list is `api.anthropic.com`, GitHub, PyPI, and npm;
 `--egress-allow a.com,*.b.com` replaces it, and the repo's host (and
 `ANTHROPIC_BASE_URL`'s) are always added. A refusal is an immediate 403 with a
-JSON body naming the host. Repos must be cloned over HTTP(S) in either mode.
+JSON body naming the host, where the protocol allows one. Repos must be cloned
+over HTTP(S) in either mode.
 
 Every decision is a JSON event on the sidecar's stdout — `podman logs
 <name>-egress` while it runs — and the events are saved to
@@ -157,12 +160,33 @@ Every decision is a JSON event on the sidecar's stdout — `podman logs
 {"ts": "2026-10-07T05:23:12Z", "sandbox": "burst-my-slug-b94222", "kind": "dns", "verdict": "deny", "id": "a449cc-5", "peer": "10.89.1.2", "host": "example.net", "qtype": "A", "detail": "no DNS in the sandbox; this lookup did not go through the proxy"}
 ```
 
-`kind` is `connect` (an HTTPS tunnel: the host is seen, the contents are not),
-`http` (plain HTTP, with method and path; the query string is not recorded), or
-`dns`. Software that honours the proxy never resolves a name itself, so the
-gateway's resolver answers nothing: a `dns` event is software that ignored the
-proxy. It had no route anyway, and the lookup is the trace it leaves. A
-connection to a bare IP address that ignores the proxy is blocked without one.
+`kind` is `connect` (an HTTPS tunnel through the proxy: the host is seen, the
+contents are not), `http` (plain HTTP, with method and path; the query string is
+not recorded), `tls` or `tcp` (see below), or `dns`.
+
+**Software that ignores the proxy** (podman). The sandbox's network routes
+everything to the gateway, which redirects it into itself; the sandbox needs no
+privileges for this. Such a connection is recorded with `"via": "redirect"`,
+identified by its TLS server name or HTTP `Host`, and held to the same policy:
+
+- The gateway is the sandbox's only resolver, and resolves nothing for it. A name
+  the policy could allow is answered with the gateway's own address; any other
+  does not resolve. So there is no DNS channel out, and every lookup is a `dns`
+  event — software that honours the proxy never makes one.
+- The gateway connects to the *name* the client gave, never to the address it
+  dialled. Claiming an allowed name while dialling some other address reaches
+  the real host of that name (the address is recorded as `dialled`).
+- A connection to a bare IP address is `tcp`, or `http`/`tls` if it speaks one;
+  `log` lets it through, `allowlist` refuses it unless the address is listed.
+- UDP other than DNS, and anything that is not TCP, goes nowhere and leaves no
+  event.
+
+If the redirect rules are missing, nothing is forwarded: the sandbox fails
+closed. The sidecar holds `NET_ADMIN` for those rules, in its own network
+namespace; they are installed from outside by `burst-gateway-netinit`, and the
+gateway process itself runs unprivileged. On docker there is no way to give the
+network a route, so software that ignores the proxy simply has no route: its
+lookups are recorded and refused, and a connection to a bare IP leaves no trace.
 
 `log` is for observing, not containing: through the proxy the sandbox can reach
 anything the host can, your LAN included — the same reach as `open`.

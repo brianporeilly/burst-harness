@@ -7,15 +7,17 @@
 # the agent, and nothing in the harness is imported.
 FROM registry.fedoraproject.org/fedora-minimal:44
 
-RUN microdnf -y install --setopt=install_weak_deps=0 python3 \
+RUN microdnf -y install --setopt=install_weak_deps=0 python3 nftables \
  && microdnf clean all
 
 COPY burst_gateway.py /usr/local/bin/burst-gateway
-RUN chmod 755 /usr/local/bin/burst-gateway
+COPY burst-gateway-netinit /usr/local/bin/burst-gateway-netinit
+RUN chmod 755 /usr/local/bin/burst-gateway /usr/local/bin/burst-gateway-netinit
 
-# Unprivileged. Binding the DNS sink to port 53 needs the runtime to lower
+# Unprivileged. Binding the resolver to port 53 needs the runtime to lower
 # net.ipv4.ip_unprivileged_port_start (the harness passes --sysctl for it), or
-# EGRESS_DNS=0 to go without.
+# EGRESS_DNS=0 to go without. nftables is for burst-gateway-netinit, which the
+# harness runs as root from outside when the gateway is the sandbox's route.
 USER 65532
 ENV PYTHONUNBUFFERED=1
 ENTRYPOINT ["burst-gateway"]
