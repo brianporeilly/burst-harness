@@ -7,7 +7,7 @@
 # toolchains your repos need.
 #
 # Also provides tmux (sessions that survive a dropped exec), Claude Code, and
-# opencode (`harness session`).
+# opencode and zellij (`harness session`).
 #
 # Deliberately absent: credentials of any kind, and gh. The harness clones and
 # pushes with a token it passes per command, and opens PRs from the driver, so
@@ -16,7 +16,7 @@ FROM registry.fedoraproject.org/fedora:44
 
 RUN dnf -y install --setopt=install_weak_deps=False \
       git-core coreutils findutils grep sed gawk diffutils patch which procps-ng \
-      tar gzip unzip jq ripgrep tmux \
+      tar gzip unzip jq ripgrep tmux socat \
       python3 python3-pip nodejs npm make gcc gcc-c++ \
  && dnf clean all
 
@@ -26,6 +26,7 @@ RUN useradd --uid 1000 --create-home --home-dir /home/agent agent \
  && mkdir -p /workspace && chown agent:agent /workspace
 USER 1000
 ENV HOME=/home/agent \
+    SHELL=/bin/bash \
     DISABLE_AUTOUPDATER=1
 WORKDIR /workspace
 
@@ -51,6 +52,21 @@ ARG OPENCODE_VERSION=1.18.35
 RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" \
  && opencode --version \
  && rm -rf /home/agent/.npm /home/agent/.cache /home/agent/.local /home/agent/.config
+# zellij, for a session's optional terminal in the browser (`harness session
+# start --terminal`). Its web server only listens on loopback without a
+# certificate, so the harness puts socat in front of it. Pinned and checked.
+ARG ZELLIJ_VERSION=0.45.1
+RUN case "$(uname -m)" in \
+      x86_64)  sum=40bcc2e03f5d5ae8e054e39f676081fe12ab70871506996ba595834c3718eefc ;; \
+      aarch64) sum=05f0802afadd53f8db9514e7cae53c9ae8432fed1b35b8294aa816ee3044a16b ;; \
+      *) echo "no zellij build for $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /tmp/zellij.tar.gz \
+      "https://github.com/zellij-org/zellij/releases/download/v${ZELLIJ_VERSION}/zellij-$(uname -m)-unknown-linux-musl.tar.gz" \
+ && echo "$sum  /tmp/zellij.tar.gz" | sha256sum -c - \
+ && tar xzf /tmp/zellij.tar.gz -C /usr/local/bin zellij && rm /tmp/zellij.tar.gz \
+ && zellij --version \
+ && rm -rf /home/agent/.cache /home/agent/.config /home/agent/.local
 USER 1000
 
 # Claude Code config is composed at container start by burst-sandbox-init from

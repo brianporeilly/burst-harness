@@ -58,3 +58,10 @@ def test_record_is_private_and_round_trips(tmp_path):
     assert session.load_record(cfg, "other") == {}
     shown = session.describe(record)
     assert "http://127.0.0.1:4100/" in shown and "other addresses" in shown and "pw" in shown
+
+
+def test_describe_shows_the_terminal_when_there_is_one():
+    record = {"bind": "127.0.0.1", "port": 4100, "password": "pw", "terminal": {"port": 4101, "token": "tok"}}
+    shown = session.describe(record)
+    assert "http://127.0.0.1:4101/" in shown and "tok" in shown
+    assert "terminal" not in session.describe({"bind": "127.0.0.1", "port": 4100, "password": "pw"})

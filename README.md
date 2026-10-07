@@ -310,6 +310,11 @@ workspace starts empty. podman only, for now.
   `--bind 0.0.0.0` (or a LAN address) to reach it from other machines, `--port`
   to choose the port. The connection is plain HTTP behind a password; keep it to
   a network you trust.
+- **A terminal in the browser** (`session start my-box --terminal`): zellij's web
+  client, on its own port, behind a login token that `start` prints. Optional
+  because it is a shell in the sandbox — whoever can log in can do whatever the
+  agent can, including use credentials the gateway adds. A session remembers the
+  choice; `--no-terminal` turns it off. The token is replaced on every start.
 - **Egress** is `--egress log` unless you ask for `allowlist`; a session always
   has a gateway, since that is how it is reached. `--egress-inject git` works as
   it does for tasks, and is how the session pushes: there are no terminal-state
@@ -324,7 +329,7 @@ workspace starts empty. podman only, for now.
 - An allowlist entry may name a port — `--egress-allow llm.lan:8080,...` — to
   allow a host on that port instead of 443.
 
-Not there yet: a terminal in the browser, idle shutdown, and anything but podman.
+Not there yet: idle shutdown, and anything but podman.
 
 ## Engines
 

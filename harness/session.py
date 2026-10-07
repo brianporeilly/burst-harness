@@ -10,6 +10,10 @@ optional -- without `--repo-url` the workspace starts empty.
     harness session stop NAME      remove the containers; the workspace stays
     harness session rm NAME        stop, and delete the workspace too
 
+`start --terminal` adds a terminal in the browser (zellij), on its own port and
+behind its own login token, reached the same way. It is a shell in the sandbox:
+whoever can log in to it can do what the agent can.
+
 What persists is two volumes -- the workspace (`/workspace`) and the agent's
 home (opencode's conversations and settings) -- so a stopped or crashed session
 starts again where it was. What does not is anything installed outside them.
@@ -51,6 +55,11 @@ from .exec_target import DockerTarget
 BINARY = "podman"
 UI_PORT = 4096
 UI_USER = "opencode"
+# zellij's web server listens on loopback only (anything else needs a
+# certificate); socat on TERMINAL_PORT is what the gateway passes connections to.
+ZELLIJ_PORT = 8082
+TERMINAL_PORT = 8083
+ZELLIJ_CONFIG = "web_server true\nshow_startup_tips false\nshow_release_notes false\n"
 WORKSPACE = "/workspace"
 HOME = "/home/agent"
 OPENCODE_CONFIG = f"{HOME}/.config/opencode/opencode.json"
@@ -161,7 +170,7 @@ def _local(bind: str) -> str:
 
 
 def _wait_for_ui(bind: str, port: int, timeout: float = 60) -> bool:
-    """True once the UI answers (a 401 counts: it is asking for the password)."""
+    """True once something answers HTTP there (a 401 counts: it is asking for the password)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -178,11 +187,45 @@ def describe(record: dict[str, Any]) -> str:
     where = f"http://{_local(record['bind'])}:{record['port']}/"
     if record["bind"] == "0.0.0.0":
         where += f"  (and on this machine's other addresses, port {record['port']})"
-    return f"  UI:        {where}\n  user:      {UI_USER}\n  password:  {record['password']}"
+    lines = [f"  UI:        {where}", f"  user:      {UI_USER}", f"  password:  {record['password']}"]
+    if terminal := record.get("terminal"):
+        lines += [f"  terminal:  http://{_local(record['bind'])}:{terminal['port']}/", f"  token:     {terminal['token']}"]
+    return "\n".join(lines)
 
 
-def start(cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", config_file: str = "") -> str:
-    """Start the session, or report a running one. Returns what to tell the user."""
+def start_terminal(box: str, workdir: str) -> str:
+    """Start zellij's web server and the relay in front of it. Returns a new login token."""
+    def run(*argv: str, detach: bool = False) -> subprocess.CompletedProcess[str]:
+        return _podman("exec", *(["--detach"] if detach else []), "--workdir", workdir, box, *argv)
+
+    # zellij will not start its web server without a config file. One you have
+    # edited (it is in the home volume) is left alone.
+    setup = ('mkdir -p "$HOME/.config/zellij" && { [ -f "$HOME/.config/zellij/config.kdl" ] || '
+             f'printf {shlex.quote(ZELLIJ_CONFIG)} > "$HOME/.config/zellij/config.kdl"; }}')
+    if (proc := run("sh", "-c", setup)).returncode != 0:
+        raise SessionError(f"Could not write zellij's config: {proc.stderr.strip()}")
+    for command in (f"exec zellij web --start --port {ZELLIJ_PORT} >> /tmp/zellij-web.log 2>&1",
+                    f"exec socat TCP-LISTEN:{TERMINAL_PORT},fork,reuseaddr TCP:127.0.0.1:{ZELLIJ_PORT}"):
+        if (proc := run("sh", "-c", command, detach=True)).returncode != 0:
+            raise SessionError(f"Could not start the terminal: {proc.stderr.strip()}")
+    # Tokens are shown once and stored hashed, so each start makes a fresh one
+    # and retires the rest: the one on record is always the one that works.
+    run("zellij", "web", "--revoke-all-tokens")
+    proc = run("zellij", "web", "--create-token")
+    match = re.search(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", proc.stdout)
+    if proc.returncode != 0 or not match:
+        raise SessionError(f"Could not create a login token for the terminal: {(proc.stderr or proc.stdout).strip()}")
+    return match[0]
+
+
+def start(
+    cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", config_file: str = "",
+    terminal: bool | None = None, terminal_port: int = 0,
+) -> str:
+    """Start the session, or report a running one. Returns what to tell the user.
+
+    `terminal` None keeps whatever the session had last time.
+    """
     box = container_name(name)
     if not shutil.which(BINARY):
         raise SessionError(f"{BINARY} is not installed or not on PATH.")
@@ -210,13 +253,20 @@ def start(cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", confi
     bind = bind or record.get("bind") or "127.0.0.1"
     port = port or record.get("port") or _free_port(bind)
     password = record.get("password") or secrets.token_urlsafe(18)
+    had_terminal = record.get("terminal") or {}
+    if terminal is None:
+        terminal = bool(had_terminal)
+    inbound = [(bind, port, UI_PORT)]
+    if terminal:
+        terminal_port = terminal_port or had_terminal.get("port") or _free_port(bind)
+        inbound.append((bind, terminal_port, TERMINAL_PORT))
     repo = f"{WORKSPACE}/repo" if cfg.repo_url else WORKSPACE
     label = ("--label", f"{containers.LABEL_SESSION}={name}")
     slug = f"session-{name}"
 
     try:
         network, proxy, flags = containers.start_egress(
-            cfg, binary=BINARY, name=box, slug=slug, allow=endpoint, inbound=((bind, port, UI_PORT),), labels=label,
+            cfg, binary=BINARY, name=box, slug=slug, allow=endpoint, inbound=tuple(inbound), labels=label,
         )
     except ContainerError as err:
         raise SessionError(str(err)) from err
@@ -227,7 +277,8 @@ def start(cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", confi
                                              network_args=[*flags, *label, *mounts])[1:])
         if proc.returncode != 0:
             raise SessionError(f"{BINARY} run {cfg.image} failed: {proc.stderr.strip()}")
-        if missing := target.missing_commands((*REQUIRED_COMMANDS, "opencode")):
+        needed = (*REQUIRED_COMMANDS, "opencode", *(("zellij", "socat") if terminal else ()))
+        if missing := target.missing_commands(needed):
             raise SessionError(f"{cfg.image} is missing: {', '.join(missing)}. See images/sandbox/Containerfile.")
         if cfg.egress_inject:
             containers.trust_gateway(BINARY, proxy=proxy, name=box)
@@ -258,6 +309,12 @@ def start(cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", confi
         if not _wait_for_ui(bind, port):
             log = target.run_shell("tail -n 20 /tmp/opencode.log", check=False, cwd="/").stdout.strip()
             raise SessionError(f"opencode's UI did not come up on port {port}.\n{log}")
+        token = ""
+        if terminal:
+            token = start_terminal(box, repo)
+            if not _wait_for_ui(bind, terminal_port):
+                log = target.run_shell("tail -n 20 /tmp/zellij-web.log", check=False, cwd="/").stdout.strip()
+                raise SessionError(f"The terminal did not come up on port {terminal_port}.\n{log}")
     except BaseException:
         target.release()
         raise
@@ -267,6 +324,8 @@ def start(cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", confi
         "repo_url": git.redact_url(cfg.repo_url), "image": cfg.image, "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if terminal:
+        record["terminal"] = {"port": terminal_port, "token": token}
     save_record(cfg, name, record)
     lines = [f"Session {name} is up ({box}, egress {cfg.egress} via {proxy}).", *notes, describe(record)]
     return "\n".join(lines)

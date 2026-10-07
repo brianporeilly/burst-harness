@@ -128,8 +128,13 @@ for a plain-HTTP model server.
 Differs from the plan below: opencode is not an `--engine` (there is nothing
 for it to do in a task yet); it is what a session runs.
 
-Remaining: the optional web terminal (zellij), idle reaping and a lifetime,
-root-in-container opt-in, opencode's model credentials at the gateway.
+Also done: the optional web terminal (`session start --terminal`). zellij's web
+server only listens on loopback without a certificate, so socat relays to it
+inside the sandbox and the gateway passes connections to that; its own login
+token is the authentication.
+
+Remaining: idle reaping and a lifetime, root-in-container opt-in, opencode's
+model credentials at the gateway.
 
 - `opencode` engine; llama.cpp via its OpenAI-compatible endpoint.
 - `harness session`: start detached, list, reattach, stop. Optional repo.
