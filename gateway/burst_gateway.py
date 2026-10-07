@@ -20,6 +20,8 @@ the harness.
     EGRESS_DNS      UDP port of the resolver (default 53; 0 turns it off)
     EGRESS_REDIRECT port that redirected connections arrive on (default 0: off)
     EGRESS_SANDBOX  name of the sandbox this gateway serves, stamped on events
+    EGRESS_IDLE     exit after this many seconds with no event (default 0: never)
+    EGRESS_LIFETIME exit this many seconds after starting (default 0: never)
     EGRESS_INJECT   JSON list of credentials to add on the way out (default none):
                     [{"host": "github.com", "path": "/owner/repo.git/*",
                       "headers": {"Authorization": "Basic ..."}},
@@ -58,6 +60,13 @@ with dot segments or encoded separators matches no rule. A request
 whose Host header names some other host is refused, so a credential cannot be
 steered to a different site behind the same front end. Every other host is
 tunnelled untouched, as before. Each request is one connection, HTTP/1.1.
+
+Stopping by itself (EGRESS_IDLE, EGRESS_LIFETIME). The gateway sees everything
+that goes in or out, so it is the one place that knows a sandbox has gone quiet.
+Any event but the close of a connection counts as activity: a request going
+out, a lookup, someone connecting to the UI. When it exits, a sandbox that is
+watching for it (burst-sandbox-wait) exits too, and both are left stopped for
+whoever started them to clear away.
 
 Events are JSON, one per line, on stdout -- `podman logs` is the audit trail.
 Everything else (startup, errors) goes to stderr.
@@ -214,7 +223,13 @@ def next_id() -> str:
     return f"{_RUN}-{next(_SEQ)}"
 
 
+_ACTIVE = time.monotonic()
+
+
 def emit(kind: str, verdict: str, **fields: object) -> None:
+    global _ACTIVE
+    if verdict != "close":
+        _ACTIVE = time.monotonic()
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     event = {"ts": stamp, "sandbox": SANDBOX, "kind": kind, "verdict": verdict, **fields}
     print(json.dumps({k: v for k, v in event.items() if v not in ("", None)}), flush=True)
@@ -650,6 +665,24 @@ class Resolver(asyncio.DatagramProtocol):
         self.transport.sendto(reply, addr)  # type: ignore[attr-defined]
 
 
+def expired(now: float, started: float, active: float, idle: int, lifetime: int) -> str:
+    """Why the gateway should stop now, or "" if it should not."""
+    if lifetime and now - started >= lifetime:
+        return f"lifetime of {lifetime}s reached"
+    if idle and now - active >= idle:
+        return f"idle for {idle}s"
+    return ""
+
+
+async def watch(idle: int, lifetime: int) -> None:
+    started = time.monotonic()
+    while not (reason := expired(time.monotonic(), started, _ACTIVE, idle, lifetime)):
+        await asyncio.sleep(5)
+    emit("gateway", "exit", detail=reason)
+    print(f"burst-gateway: stopping: {reason}", file=sys.stderr, flush=True)
+    os._exit(0)
+
+
 async def main() -> None:
     global POLICY, INJECT, SANDBOX, REDIRECT, INTERCEPT
     POLICY = Policy.from_env()
@@ -679,6 +712,9 @@ async def main() -> None:
         f"ports {sorted(POLICY.ports)}; allow {', '.join(h + (f':{p}' if p else '') for h, p in POLICY.allow) or '(nothing)'}"
     print(f"burst-gateway: proxy :{listen}, dns :{dns_port or 'off'}, redirected :{REDIRECT or 'off'}; {what}",
           file=sys.stderr, flush=True)
+    idle, lifetime = int(os.environ.get("EGRESS_IDLE", "0")), int(os.environ.get("EGRESS_LIFETIME", "0"))
+    # Held here so the task is not collected while the server runs.
+    watcher = asyncio.create_task(watch(idle, lifetime)) if idle or lifetime else None  # noqa: F841
     async with server:
         await server.serve_forever()
 

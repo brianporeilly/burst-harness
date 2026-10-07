@@ -204,3 +204,18 @@ def test_certificates_chain_to_the_gateways_ca(tmp_path):
     assert c.getpeercert()["subjectAltName"] == (("DNS", "github.com"),)
     assert c.selected_alpn_protocol() is None  # the client offered none; the server only speaks http/1.1
     assert (tmp_path / "ca.key").stat().st_mode & 0o077 == 0
+
+
+def test_expired_on_idle_or_lifetime():
+    assert gw.expired(now=100, started=0, active=95, idle=10, lifetime=0) == ""
+    assert "idle" in gw.expired(now=100, started=0, active=80, idle=10, lifetime=0)
+    assert "lifetime" in gw.expired(now=100, started=0, active=99, idle=10, lifetime=60)
+    assert gw.expired(now=10**6, started=0, active=0, idle=0, lifetime=0) == ""
+
+
+def test_closing_a_connection_is_not_activity(capsys):
+    gw.emit("connect", "allow", id="x-1", host="a.com", port=443)
+    stamp = gw._ACTIVE
+    gw.emit("connect", "close", id="x-1", host="a.com", port=443)
+    assert gw._ACTIVE == stamp
+    capsys.readouterr()

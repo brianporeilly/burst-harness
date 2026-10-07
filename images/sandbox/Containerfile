@@ -83,6 +83,8 @@ COPY burst-sandbox-init /usr/local/bin/burst-sandbox-init
 # Run by the harness, as root, when the gateway terminates TLS to add
 # credentials: trusts that gateway's CA. See the script's header.
 COPY burst-sandbox-trust /usr/local/bin/burst-sandbox-trust
+# A session container's command: stays up while its gateway does.
+COPY burst-sandbox-wait /usr/local/bin/burst-sandbox-wait
 
 # Driven from outside with exec; nothing to run on its own. A pod spec must set
 # `args`, not `command`, or the entrypoint (and so the config) is skipped.

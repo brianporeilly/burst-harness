@@ -122,6 +122,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "kube_context": args.kube_context,
         "docker_container": args.docker_container,
         "image": args.image,
+        "container_root": args.root,
         "egress": args.egress,
         "gateway_image": args.gateway_image,
         "egress_inject": tuple(w.strip() for w in args.egress_inject.split(",") if w.strip()) if args.egress_inject else None,
@@ -437,7 +438,8 @@ def cmd_session(args: argparse.Namespace) -> int:
             raise SystemExit(f"harness session {args.action} needs a session name.")
         if args.action == "start":
             print(session.start(cfg, args.name, port=args.port or 0, bind=args.bind or "", config_file=args.opencode_config or "",
-                                terminal=args.terminal, terminal_port=args.terminal_port or 0))
+                                terminal=args.terminal, terminal_port=args.terminal_port or 0,
+                                idle=args.idle, lifetime=args.lifetime))
         elif args.action == "stop":
             print(session.stop(cfg, args.name))
         else:
@@ -485,6 +487,9 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--docker-container", dest="docker_container",
                        help="Attach to this container, for target=docker/podman. Default: start a fresh one.")
     where.add_argument("--image", help="Image a fresh docker/podman container starts from.")
+    where.add_argument("--root", action=argparse.BooleanOptionalAction, default=None,
+                       help="Run a fresh container as root, so the agent can install packages. Rootless podman "
+                            "only, where that is still your own user outside the container.")
     where.add_argument("--egress", choices=["open", "log", "allowlist"],
                        help="Network for a fresh docker/podman container. log: no route out except a gateway "
                             "that records everything. allowlist: the gateway only reaches --egress-allow hosts, "
@@ -569,6 +574,10 @@ def main(argv: list[str] | None = None) -> int:
                       help="Also serve a terminal in the browser (zellij), behind its own login token. "
                            "Default: as the session was last started; off for a new one.")
     sess.add_argument("--terminal-port", type=int, dest="terminal_port", help="Host port for the terminal.")
+    sess.add_argument("--idle", help="Stop the session after this long with nothing going in or out: 90m, 2h, "
+                                     "1d, or seconds. 0 for never. Default: as last started; never for a new one.")
+    sess.add_argument("--lifetime", help="Stop the session this long after it starts, whatever it is doing. "
+                                         "Same forms as --idle.")
     sess.add_argument("--opencode-config", dest="opencode_config",
                       help="An opencode.json to use as is, instead of one written from the harness's model settings.")
     sess.set_defaults(func=cmd_session)

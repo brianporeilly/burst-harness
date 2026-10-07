@@ -68,6 +68,9 @@ MODEL_CREDENTIALS = {
     "ANTHROPIC_AUTH_TOKEN": ("Authorization", "burst-gateway-placeholder-auth-token"),
 }
 DEFAULT_MODEL_API = "https://api.anthropic.com"
+# Engines whose agent loop, and so whose model calls, run in the container.
+# "opencode" is what session.py passes: it is not an --engine for tasks.
+IN_TARGET_ENGINES = ("claude-code", "opencode")
 # The runtime's default network, which has a route out.
 DEFAULT_NETWORK = {"podman": "podman", "docker": "bridge"}
 
@@ -76,11 +79,33 @@ def _labels(slug: str) -> list[str]:
     return ["--label", f"{LABEL_MANAGED_BY}={MANAGED_BY}", "--label", f"{LABEL_TASK}={label_value(slug)}"]
 
 
+# What root needs to install packages (chown and write files it does not own,
+# create users and switch to them in scriptlets, set file capabilities), and
+# nothing that reaches outside the container: no network or system administration.
+ROOT_CAPABILITIES = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "SETUID", "SETGID", "SETFCAP")
+
+
+def check_root(cfg: HarnessConfig, binary: str) -> None:
+    """Refuse container_root where root in the container would be root on the host."""
+    if not cfg.container_root:
+        return
+    rootless = binary == "podman" and _run(binary, "info", "--format", "{{.Host.Security.Rootless}}") == "true"
+    if not rootless:
+        raise ContainerError(
+            "--root needs rootless podman: there root in the container is your own user outside it. "
+            f"With {binary} here it would be root on this machine."
+        )
+
+
 def run_argv(cfg: HarnessConfig, *, binary: str, name: str, slug: str, network_args: list[str] | tuple[str, ...] = ()) -> list[str]:
+    # Nothing in the sandbox needs privileges: git, a shell, the agent's tools.
+    # With container_root, root gets back only what installing packages takes.
+    privileges = ["--cap-drop=ALL", "--security-opt=no-new-privileges"]
+    if cfg.container_root:
+        privileges += ["--user", "0", *(f"--cap-add={cap}" for cap in ROOT_CAPABILITIES)]
     return [
         binary, "run", "--detach", "--name", name, *_labels(slug),
-        # Nothing in the sandbox needs privileges: git, a shell, the agent's tools.
-        "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        *privileges,
         *network_args,
         *shlex.split(cfg.container_args),
         cfg.image,
@@ -138,10 +163,10 @@ def inject_rules(cfg: HarnessConfig) -> list[dict[str, object]]:
 
 def model_rule(cfg: HarnessConfig) -> dict[str, object]:
     """Swap the placeholders the sandbox is given for the driver's model credentials, at the API's host."""
-    if cfg.engine != "claude-code":
+    if cfg.engine not in IN_TARGET_ENGINES:
         raise ContainerError(
-            "--egress-inject model is for an engine that runs in the container (claude-code); "
-            f"with engine={cfg.engine} the model is called from the driver and its key never leaves."
+            "--egress-inject model is for an engine that runs in the container (claude-code, or a session's "
+            f"opencode); with engine={cfg.engine} the model is called from the driver and its key never leaves."
         )
     api = urlsplit(os.environ.get("ANTHROPIC_BASE_URL") or DEFAULT_MODEL_API)
     if api.scheme != "https" or not api.hostname or (api.port or 443) != 443:
@@ -198,12 +223,14 @@ def _routed_network(binary: str, network: str) -> tuple[str, str]:
 def start_egress(
     cfg: HarnessConfig, *, binary: str, name: str, slug: str,
     allow: tuple[str, ...] = (), inbound: tuple[tuple[str, int, int], ...] = (), labels: tuple[str, ...] = (),
+    gateway_env: tuple[str, ...] = (),
 ) -> tuple[str, str, list[str]]:
     """Create the internal network and gateway sidecar.
 
     `allow` adds to the allowlist. `inbound` is (host address, host port,
     container port): the gateway publishes each on the host and passes what
-    arrives to the container. `labels` are extra `--label` flags.
+    arrives to the container. `labels` are extra `--label` flags, `gateway_env`
+    extra NAME=VALUE settings for the gateway.
 
     Returns (network, proxy, run flags that put a container behind them).
     """
@@ -249,7 +276,7 @@ def start_egress(
             # Lets the unprivileged gateway bind its resolver to port 53.
             "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
             "-e", f"EGRESS_MODE={cfg.egress}", "-e", f"EGRESS_LISTEN={PROXY_PORT}",
-            "-e", f"EGRESS_SANDBOX={name}", *policy,
+            "-e", f"EGRESS_SANDBOX={name}", *(arg for item in gateway_env for arg in ("-e", item)), *policy,
             cfg.gateway_image,
             env=secrets_env,
         )
@@ -283,6 +310,11 @@ def start_egress(
     return network, proxy, flags
 
 
+def gateway_address(flags: list[str]) -> str:
+    """The gateway's address on the container's network, from the run flags start_egress returned."""
+    return flags[flags.index("--dns") + 1]
+
+
 def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerTarget:
     """Attach to `cfg.docker_container`, or start a fresh one from `cfg.image`."""
     if cfg.docker_container:
@@ -293,6 +325,7 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
         raise ContainerError(f"egress must be one of {', '.join(EGRESS_MODES)} (got {cfg.egress!r}).")
     if not shutil.which(binary):
         raise ContainerError(f"{binary} is not installed or not on PATH.")
+    check_root(cfg, binary)
     name = f"burst-{label_value(slug)[:40]}-{secrets.token_hex(3)}"
     network = proxy = ""
     network_args: list[str] = []

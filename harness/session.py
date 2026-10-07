@@ -14,6 +14,12 @@ optional -- without `--repo-url` the workspace starts empty.
 behind its own login token, reached the same way. It is a shell in the sandbox:
 whoever can log in to it can do what the agent can.
 
+`start --idle 2h` stops a session that has had nothing go in or out for that
+long, and `--lifetime` stops it regardless. No process of the harness's outlives
+`start`, so it is the gateway that keeps count and exits; the sandbox watches
+for that and exits too. A session stopped this way is as if you had run `stop`:
+`start` brings it back.
+
 What persists is two volumes -- the workspace (`/workspace`) and the agent's
 home (opencode's conversations and settings) -- so a stopped or crashed session
 starts again where it was. What does not is anything installed outside them.
@@ -98,9 +104,35 @@ def save_record(cfg: HarnessConfig, name: str, record: dict[str, Any]) -> None:
     path.write_text(json.dumps(record, indent=2) + "\n")
 
 
+DURATION = re.compile(r"(\d+)([smhd]?)")
+UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def seconds(text: str) -> int:
+    """90m, 2h, 1d, or a number of seconds."""
+    if not (match := DURATION.fullmatch(text.strip().lower())):
+        raise SessionError(f"Not a duration: {text!r}. Use 90m, 2h, 1d, or seconds.")
+    return int(match[1]) * UNITS[match[2]]
+
+
+def model_env(cfg: HarnessConfig) -> dict[str, str]:
+    """Model credentials opencode gets in its environment: the driver's Anthropic
+    key, or its placeholder when the gateway is the one that holds the key."""
+    if cfg.provider != "anthropic" or not os.environ.get("ANTHROPIC_API_KEY"):
+        return {}
+    if "model" in cfg.egress_inject:
+        return {"ANTHROPIC_API_KEY": containers.MODEL_CREDENTIALS["ANTHROPIC_API_KEY"][1]}
+    return {"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]}
+
+
 def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
-    """opencode's config for the harness's model settings, where they describe an
-    OpenAI-compatible endpoint (llama.cpp's server is one). None for anything else."""
+    """opencode's config for the harness's model settings: Anthropic with a key on
+    the driver, or an OpenAI-compatible endpoint (llama.cpp's server is one).
+    None for anything else."""
+    if model_env(cfg):
+        # opencode knows Anthropic already; it only needs telling which model.
+        return {"$schema": "https://opencode.ai/config.json", "model": f"anthropic/{cfg.model_id}",
+                "autoupdate": False, "share": "disabled"}
     if cfg.provider == "llamacpp" and cfg.base_url:
         # As for the Strands engine: base_url is the server's root.
         base = cfg.base_url.rstrip("/") + "/v1"
@@ -129,7 +161,7 @@ def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
 
 def model_endpoint(config: dict[str, Any] | None) -> tuple[str, ...]:
     """The allowlist entry that lets the session reach the model in `config`."""
-    if not config:
+    if not config or "provider" not in config:
         return ()
     url = urlsplit(config["provider"]["harness"]["options"]["baseURL"])
     if not url.hostname:
@@ -188,6 +220,9 @@ def describe(record: dict[str, Any]) -> str:
     if record["bind"] == "0.0.0.0":
         where += f"  (and on this machine's other addresses, port {record['port']})"
     lines = [f"  UI:        {where}", f"  user:      {UI_USER}", f"  password:  {record['password']}"]
+    limits = [f"{what} {record[key]}s" for what, key in (("idle", "idle"), ("lifetime", "lifetime")) if record.get(key)]
+    if limits:
+        lines.append(f"  stops:     after {', '.join(limits)}")
     if terminal := record.get("terminal"):
         lines += [f"  terminal:  http://{_local(record['bind'])}:{terminal['port']}/", f"  token:     {terminal['token']}"]
     return "\n".join(lines)
@@ -220,11 +255,11 @@ def start_terminal(box: str, workdir: str) -> str:
 
 def start(
     cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", config_file: str = "",
-    terminal: bool | None = None, terminal_port: int = 0,
+    terminal: bool | None = None, terminal_port: int = 0, idle: str | None = None, lifetime: str | None = None,
 ) -> str:
     """Start the session, or report a running one. Returns what to tell the user.
 
-    `terminal` None keeps whatever the session had last time.
+    `terminal`, `idle` and `lifetime` None keep whatever the session had last time.
     """
     box = container_name(name)
     if not shutil.which(BINARY):
@@ -247,9 +282,21 @@ def start(
         config = opencode_config(cfg)
         endpoint = model_endpoint(config)
 
-    # A session is reached through its gateway, so it always has one.
-    if cfg.egress == "open":
-        cfg = replace(cfg, egress="log")
+    # A session is reached through its gateway, so it always has one. Its model
+    # calls come from the container, which is what `--egress-inject model` is for.
+    cfg = replace(cfg, egress="log" if cfg.egress == "open" else cfg.egress, engine="opencode")
+    if record and bool(record.get("root")) != cfg.container_root:
+        raise SessionError(
+            f"Session {name} was created {'with' if record.get('root') else 'without'} --root, and its files are "
+            "owned accordingly. Start it the same way, or `session rm` it and start afresh."
+        )
+    try:
+        containers.check_root(cfg, BINARY)
+    except ContainerError as err:
+        raise SessionError(str(err)) from err
+    limits = {key: seconds(given) if given is not None else int(record.get(key) or 0)
+              for key, given in (("idle", idle), ("lifetime", lifetime))}
+    gateway_env = tuple(f"EGRESS_{key.upper()}={value}" for key, value in limits.items() if value)
     bind = bind or record.get("bind") or "127.0.0.1"
     port = port or record.get("port") or _free_port(bind)
     password = record.get("password") or secrets.token_urlsafe(18)
@@ -267,14 +314,17 @@ def start(
     try:
         network, proxy, flags = containers.start_egress(
             cfg, binary=BINARY, name=box, slug=slug, allow=endpoint, inbound=tuple(inbound), labels=label,
+            gateway_env=gateway_env,
         )
     except ContainerError as err:
         raise SessionError(str(err)) from err
     target = DockerTarget(repo=repo, container=box, binary=BINARY, owned=True, proxy=proxy, network=network)
     try:
         mounts = [arg for volume, path in volumes(name).items() for arg in ("--volume", f"{volume}:{path}")]
+        # Up for as long as the gateway is: when that exits (idle, lifetime, or a crash), so does this.
+        wait = ["burst-sandbox-wait", containers.gateway_address(flags), str(containers.PROXY_PORT)]
         proc = _podman(*containers.run_argv(cfg, binary=BINARY, name=box, slug=slug,
-                                             network_args=[*flags, *label, *mounts])[1:])
+                                             network_args=[*flags, *label, *mounts])[1:], *wait)
         if proc.returncode != 0:
             raise SessionError(f"{BINARY} run {cfg.image} failed: {proc.stderr.strip()}")
         needed = (*REQUIRED_COMMANDS, "opencode", *(("zellij", "socat") if terminal else ()))
@@ -299,11 +349,13 @@ def start(
                 "it. Set one up in the UI, or pass --opencode-config FILE."
             )
 
-        # The password goes in by name, from this process's environment: it is in
-        # neither a command line nor the container's own configuration.
+        # The password, and any model key, go in by name from this process's
+        # environment: they are in neither a command line nor the container's
+        # own configuration.
         serve = f"exec opencode web --hostname 0.0.0.0 --port {UI_PORT} >> /tmp/opencode.log 2>&1"
-        proc = _podman("exec", "--detach", "--workdir", repo, "-e", "OPENCODE_SERVER_PASSWORD", box, "sh", "-c", serve,
-                       env={"OPENCODE_SERVER_PASSWORD": password})
+        secret_env = {"OPENCODE_SERVER_PASSWORD": password, **model_env(cfg)}
+        proc = _podman("exec", "--detach", "--workdir", repo, *(arg for key in secret_env for arg in ("-e", key)),
+                       box, "sh", "-c", serve, env=secret_env)
         if proc.returncode != 0:
             raise SessionError(f"Could not start opencode: {proc.stderr.strip()}")
         if not _wait_for_ui(bind, port):
@@ -323,6 +375,7 @@ def start(
         "name": name, "bind": bind, "port": port, "password": password,
         "repo_url": git.redact_url(cfg.repo_url), "image": cfg.image, "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "root": cfg.container_root, **limits,
     }
     if terminal:
         record["terminal"] = {"port": terminal_port, "token": token}

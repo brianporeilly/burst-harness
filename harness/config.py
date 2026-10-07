@@ -94,6 +94,10 @@ class HarnessConfig:
     image: str = "ghcr.io/brianporeilly/burst-harness-sandbox:main"
     # Extra `run` flags for a started container (resource limits, --network...).
     container_args: str = ""
+    # Run a started container as root, with the few capabilities a package
+    # manager needs, so the agent can `dnf install`. Rootless podman only: there
+    # root in the container is your own unprivileged user outside it.
+    container_root: bool = False
     # Network access for a started container. "open": its normal network.
     # "log" and "allowlist": no route out at all except a gateway sidecar (see
     # gateway/), which records everything that passes. "log" lets it all

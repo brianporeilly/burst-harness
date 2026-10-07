@@ -22,6 +22,7 @@ def test_run_argv_hardening_and_network():
     )
     assert argv[:5] == ["podman", "run", "--detach", "--name", "n"]
     assert "--cap-drop=ALL" in argv and "--security-opt=no-new-privileges" in argv
+    assert "--user" not in argv and not any(a.startswith("--cap-add") for a in argv)
     assert argv[-5:] == ["--network", "n-net", "--memory", "2g", "img"]
 
 
@@ -98,3 +99,31 @@ def test_model_rule_is_refused_for_an_engine_on_the_driver(monkeypatch):
 def test_allowlist_takes_extra_entries_once():
     cfg = HarnessConfig(repo_url="https://github.com/o/r.git", egress_allow=("github.com",))
     assert containers.allowlist(cfg, ("llm.lan:8080", "github.com")) == ["github.com", "llm.lan:8080"]
+
+
+def test_root_gets_only_the_capabilities_to_install_packages():
+    argv = containers.run_argv(HarnessConfig(image="img", container_root=True), binary="podman", name="n", slug="t")
+    assert argv[argv.index("--user") + 1] == "0"
+    assert "--cap-drop=ALL" in argv and "--security-opt=no-new-privileges" in argv
+    added = {a.split("=", 1)[1] for a in argv if a.startswith("--cap-add=")}
+    assert added == set(containers.ROOT_CAPABILITIES)
+    assert not added & {"SYS_ADMIN", "NET_ADMIN", "NET_RAW", "SYS_PTRACE", "MKNOD"}
+
+
+def test_root_is_refused_unless_podman_is_rootless(monkeypatch):
+    cfg = HarnessConfig(container_root=True)
+    monkeypatch.setattr(containers, "_run", lambda *a, **k: "false")
+    with pytest.raises(containers.ContainerError, match="rootless podman"):
+        containers.check_root(cfg, "podman")
+    with pytest.raises(containers.ContainerError, match="rootless podman"):
+        containers.check_root(cfg, "docker")
+    monkeypatch.setattr(containers, "_run", lambda *a, **k: "true")
+    containers.check_root(cfg, "podman")
+    containers.check_root(HarnessConfig(), "docker")  # not asked for: nothing to check
+
+
+def test_model_rule_is_allowed_for_a_sessions_opencode(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    (rule,) = containers.inject_rules(HarnessConfig(engine="opencode", egress_inject=("model",)))
+    assert rule["host"] == "api.anthropic.com"

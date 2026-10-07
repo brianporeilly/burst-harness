@@ -1,0 +1,23 @@
+#!/bin/sh
+# burst-sandbox-wait: keep the container up for as long as its gateway is there.
+#
+#   burst-sandbox-wait HOST PORT
+#
+# The command of a `harness session` container, in place of `sleep infinity`.
+# The gateway is the sandbox's only way in or out, and it is what decides a
+# session has been idle long enough (or lived long enough) and exits. Without
+# it there is nothing a sandbox can do or be reached for, so this exits too --
+# taking everything running in the container with it. The volumes stay.
+#
+# Three failed connections in a row, a minute or so, before giving up.
+set -u
+fails=0
+while [ "$fails" -lt 3 ]; do
+  sleep 20
+  if python3 -c 'import socket, sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), 5).close()' "$1" "$2" 2>/dev/null; then
+    fails=0
+  else
+    fails=$((fails + 1))
+  fi
+done
+echo "burst-sandbox-wait: gateway $1:$2 is gone; stopping." >&2

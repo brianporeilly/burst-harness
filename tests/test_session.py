@@ -65,3 +65,31 @@ def test_describe_shows_the_terminal_when_there_is_one():
     shown = session.describe(record)
     assert "http://127.0.0.1:4101/" in shown and "tok" in shown
     assert "terminal" not in session.describe({"bind": "127.0.0.1", "port": 4100, "password": "pw"})
+
+
+@pytest.mark.parametrize("text,expected", [("90", 90), ("45s", 45), ("90m", 5400), ("2h", 7200), ("1d", 86400), ("0", 0)])
+def test_seconds(text, expected):
+    assert session.seconds(text) == expected
+
+
+def test_seconds_rejects_nonsense():
+    for bad in ("", "soon", "2 hours", "-5", "1.5h"):
+        with pytest.raises(session.SessionError):
+            session.seconds(bad)
+
+
+def test_anthropic_key_reaches_opencode_as_itself_or_as_a_placeholder(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    cfg = HarnessConfig(model_id="claude-x")
+    assert session.model_env(cfg) == {"ANTHROPIC_API_KEY": "real-key"}
+    config = session.opencode_config(cfg)
+    assert config["model"] == "anthropic/claude-x" and "provider" not in config
+    assert session.model_endpoint(config) == ()
+    held = session.model_env(HarnessConfig(egress_inject=("model",)))
+    assert "real-key" not in held.values() and "placeholder" in held["ANTHROPIC_API_KEY"]
+    assert session.model_env(HarnessConfig(provider="llamacpp", base_url="http://l:1")) == {}
+
+
+def test_describe_shows_when_it_stops():
+    record = {"bind": "127.0.0.1", "port": 1, "password": "pw", "idle": 7200, "lifetime": 0}
+    assert "after idle 7200s" in session.describe(record)

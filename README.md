@@ -128,7 +128,15 @@ Starts a container from `--image` (default
 `ghcr.io/brianporeilly/burst-harness-sandbox:main`) with no host mounts, no
 capabilities, and `no-new-privileges`, clones into it, works, and removes it —
 the local twin of an agent-sandbox claim. `container_args` adds `run` flags
-(`--memory 4g`, ...). A container with uncommitted work and no terminal state is
+(`--memory 4g`, ...).
+
+`--root` runs the container as root so the agent can `dnf install` what a task
+needs, with only the capabilities that takes (changing file ownership and
+switching user; nothing over the network stack or the system) and
+`no-new-privileges` still set. It is refused unless podman is rootless, where
+root in the container is your own unprivileged user outside it. What is
+installed lasts as long as the container. For a session, `--root` is fixed when
+it is created, since its volumes' files are owned accordingly. A container with uncommitted work and no terminal state is
 kept; `harness list` shows it and `harness --target podman --docker-container
 NAME release` removes it.
 
@@ -315,6 +323,14 @@ workspace starts empty. podman only, for now.
   because it is a shell in the sandbox — whoever can log in can do whatever the
   agent can, including use credentials the gateway adds. A session remembers the
   choice; `--no-terminal` turns it off. The token is replaced on every start.
+- **Stopping by itself** (`--idle 2h`, `--lifetime 1d`). Nothing of the harness
+  keeps running after `start`, so the gateway keeps count: it sees everything
+  that goes in or out, and exits after that long with no new activity (or that
+  long after starting). The sandbox notices within about a minute and exits
+  too. The result is the same as `session stop`: `list` shows it stopped,
+  `start` brings it back, and the session remembers the setting. A browser tab
+  left open on the UI may count as activity for as long as it keeps making
+  requests.
 - **Egress** is `--egress log` unless you ask for `allowlist`; a session always
   has a gateway, since that is how it is reached. `--egress-inject git` works as
   it does for tasks, and is how the session pushes: there are no terminal-state
@@ -323,13 +339,16 @@ workspace starts empty. podman only, for now.
 - **The model.** With `provider = "llamacpp"` (or `"openai"`) and `base_url`
   set, the harness writes opencode's config from your model settings, and in
   `allowlist` mode lets the session reach that one host and port — plain HTTP to
-  a llama-server on your LAN included. For anything else, pass
+  a llama-server on your LAN included. With the default `anthropic` provider and
+  `ANTHROPIC_API_KEY` on the driver, opencode is pointed at `model_id` and given
+  the key — or, with `--egress-inject model`, a placeholder that the gateway
+  makes real, so the key is never in the session. For anything else, pass
   `--opencode-config my-opencode.json` (used as is; allow its hosts with
   `--egress-allow`), or set a provider up in the UI.
 - An allowlist entry may name a port — `--egress-allow llm.lan:8080,...` — to
   allow a host on that port instead of 443.
 
-Not there yet: idle shutdown, and anything but podman.
+Not there yet: anything but podman.
 
 ## Engines
 

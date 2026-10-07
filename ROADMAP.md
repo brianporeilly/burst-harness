@@ -133,8 +133,12 @@ server only listens on loopback without a certificate, so socat relays to it
 inside the sandbox and the gateway passes connections to that; its own login
 token is the authentication.
 
-Remaining: idle reaping and a lifetime, root-in-container opt-in, opencode's
-model credentials at the gateway.
+Also done: `--idle` and `--lifetime` (the gateway counts and exits; the
+sandbox follows), `--root` on rootless podman for tasks and sessions, and
+opencode's Anthropic key at the gateway (`--egress-inject model`).
+
+Phase 4 is complete on podman. Carried forward: sessions on anything but
+podman, and TLS for the UIs (they are plain HTTP behind a password or token).
 
 - `opencode` engine; llama.cpp via its OpenAI-compatible endpoint.
 - `harness session`: start detached, list, reattach, stop. Optional repo.
