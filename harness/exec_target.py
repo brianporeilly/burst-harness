@@ -199,10 +199,12 @@ class DockerTarget(SubprocessTarget):
     binary: str = "docker"
     # True when the harness started this container (see containers.py).
     owned: bool = False
-    # With egress=allowlist: the proxy sidecar and the internal network, both
-    # removed along with the container.
+    # With egress=log/allowlist: the gateway sidecar and the internal network,
+    # both removed along with the container, and the file the gateway's events
+    # are saved to first.
     proxy: str = ""
     network: str = ""
+    events: str = ""
 
     def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
         argv = [self.binary, "exec"]
@@ -219,12 +221,25 @@ class DockerTarget(SubprocessTarget):
     def release(self) -> str:
         if not self.owned:
             return ""
+        saved = self.save_events()
         removed = [name for name in (self.container, self.proxy) if name]
         subprocess.run([self.binary, "rm", "-f", "-t", "0", *removed], capture_output=True)
         if self.network:
             subprocess.run([self.binary, "network", "rm", self.network], capture_output=True)
             removed.append(f"network {self.network}")
-        return f"Removed {', '.join(removed)}."
+        return f"Removed {', '.join(removed)}.{saved}"
+
+    def save_events(self) -> str:
+        """Copy the gateway's events (its stdout) out before it is removed."""
+        if not (self.proxy and self.events):
+            return ""
+        proc = subprocess.run([self.binary, "logs", self.proxy], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if proc.returncode != 0 or not proc.stdout:
+            return ""
+        path = Path(self.events)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(proc.stdout)
+        return f" Egress events: {path}"
 
     def attach_hint(self) -> str:
         return f"--target {self.binary} --docker-container {self.container}"

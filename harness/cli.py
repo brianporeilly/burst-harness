@@ -123,6 +123,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "docker_container": args.docker_container,
         "image": args.image,
         "egress": args.egress,
+        "gateway_image": args.gateway_image,
         "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
         "engine": args.engine,
         "claude_json": args.claude_json,
@@ -449,9 +450,12 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--docker-container", dest="docker_container",
                        help="Attach to this container, for target=docker/podman. Default: start a fresh one.")
     where.add_argument("--image", help="Image a fresh docker/podman container starts from.")
-    where.add_argument("--egress", choices=["open", "allowlist"],
-                       help="Network for a fresh docker/podman container. allowlist: no route out except an "
-                            "HTTPS proxy to --egress-allow hosts (default: open).")
+    where.add_argument("--egress", choices=["open", "log", "allowlist"],
+                       help="Network for a fresh docker/podman container. log: no route out except a gateway "
+                            "that records everything. allowlist: the gateway only reaches --egress-allow hosts, "
+                            "over HTTPS (default: open).")
+    where.add_argument("--gateway-image", dest="gateway_image",
+                       help="Image of the gateway sidecar, for --egress log/allowlist.")
     where.add_argument("--egress-allow", dest="egress_allow",
                        help="Comma-separated hosts for --egress allowlist; replaces the default list. "
                             "'*.example.com' matches subdomains. The repo's host is always added.")

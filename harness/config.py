@@ -95,9 +95,12 @@ class HarnessConfig:
     # Extra `run` flags for a started container (resource limits, --network...).
     container_args: str = ""
     # Network access for a started container. "open": its normal network.
-    # "allowlist": no route out at all except an HTTPS proxy sidecar that
-    # reaches only egress_allow (plus the repo's host and ANTHROPIC_BASE_URL's).
+    # "log" and "allowlist": no route out at all except a gateway sidecar (see
+    # gateway/), which records everything that passes. "log" lets it all
+    # through; "allowlist" reaches only egress_allow (plus the repo's host and
+    # ANTHROPIC_BASE_URL's), over HTTPS.
     egress: str = "open"
+    gateway_image: str = "ghcr.io/brianporeilly/burst-harness-gateway:main"
     egress_allow: tuple[str, ...] = (
         "api.anthropic.com",
         "github.com", "*.githubusercontent.com",

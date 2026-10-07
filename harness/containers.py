@@ -9,13 +9,14 @@ container instead and leaves it alone afterwards.
 The container gets no host mounts, no capabilities, and no credentials; the
 harness clones into it and pushes out of it with a token passed per command.
 
-Optional egress allowlist (`--egress allowlist`): the container is attached
-only to its own `--internal` network (no route out, and no DNS on podman), and
-a proxy sidecar -- the same image running burst-egress-proxy -- sits on that
-network and the normal one. HTTPS_PROXY points at the sidecar by IP; it allows
-CONNECT to listed hosts on port 443 and logs every decision, so `podman logs
-<name>-egress` is the audit trail. Sidecar and network are removed with the
-container.
+Optional gateway (`--egress log` or `allowlist`): the container is attached
+only to its own `--internal` network (no route out), and a gateway sidecar --
+`gateway_image`, see gateway/ -- sits on that network and the normal one. The
+container's proxy variables and its resolver point at the sidecar by IP. `log`
+lets everything through; `allowlist` allows CONNECT to listed hosts on port
+443. Either way every decision is an event on the sidecar's stdout, so `podman
+logs <name>-egress` is the audit trail, saved under `state_dir`/egress when the
+sidecar and network are removed with the container.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .agent_sandbox import LABEL_MANAGED_BY, LABEL_TASK, MANAGED_BY, REQUIRED_COMMANDS, label_value
@@ -38,6 +40,7 @@ class ContainerError(RuntimeError):
 
 
 PROXY_PORT = 3128
+EGRESS_MODES = ("open", "log", "allowlist")
 # The runtime's default network, which has a route out.
 DEFAULT_NETWORK = {"podman": "podman", "docker": "bridge"}
 
@@ -71,6 +74,17 @@ def allowlist(cfg: HarnessConfig) -> list[str]:
     return hosts
 
 
+def check_reachable(cfg: HarnessConfig) -> None:
+    """egress=log passes any host, but only through the proxy: git over ssh has no way out."""
+    if cfg.repo_url and urlsplit(cfg.repo_url).scheme not in ("http", "https"):
+        raise ContainerError(f"--egress {cfg.egress} only passes HTTP(S); {cfg.repo_url} is not an http(s):// URL.")
+
+
+def events_path(cfg: HarnessConfig, name: str) -> str:
+    """Where a container's gateway events are saved when it is removed."""
+    return str(Path(cfg.state_dir).expanduser() / "egress" / f"{name}.jsonl")
+
+
 def _run(binary: str, *args: str) -> str:
     proc = subprocess.run([binary, *args], capture_output=True, text=True)
     if proc.returncode != 0:
@@ -79,26 +93,33 @@ def _run(binary: str, *args: str) -> str:
 
 
 def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tuple[str, str, list[str]]:
-    """Create the internal network and proxy sidecar.
+    """Create the internal network and gateway sidecar.
 
     Returns (network, proxy, run flags that put a container behind them).
     """
+    if cfg.egress == "allowlist":
+        hosts = allowlist(cfg)
+        policy, summary = ["-e", f"EGRESS_ALLOW={','.join(hosts)}"], f"allowlist: {', '.join(hosts)}"
+    else:
+        check_reachable(cfg)
+        policy, summary = [], "everything passes and is recorded"
     network, proxy = f"{name}-net", f"{name}-egress"
     create = ["network", "create", "--internal", network]
     if binary == "podman":
-        # No DNS at all on the sandbox's network: it reaches the proxy by IP and
-        # can't even resolve anything else.
+        # The network's own resolver is off: the sandbox reaches the gateway by
+        # IP, and its only resolver is the gateway's DNS sink.
         create.insert(3, "--disable-dns")
     _run(binary, *create)
-    hosts = allowlist(cfg)
     try:
         _run(
             binary, "run", "--detach", "--name", proxy, *_labels(slug),
             "--network", DEFAULT_NETWORK.get(binary, "bridge"),
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
-            "--entrypoint", "burst-egress-proxy",
-            "-e", f"EGRESS_ALLOW={','.join(hosts)}", "-e", f"EGRESS_LISTEN={PROXY_PORT}",
-            cfg.image,
+            # Lets the unprivileged gateway bind its DNS sink to port 53.
+            "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
+            "-e", f"EGRESS_MODE={cfg.egress}", "-e", f"EGRESS_LISTEN={PROXY_PORT}",
+            "-e", f"EGRESS_SANDBOX={name}", *policy,
+            cfg.gateway_image,
         )
         _run(binary, "network", "connect", network, proxy)
         ip = _run(binary, "inspect", proxy, "--format",
@@ -110,12 +131,16 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
     url = f"http://{ip}:{PROXY_PORT}"
     env = [f"{k}={url}" for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy")]
     env += ["NO_PROXY=localhost,127.0.0.1", "no_proxy=localhost,127.0.0.1",
-            # Claude Code's telemetry and update checks would only be refused.
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"]
-    flags = ["--network", network]
+            # Node's own fetch ignores the proxy variables unless told otherwise.
+            "NODE_USE_ENV_PROXY=1"]
+    if cfg.egress == "allowlist":
+        # Claude Code's telemetry and update checks would only be refused.
+        env.append("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
+    # "." clears the host's search domains, which would otherwise be inherited.
+    flags = ["--network", network, "--dns", ip, "--dns-search", "."]
     for item in env:
         flags += ["-e", item]
-    print(f"Egress allowlist via {proxy}: {', '.join(hosts)}")
+    print(f"Egress via {proxy} ({summary}).")
     return network, proxy, flags
 
 
@@ -125,20 +150,21 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
         return DockerTarget(repo=repo, container=cfg.docker_container, binary=binary)
     if not cfg.image:
         raise ContainerError(f"target={binary} needs --docker-container or --image.")
-    if cfg.egress not in ("open", "allowlist"):
-        raise ContainerError(f"egress must be open or allowlist (got {cfg.egress!r}).")
+    if cfg.egress not in EGRESS_MODES:
+        raise ContainerError(f"egress must be one of {', '.join(EGRESS_MODES)} (got {cfg.egress!r}).")
     if not shutil.which(binary):
         raise ContainerError(f"{binary} is not installed or not on PATH.")
     name = f"burst-{label_value(slug)[:40]}-{secrets.token_hex(3)}"
     network = proxy = ""
     network_args: list[str] = []
-    if cfg.egress == "allowlist":
+    if cfg.egress != "open":
         network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug)
     proc = subprocess.run(
         run_argv(cfg, binary=binary, name=name, slug=slug, network_args=network_args),
         capture_output=True, text=True,
     )
-    target = DockerTarget(repo=repo, container=name, binary=binary, owned=True, proxy=proxy, network=network)
+    target = DockerTarget(repo=repo, container=name, binary=binary, owned=True, proxy=proxy, network=network,
+                          events=events_path(cfg, name) if proxy else "")
     if proc.returncode != 0:
         target.release()
         raise ContainerError(f"{binary} run {cfg.image} failed: {proc.stderr.strip()}")
@@ -163,7 +189,8 @@ def kept(cfg: HarnessConfig, *, binary: str) -> DockerTarget:
                                capture_output=True).returncode == 0
     has_network = subprocess.run([binary, "network", "inspect", network], capture_output=True).returncode == 0
     return DockerTarget(repo="/", container=name, binary=binary, owned=True,
-                        proxy=proxy if has_proxy else "", network=network if has_network else "")
+                        proxy=proxy if has_proxy else "", network=network if has_network else "",
+                        events=events_path(cfg, name) if has_proxy else "")
 
 
 def list_containers() -> list[dict[str, str]]:

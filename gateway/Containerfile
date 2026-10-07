@@ -1,0 +1,21 @@
+# Burst Harness gateway — a sandbox's only network peer.
+#
+# One per sandbox, on the sandbox's internal network and the normal one. See
+# burst_gateway.py's header for what it does and its EGRESS_* settings.
+#
+# Deliberately small and separate from the sandbox image: nothing here is for
+# the agent, and nothing in the harness is imported.
+FROM registry.fedoraproject.org/fedora-minimal:44
+
+RUN microdnf -y install --setopt=install_weak_deps=0 python3 \
+ && microdnf clean all
+
+COPY burst_gateway.py /usr/local/bin/burst-gateway
+RUN chmod 755 /usr/local/bin/burst-gateway
+
+# Unprivileged. Binding the DNS sink to port 53 needs the runtime to lower
+# net.ipv4.ip_unprivileged_port_start (the harness passes --sysctl for it), or
+# EGRESS_DNS=0 to go without.
+USER 65532
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["burst-gateway"]

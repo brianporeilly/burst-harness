@@ -68,6 +68,11 @@ control plane needs to store specs).
 
 ### 1. Gateway v0: observe
 
+Done for podman/docker: `--egress log`, `gateway/`, events saved under
+`state_dir` when the container is removed. Chosen for DNS: a sink that answers
+NXDOMAIN and records the query, since nothing behind the proxy needs a real
+answer and forwarding would open a way out that the allowlist does not have.
+
 - `gateway/` with its own image; `burst-egress-proxy` moves there.
 - `--egress log`: everything allowed, everything recorded, to learn what agents
   reach for before writing allowlists.

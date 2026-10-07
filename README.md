@@ -131,14 +131,41 @@ the local twin of an agent-sandbox claim. `container_args` adds `run` flags
 kept; `harness list` shows it and `harness --target podman --docker-container
 NAME release` removes it.
 
-**Optional egress allowlist** (`--egress allowlist`; default `open`). The
-container is attached only to its own `--internal` network — no route out, and
-on podman no DNS — and a proxy sidecar (the same image running
-`burst-egress-proxy`) is the only way out: HTTPS `CONNECT` to allowlisted hosts on
-port 443, nothing else. Every decision is logged; `podman logs <name>-egress` is
-the audit trail. The default list is `api.anthropic.com`, GitHub, PyPI, and npm;
+**Optional gateway** (`--egress log` or `--egress allowlist`; default `open`).
+The container is attached only to its own `--internal` network — no route out —
+and a gateway sidecar (`--gateway-image`, built from `gateway/`) is the only way
+out. Its proxy variables and its resolver point at the sidecar.
+
+| `--egress` | Passes | Use |
+|---|---|---|
+| `open` | everything, unrecorded | the container's normal network |
+| `log` | everything through the proxy, HTTP and HTTPS | see what an agent reaches for before writing an allowlist |
+| `allowlist` | HTTPS `CONNECT` to listed hosts on port 443 | hold it to that list |
+
+In `allowlist` the default list is `api.anthropic.com`, GitHub, PyPI, and npm;
 `--egress-allow a.com,*.b.com` replaces it, and the repo's host (and
-`ANTHROPIC_BASE_URL`'s) are always added. Repos must be cloned over HTTPS.
+`ANTHROPIC_BASE_URL`'s) are always added. A refusal is an immediate 403 with a
+JSON body naming the host. Repos must be cloned over HTTP(S) in either mode.
+
+Every decision is a JSON event on the sidecar's stdout — `podman logs
+<name>-egress` while it runs — and the events are saved to
+`<state_dir>/egress/<name>.jsonl` when the container is removed:
+
+```json
+{"ts": "2026-10-07T05:23:10Z", "sandbox": "burst-my-slug-b94222", "kind": "connect", "verdict": "allow", "id": "a449cc-3", "peer": "10.89.1.2", "host": "github.com", "port": 443}
+{"ts": "2026-10-07T05:23:10Z", "sandbox": "burst-my-slug-b94222", "kind": "connect", "verdict": "close", "id": "a449cc-3", "bytes_up": 1911, "bytes_down": 587427, "ms": 469, "peer": "10.89.1.2", "host": "github.com", "port": 443}
+{"ts": "2026-10-07T05:23:12Z", "sandbox": "burst-my-slug-b94222", "kind": "dns", "verdict": "deny", "id": "a449cc-5", "peer": "10.89.1.2", "host": "example.net", "qtype": "A", "detail": "no DNS in the sandbox; this lookup did not go through the proxy"}
+```
+
+`kind` is `connect` (an HTTPS tunnel: the host is seen, the contents are not),
+`http` (plain HTTP, with method and path; the query string is not recorded), or
+`dns`. Software that honours the proxy never resolves a name itself, so the
+gateway's resolver answers nothing: a `dns` event is software that ignored the
+proxy. It had no route anyway, and the lookup is the trace it leaves. A
+connection to a bare IP address that ignores the proxy is blocked without one.
+
+`log` is for observing, not containing: through the proxy the sandbox can reach
+anything the host can, your LAN included — the same reach as `open`.
 
 ### The driver holds every secret
 
@@ -311,12 +338,13 @@ place. Anything a provider cannot accept is logged, not silently dropped.
 
 ## Containers
 
-Two images, both published to GHCR by `.github/workflows/images.yml`:
+Three images, all published to GHCR by `.github/workflows/images.yml`:
 
 | Image | Built from | Role |
 |---|---|---|
 | `burst-harness` | `Dockerfile` | The driver: harness, `git`, `gh`, `kubectl`. |
 | `burst-harness-sandbox` | `images/sandbox/Containerfile` | What a SandboxTemplate runs. |
+| `burst-harness-gateway` | `gateway/Containerfile` | The egress gateway sidecar. Standalone: nothing from the harness. |
 
 Locally with podman, the simplest mode makes the container itself the sandbox
 (target `local` inside it; your key is in the container, which is fine on your own
