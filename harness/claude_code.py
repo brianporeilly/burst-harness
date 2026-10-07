@@ -27,6 +27,10 @@ Credentials: unlike the Strands engine, the agent loop runs *in* the target, so
 model credentials must be there while it runs. They are written to a 0600 file
 in the target from the driver's environment (never argv) and removed afterwards.
 The git token still never enters the target.
+
+With ``egress_inject = model`` they are not there either: the file holds
+placeholders, and the target's gateway puts the real credential in their place
+on requests to the API (see containers.py).
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from . import git, git_policy, state, terminal
+from .containers import MODEL_CREDENTIALS
 from .agent_sandbox import label_value
 from .context import HarnessContext
 from .exec_target import LocalTarget, SubprocessTarget
@@ -116,6 +121,11 @@ class ClaudeCodeEngine:
         self.hook_path = f"{REMOTE_DIR}/git_policy.py"
 
         creds = {name: os.environ[name] for name in CREDENTIAL_VARS if os.environ.get(name)}
+        if "model" in cfg.egress_inject:
+            # The gateway holds the real ones and swaps them in for these.
+            creds = {name: MODEL_CREDENTIALS[name][1] if name in MODEL_CREDENTIALS else value
+                     for name, value in creds.items()}
+            print("Model credentials stay at the gateway; the target has placeholders.")
         if creds:
             self._upload(ENV_FILE, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in creds.items()))
             self.has_env_file = True

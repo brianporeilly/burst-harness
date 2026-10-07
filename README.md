@@ -188,12 +188,24 @@ gateway process itself runs unprivileged. On docker there is no way to give the
 network a route, so software that ignores the proxy simply has no route: its
 lookups are recorded and refused, and a connection to a bare IP leaves no trace.
 
-**Credentials the container never holds** (`--egress-inject git`, with `log` or
-`allowlist`). The gateway terminates TLS to the repo's host and adds the
-driver's git token to requests for that repo — `/<owner>/<repo>.git/...` and
-nothing else on the host. `git clone`, `fetch` and `push` in the container then
-just work, the harness's and the agent's alike, and the token is in neither the
-container's environment, its git config, nor any command line there.
+**Credentials the container never holds** (`--egress-inject git,model`, with
+`log` or `allowlist`). The gateway terminates TLS to the host a credential is
+for and adds it there.
+
+- `git`: the driver's git token, on requests for the repo —
+  `/<owner>/<repo>.git/...` and nothing else on the host. `git clone`, `fetch`
+  and `push` in the container then just work, the harness's and the agent's
+  alike, and the token is in neither the container's environment, its git
+  config, nor any command line there.
+- `model` (with `--engine claude-code`): `ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_AUTH_TOKEN`. The container is given a
+  placeholder for each one set on the driver; on requests to the API's host
+  (`api.anthropic.com`, or `ANTHROPIC_BASE_URL`'s) the gateway swaps the real
+  credential in for whichever placeholder Claude Code sent, in the header it
+  belongs in and nowhere else. A request carrying some other credential is left
+  alone.
+
+How it is done:
 
 - The gateway makes a CA when it starts; its key stays in the gateway. The
   harness has the container trust the certificate (`burst-sandbox-trust`, run as
@@ -299,7 +311,9 @@ commit, push, PR, release — is the same.
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_BASE_URL` are copied
   from the driver's environment into a 0600 file in the target for the run and
   removed after. Unlike the Strands engine the loop runs in the target, so the
-  credential is there while it runs. The git token never is.
+  credential is there while it runs — unless you pass `--egress-inject model`
+  (see the gateway, above), which leaves only placeholders there. The git token
+  never is.
 
 **Your Claude Code config.** The sandbox image composes `~/.claude.json` and
 `~/.claude/settings.json` at start (`burst-sandbox-init`), deep-merging layers,

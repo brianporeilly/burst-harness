@@ -463,8 +463,9 @@ def main(argv: list[str] | None = None) -> int:
                             "that records everything. allowlist: the gateway only reaches --egress-allow hosts, "
                             "over HTTPS (default: open).")
     where.add_argument("--egress-inject", dest="egress_inject",
-                       help="Credentials the gateway adds so the container never holds them. 'git': the "
-                            "driver's git token, on requests to the repo. Needs --egress log or allowlist.")
+                       help="Comma-separated credentials the gateway adds so the container never holds them. "
+                            "git: the driver's git token, on requests to the repo. model: Claude Code's API "
+                            "key or token (engine=claude-code). Needs --egress log or allowlist.")
     where.add_argument("--gateway-image", dest="gateway_image",
                        help="Image of the gateway sidecar, for --egress log/allowlist.")
     where.add_argument("--egress-allow", dest="egress_allow",

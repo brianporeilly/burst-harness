@@ -65,5 +65,31 @@ def test_inject_needs_a_token_and_an_https_repo(monkeypatch):
     monkeypatch.setenv("HARNESS_GIT_TOKEN", "sekret")
     with pytest.raises(containers.ContainerError, match="https://"):
         containers.inject_rules(HarnessConfig(repo_url="git@github.com:o/r.git", egress_inject=("git",)))
-    with pytest.raises(containers.ContainerError, match="takes: git"):
-        containers.inject_rules(HarnessConfig(repo_url="https://github.com/o/r.git", egress_inject=("model",)))
+    with pytest.raises(containers.ContainerError, match="takes: git, model"):
+        containers.inject_rules(HarnessConfig(repo_url="https://github.com/o/r.git", egress_inject=("ssh",)))
+
+
+def test_model_rule_swaps_placeholders_for_the_drivers_credentials(monkeypatch):
+    cfg = HarnessConfig(engine="claude-code", egress="log", egress_inject=("model",))
+    for name in containers.MODEL_CREDENTIALS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    with pytest.raises(containers.ContainerError, match="needs a credential"):
+        containers.inject_rules(cfg)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "real-oauth")
+    (rule,) = containers.inject_rules(cfg)
+    assert rule["host"] == "api.anthropic.com"
+    assert {(w["header"], w["value"]) for w in rule["swap"]} == {("x-api-key", "real-key"), ("Authorization", "real-oauth")}
+    assert all("placeholder" in w["placeholder"] for w in rule["swap"])
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example/anthropic")
+    assert containers.inject_rules(cfg)[0]["host"] == "proxy.example"
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://llm.lan:8080")
+    with pytest.raises(containers.ContainerError, match="https:// on port 443"):
+        containers.inject_rules(cfg)
+
+
+def test_model_rule_is_refused_for_an_engine_on_the_driver(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    with pytest.raises(containers.ContainerError, match="never leaves"):
+        containers.inject_rules(HarnessConfig(engine="strands", egress_inject=("model",)))

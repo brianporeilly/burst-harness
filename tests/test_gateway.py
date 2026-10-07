@@ -149,11 +149,26 @@ def test_inject_rules_are_validated():
     assert gw.Inject.parse("") == ()
 
 
-def test_with_headers_replaces_the_requests_own():
+def test_headers_replace_the_requests_own():
     rule = gw.Inject(host="github.com", headers=(("Authorization", "Basic real"),))
-    sent = gw.with_headers([b"Host: github.com\r\n", b"authorization: Basic guess\r\n"], rule)
+    sent, changed = gw.with_credentials([b"Host: github.com\r\n", b"authorization: Basic guess\r\n"], rule)
     assert sent == [b"Host: github.com\r\n", b"Authorization: Basic real\r\n"]
-    assert gw.with_headers([b"Host: github.com\r\n"], None) == [b"Host: github.com\r\n"]
+    assert changed == ["Authorization"]
+    assert gw.with_credentials([b"Host: github.com\r\n"], None) == ([b"Host: github.com\r\n"], [])
+
+
+def test_swap_only_touches_the_header_carrying_its_placeholder():
+    rule = gw.Inject.parse(json.dumps([{"host": "api.anthropic.com", "swap": [
+        {"header": "x-api-key", "placeholder": "PH-KEY", "value": "real-key"},
+        {"header": "Authorization", "placeholder": "PH-OAUTH", "value": "real-oauth"},
+    ]}]))[0]
+    sent, changed = gw.with_credentials([b"X-Api-Key: PH-KEY\r\n", b"User-Agent: PH-KEY PH-OAUTH\r\n"], rule)
+    assert sent == [b"X-Api-Key: real-key\r\n", b"User-Agent: PH-KEY PH-OAUTH\r\n"]
+    assert changed == ["x-api-key"]
+    sent, changed = gw.with_credentials([b"authorization: Bearer PH-OAUTH\r\n"], rule)
+    assert sent == [b"authorization: Bearer real-oauth\r\n"] and changed == ["Authorization"]
+    # A request that brings its own credential, or none, is left alone.
+    assert gw.with_credentials([b"x-api-key: something-else\r\n"], rule) == ([b"x-api-key: something-else\r\n"], [])
 
 
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")

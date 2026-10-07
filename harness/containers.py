@@ -18,7 +18,8 @@ lets everything through; `allowlist` allows CONNECT to listed hosts on port
 whatever arrives into itself, so software that ignores the proxy is held to the
 same policy and recorded like the rest. With `egress_inject` the sidecar also
 terminates TLS to the repo's host and adds the git token there, so the
-container can clone and push without ever holding it. Either way every decision is an event on the sidecar's stdout, so `podman
+container can clone and push without ever holding it; and likewise to the model
+API's host, for an engine that runs in the container. Either way every decision is an event on the sidecar's stdout, so `podman
 logs <name>-egress` is the audit trail, saved under `state_dir`/egress when the
 sidecar and network are removed with the container.
 """
@@ -54,6 +55,16 @@ EGRESS_MODES = ("open", "log", "allowlist")
 GATEWAY_CA_DIR = "/run/burst-gateway"
 SANDBOX_CA_BUNDLE = "/etc/burst-harness/ca-bundle.crt"
 SANDBOX_CA = "/etc/burst-harness/gateway-ca.crt"
+# egress_inject = model. For each credential Claude Code reads from its
+# environment: the header it is sent in, and what the sandbox is given in its
+# place. The placeholders keep the real ones' prefixes, in case Claude Code
+# tells an API key from an OAuth token by looking.
+MODEL_CREDENTIALS = {
+    "ANTHROPIC_API_KEY": ("x-api-key", "sk-ant-api03-burst-gateway-placeholder-api-key"),
+    "CLAUDE_CODE_OAUTH_TOKEN": ("Authorization", "sk-ant-oat01-burst-gateway-placeholder-oauth-token"),
+    "ANTHROPIC_AUTH_TOKEN": ("Authorization", "burst-gateway-placeholder-auth-token"),
+}
+DEFAULT_MODEL_API = "https://api.anthropic.com"
 # The runtime's default network, which has a route out.
 DEFAULT_NETWORK = {"podman": "podman", "docker": "bridge"}
 
@@ -102,8 +113,11 @@ def inject_rules(cfg: HarnessConfig) -> list[dict[str, object]]:
     """The gateway's EGRESS_INJECT rules for `egress_inject`: where to add which credential."""
     rules: list[dict[str, object]] = []
     for what in cfg.egress_inject:
+        if what == "model":
+            rules.append(model_rule(cfg))
+            continue
         if what != "git":
-            raise ContainerError(f"--egress-inject takes: git (got {what!r}).")
+            raise ContainerError(f"--egress-inject takes: git, model (got {what!r}).")
         slug = git.repo_slug(cfg.repo_url)
         if not slug or not cfg.repo_url.startswith("https://"):
             raise ContainerError("--egress-inject git needs an https:// --repo-url to add the token to.")
@@ -117,6 +131,25 @@ def inject_rules(cfg: HarnessConfig) -> list[dict[str, object]]:
         rules += [{"host": host, "path": f"/{path}{suffix}/*", "headers": {"Authorization": f"Basic {basic}"}}
                   for suffix in (".git", "")]
     return rules
+
+
+def model_rule(cfg: HarnessConfig) -> dict[str, object]:
+    """Swap the placeholders the sandbox is given for the driver's model credentials, at the API's host."""
+    if cfg.engine != "claude-code":
+        raise ContainerError(
+            "--egress-inject model is for an engine that runs in the container (claude-code); "
+            f"with engine={cfg.engine} the model is called from the driver and its key never leaves."
+        )
+    api = urlsplit(os.environ.get("ANTHROPIC_BASE_URL") or DEFAULT_MODEL_API)
+    if api.scheme != "https" or not api.hostname or (api.port or 443) != 443:
+        raise ContainerError(f"--egress-inject model needs ANTHROPIC_BASE_URL to be https:// on port 443 (got {api.geturl()}).")
+    swap = [{"header": header, "placeholder": placeholder, "value": os.environ[name]}
+            for name, (header, placeholder) in MODEL_CREDENTIALS.items() if os.environ.get(name)]
+    if not swap:
+        raise ContainerError(
+            f"--egress-inject model needs a credential on the driver: one of {', '.join(MODEL_CREDENTIALS)}."
+        )
+    return {"host": api.hostname, "swap": swap}
 
 
 def trust_gateway(binary: str, *, proxy: str, name: str) -> None:
@@ -176,7 +209,7 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
         # token is not in the argv of the command that starts the gateway.
         secrets_env["EGRESS_INJECT"] = json.dumps(rules)
         policy += ["-e", "EGRESS_INJECT", "--tmpfs", f"{GATEWAY_CA_DIR}:rw,mode=1777"]
-        summary += "; adds the git token for " + str(rules[0]["host"])
+        summary += "; adds credentials for " + ", ".join(sorted({str(rule["host"]) for rule in rules}))
     network, proxy = f"{name}-net", f"{name}-egress"
     # Only podman can give a network a route (`network create --route`); on
     # docker the sandbox has no route at all and only the proxy gets out.

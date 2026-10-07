@@ -17,7 +17,9 @@ the harness.
     EGRESS_SANDBOX  name of the sandbox this gateway serves, stamped on events
     EGRESS_INJECT   JSON list of credentials to add on the way out (default none):
                     [{"host": "github.com", "path": "/owner/repo.git/*",
-                      "headers": {"Authorization": "Basic ..."}}]
+                      "headers": {"Authorization": "Basic ..."}},
+                     {"host": "api.anthropic.com",
+                      "swap": [{"header": "x-api-key", "placeholder": "...", "value": "..."}]}]
     EGRESS_CA_DIR   where the CA for that is made (default /run/burst-gateway)
 
 Software that uses the proxy never resolves a name itself, so a DNS query here
@@ -40,9 +42,13 @@ gateway is also the sandbox's default route:
 Credentials (EGRESS_INJECT). TLS to a host named in a rule is terminated here,
 with a certificate from a CA this gateway makes at start-up and whose key never
 leaves it; the sandbox has to trust `ca.crt` from EGRESS_CA_DIR. Each request
-is then forwarded over TLS to that same host, with the headers of the first
-rule whose `path` matches (shell-style; no `path` matches all) replacing the
-request's own. So the sandbox can use a credential it cannot read. A path
+is then forwarded over TLS to that same host, changed by the first rule whose
+`path` matches (shell-style; no `path` matches all). `headers` are set on every
+such request, replacing the request's own. A `swap` acts only on a request that
+already carries its `header` with the `placeholder` in it, and puts `value`
+there instead: the sandbox is given the placeholder as if it were the
+credential, and whichever of several it chooses to send is the one made real.
+Either way the sandbox can use a credential it cannot read. A path
 with dot segments or encoded separators matches no rule. A request
 whose Host header names some other host is refused, so a credential cannot be
 steered to a different site behind the same front end. Every other host is
@@ -113,11 +119,14 @@ class Policy:
 
 @dataclass(frozen=True)
 class Inject:
-    """Headers to set on requests to `host` whose path matches `path`."""
+    """What to change on requests to `host` whose path matches `path`."""
 
     host: str
-    headers: tuple[tuple[str, str], ...]
+    # (name, value): set on every matching request.
+    headers: tuple[tuple[str, str], ...] = ()
     path: str = "*"
+    # (header, placeholder, value): where the header carries the placeholder, the value goes instead.
+    swap: tuple[tuple[str, str, str], ...] = ()
 
     @classmethod
     def parse(cls, raw: str) -> tuple["Inject", ...]:
@@ -126,10 +135,13 @@ class Inject:
             host = str(item["host"]).lower().rstrip(".")
             if not host or any(c in host for c in "*?[/"):
                 raise SystemExit(f"burst-gateway: EGRESS_INJECT host must be one exact host name (got {host!r}).")
-            headers = tuple((str(k), str(v)) for k, v in item["headers"].items())
-            if any(c in k + v for k, v in headers for c in "\r\n"):
+            headers = tuple((str(k), str(v)) for k, v in (item.get("headers") or {}).items())
+            swap = tuple((str(w["header"]), str(w["placeholder"]), str(w["value"])) for w in item.get("swap") or [])
+            if any(c in text for parts in (*headers, *swap) for text in parts for c in "\r\n"):
                 raise SystemExit("burst-gateway: EGRESS_INJECT headers must be single lines.")
-            rules.append(cls(host=host, headers=headers, path=str(item.get("path") or "*")))
+            if any(not placeholder for _, placeholder, _ in swap):
+                raise SystemExit("burst-gateway: an EGRESS_INJECT swap needs a placeholder.")
+            rules.append(cls(host=host, headers=headers, path=str(item.get("path") or "*"), swap=swap))
         return tuple(rules)
 
 
@@ -145,13 +157,23 @@ def inject_for(host: str, path: str) -> Inject | None:
     return next((r for r in INJECT if r.host == host and fnmatch.fnmatchcase(path, r.path)), None)
 
 
-def with_headers(headers: list[bytes], rule: Inject | None) -> list[bytes]:
-    """The request's header lines with the rule's headers in place of its own of the same names."""
+def with_credentials(headers: list[bytes], rule: Inject | None) -> tuple[list[bytes], list[str]]:
+    """The request's header lines as the rule changes them, and the names of the headers it changed."""
     if rule is None:
-        return headers
+        return headers, []
+    changed: list[str] = []
+    out = []
+    for line in headers:
+        name, _, value = line.partition(b":")
+        for header, placeholder, secret in rule.swap:
+            if name.strip().lower() == header.lower().encode("latin-1") and placeholder.encode("latin-1") in value:
+                line = name + b":" + value.replace(placeholder.encode("latin-1"), secret.encode("latin-1"))
+                changed.append(header)
+        out.append(line)
     names = {name.lower().encode("latin-1") for name, _ in rule.headers}
-    kept = [h for h in headers if h.split(b":", 1)[0].strip().lower() not in names]
-    return kept + [f"{name}: {value}\r\n".encode("latin-1") for name, value in rule.headers]
+    out = [h for h in out if h.split(b":", 1)[0].strip().lower() not in names]
+    out += [f"{name}: {value}\r\n".encode("latin-1") for name, value in rule.headers]
+    return out, changed + [name for name, _ in rule.headers]
 
 
 POLICY = Policy()
@@ -412,9 +434,10 @@ async def handle_intercepted(reader: asyncio.StreamReader, writer: asyncio.Strea
         except (OSError, asyncio.TimeoutError) as err:
             emit("request", "fail", detail=str(err) or type(err).__name__, **fields)
             return await refuse(writer, "502 Bad Gateway")
-        up_writer.write(origin_request(method, target, version, with_headers(head[1:], rule)))
+        headers, injected = with_credentials(head[1:], rule)
+        up_writer.write(origin_request(method, target, version, headers))
         sent, (status, received) = await asyncio.gather(pipe(reader, up_writer), pipe_response(up_reader, writer))
-        emit("request", "allow", status=status or None, injected=[name for name, _ in rule.headers] if rule else None,
+        emit("request", "allow", status=status or None, injected=injected or None,
              bytes_up=sent, bytes_down=received, ms=int((time.monotonic() - started) * 1000), **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
