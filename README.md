@@ -188,13 +188,38 @@ gateway process itself runs unprivileged. On docker there is no way to give the
 network a route, so software that ignores the proxy simply has no route: its
 lookups are recorded and refused, and a connection to a bare IP leaves no trace.
 
+**Credentials the container never holds** (`--egress-inject git`, with `log` or
+`allowlist`). The gateway terminates TLS to the repo's host and adds the
+driver's git token to requests for that repo — `/<owner>/<repo>.git/...` and
+nothing else on the host. `git clone`, `fetch` and `push` in the container then
+just work, the harness's and the agent's alike, and the token is in neither the
+container's environment, its git config, nor any command line there.
+
+- The gateway makes a CA when it starts; its key stays in the gateway. The
+  harness has the container trust the certificate (`burst-sandbox-trust`, run as
+  root from outside) and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`,
+  `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `NODE_EXTRA_CA_CERTS` at it.
+- Only hosts with a credential to add are terminated. Everything else is
+  tunnelled untouched, exactly as without `--egress-inject`.
+- Each request to a terminated host is a `request` event: method, path, status,
+  and the *names* of the headers added.
+- A request whose `Host` header names a different host is refused, and a path
+  with `..` or encoded separators gets no credential.
+
+This changes what the agent can do: its own `git push` now authenticates, where
+without injection only the harness's terminal-state tools could push. The
+protected-branch guardrails still apply to what the agent runs, but they are a
+guardrail; what bounds a push is the token's scope and the repo's branch
+protection.
+
 `log` is for observing, not containing: through the proxy the sandbox can reach
 anything the host can, your LAN included — the same reach as `open`.
 
 ### The driver holds every secret
 
 The harness process is the *driver*; the target is compute. Model credentials
-never leave the driver. Git credentials don't either: set `HARNESS_GIT_TOKEN`
+never leave the driver. Git credentials don't either — or, with
+`--egress-inject git` (above), go no further than the gateway. Otherwise: set `HARNESS_GIT_TOKEN`
 (or `GH_TOKEN` / `GITHUB_TOKEN`) on the driver and the harness passes it only on
 its own clone, fetch, and push (`git -c http.extraHeader=...`, never written to
 the repo's config, and scrubbed from any error the model sees). Pull requests are
@@ -202,10 +227,10 @@ opened from the driver with `gh pr create --repo`. The target needs no token and
 no `gh`; the agent's own `git push` simply has nothing to authenticate with, and
 pushes happen through the terminal-state tools.
 
-One residual exposure: the token is in the argv of the harness's git command
-while it runs inside the target, so a process the agent left running in the
-background could read it from `/proc`. Scope the token to the repos the harness
-works on.
+One residual exposure without `--egress-inject git`: the token is in the argv of
+the harness's git command while it runs inside the target, so a process the
+agent left running in the background could read it from `/proc`. Scope the token
+to the repos the harness works on.
 
 ### agent-sandbox (`--target agent-sandbox`)
 
@@ -241,6 +266,8 @@ in-cluster ServiceAccount on its own.
 `dirname`, `ls`, `rm`, `cat`, `env`), a writable parent of `--repo`, and a process
 that keeps the pod up. `images/sandbox/Containerfile` is a Fedora image meeting
 it, plus Python, Node, and a C toolchain for tasks. No credentials, no `gh`.
+`--egress-inject` additionally needs `burst-sandbox-trust` (see that script for
+what an image of your own has to provide).
 
 ## Engines
 

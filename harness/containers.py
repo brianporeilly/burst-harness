@@ -16,7 +16,9 @@ container's proxy variables and its resolver point at the sidecar by IP. `log`
 lets everything through; `allowlist` allows CONNECT to listed hosts on port
 443. On podman the sidecar is also the network's default route, and redirects
 whatever arrives into itself, so software that ignores the proxy is held to the
-same policy and recorded like the rest. Either way every decision is an event on the sidecar's stdout, so `podman
+same policy and recorded like the rest. With `egress_inject` the sidecar also
+terminates TLS to the repo's host and adds the git token there, so the
+container can clone and push without ever holding it. Either way every decision is an event on the sidecar's stdout, so `podman
 logs <name>-egress` is the audit trail, saved under `state_dir`/egress when the
 sidecar and network are removed with the container.
 """
@@ -30,9 +32,11 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import git
 from .agent_sandbox import LABEL_MANAGED_BY, LABEL_TASK, MANAGED_BY, REQUIRED_COMMANDS, label_value
 from .config import HarnessConfig
 from .exec_target import DockerTarget
@@ -46,6 +50,10 @@ PROXY_PORT = 3128
 REDIRECT_PORT = 3129
 DNS_PORT = 53
 EGRESS_MODES = ("open", "log", "allowlist")
+# Where the gateway makes its CA, and where burst-sandbox-trust leaves it in the sandbox.
+GATEWAY_CA_DIR = "/run/burst-gateway"
+SANDBOX_CA_BUNDLE = "/etc/burst-harness/ca-bundle.crt"
+SANDBOX_CA = "/etc/burst-harness/gateway-ca.crt"
 # The runtime's default network, which has a route out.
 DEFAULT_NETWORK = {"podman": "podman", "docker": "bridge"}
 
@@ -90,8 +98,48 @@ def events_path(cfg: HarnessConfig, name: str) -> str:
     return str(Path(cfg.state_dir).expanduser() / "egress" / f"{name}.jsonl")
 
 
-def _run(binary: str, *args: str) -> str:
-    proc = subprocess.run([binary, *args], capture_output=True, text=True)
+def inject_rules(cfg: HarnessConfig) -> list[dict[str, object]]:
+    """The gateway's EGRESS_INJECT rules for `egress_inject`: where to add which credential."""
+    rules: list[dict[str, object]] = []
+    for what in cfg.egress_inject:
+        if what != "git":
+            raise ContainerError(f"--egress-inject takes: git (got {what!r}).")
+        slug = git.repo_slug(cfg.repo_url)
+        if not slug or not cfg.repo_url.startswith("https://"):
+            raise ContainerError("--egress-inject git needs an https:// --repo-url to add the token to.")
+        if not (basic := git.basic_credential()):
+            raise ContainerError(
+                f"--egress-inject git needs a token on the driver: one of {', '.join(git.TOKEN_ENV_VARS)}."
+            )
+        host, _, path = slug.partition("/")
+        # Only this repo's paths, with and without the .git suffix: the token
+        # is not offered to the rest of the host.
+        rules += [{"host": host, "path": f"/{path}{suffix}/*", "headers": {"Authorization": f"Basic {basic}"}}
+                  for suffix in (".git", "")]
+    return rules
+
+
+def trust_gateway(binary: str, *, proxy: str, name: str) -> None:
+    """Have the sandbox trust its gateway's CA, which it needs before the gateway can terminate TLS for it."""
+    path = f"{GATEWAY_CA_DIR}/ca.crt"
+    for _ in range(100):  # the gateway makes it at start-up
+        proc = subprocess.run([binary, "exec", proxy, "cat", path], capture_output=True, text=True)
+        if proc.returncode == 0 and "END CERTIFICATE" in proc.stdout:
+            break
+        time.sleep(0.1)
+    else:
+        raise ContainerError(f"{proxy} did not produce {path}: {proc.stderr.strip()}")
+    done = subprocess.run([binary, "exec", "-i", "--user", "0", name, "burst-sandbox-trust"],
+                          input=proc.stdout, capture_output=True, text=True)
+    if done.returncode != 0:
+        raise ContainerError(
+            f"{name} could not trust the gateway's CA ({done.stderr.strip() or 'burst-sandbox-trust failed'}). "
+            "--egress-inject needs burst-sandbox-trust in the image; see images/sandbox/."
+        )
+
+
+def _run(binary: str, *args: str, env: dict[str, str] | None = None) -> str:
+    proc = subprocess.run([binary, *args], capture_output=True, text=True, env={**os.environ, **env} if env else None)
     if proc.returncode != 0:
         raise ContainerError(f"{binary} {' '.join(args[:3])} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
@@ -122,6 +170,13 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
     else:
         check_reachable(cfg)
         policy, summary = [], "everything passes and is recorded"
+    secrets_env: dict[str, str] = {}
+    if rules := inject_rules(cfg):
+        # By name only: the value comes from this process's environment, so the
+        # token is not in the argv of the command that starts the gateway.
+        secrets_env["EGRESS_INJECT"] = json.dumps(rules)
+        policy += ["-e", "EGRESS_INJECT", "--tmpfs", f"{GATEWAY_CA_DIR}:rw,mode=1777"]
+        summary += "; adds the git token for " + str(rules[0]["host"])
     network, proxy = f"{name}-net", f"{name}-egress"
     # Only podman can give a network a route (`network create --route`); on
     # docker the sandbox has no route at all and only the proxy gets out.
@@ -145,6 +200,7 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
             "-e", f"EGRESS_MODE={cfg.egress}", "-e", f"EGRESS_LISTEN={PROXY_PORT}",
             "-e", f"EGRESS_SANDBOX={name}", *policy,
             cfg.gateway_image,
+            env=secrets_env,
         )
         _run(binary, "network", "connect", *(["--ip", address] if address else []), network, proxy)
         if redirect:
@@ -164,6 +220,10 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
     if cfg.egress == "allowlist":
         # Claude Code's telemetry and update checks would only be refused.
         env.append("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
+    if rules:
+        # Written by burst-sandbox-trust once the container is up.
+        env += [f"{k}={SANDBOX_CA_BUNDLE}" for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO")]
+        env.append(f"NODE_EXTRA_CA_CERTS={SANDBOX_CA}")
     # "." clears the host's search domains, which would otherwise be inherited.
     flags = ["--network", network, "--dns", ip, "--dns-search", "."]
     for item in env:
@@ -185,6 +245,8 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
     name = f"burst-{label_value(slug)[:40]}-{secrets.token_hex(3)}"
     network = proxy = ""
     network_args: list[str] = []
+    if cfg.egress_inject and cfg.egress == "open":
+        raise ContainerError("--egress-inject needs a gateway to do it: --egress log or allowlist.")
     if cfg.egress != "open":
         network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug)
     proc = subprocess.run(
@@ -203,6 +265,8 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
                 f"{cfg.image} is missing required commands: {', '.join(missing)}. "
                 "See images/sandbox/Containerfile for the contract."
             )
+        if proxy and cfg.egress_inject:
+            trust_gateway(binary, proxy=proxy, name=name)
     except Exception:
         target.release()
         raise

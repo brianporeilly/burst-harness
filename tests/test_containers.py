@@ -48,3 +48,22 @@ def test_routed_network_recreates_with_a_route_to_its_gateway(monkeypatch):
     assert calls[2] == ("network", "rm", "n-net")
     assert calls[3] == ("network", "create", "--internal", "--disable-dns",
                         "--subnet", "10.89.3.0/24", "--route", "0.0.0.0/0,10.89.3.254,500", "n-net")
+
+
+def test_inject_rules_scope_the_token_to_the_repo(monkeypatch):
+    monkeypatch.setenv("HARNESS_GIT_TOKEN", "sekret")
+    cfg = HarnessConfig(repo_url="https://github.com/o/r.git", egress="log", egress_inject=("git",))
+    rules = containers.inject_rules(cfg)
+    assert [(r["host"], r["path"]) for r in rules] == [("github.com", "/o/r.git/*"), ("github.com", "/o/r/*")]
+    assert rules[0]["headers"]["Authorization"].startswith("Basic ")
+    assert containers.inject_rules(HarnessConfig(repo_url="https://github.com/o/r.git")) == []
+
+
+def test_inject_needs_a_token_and_an_https_repo(monkeypatch):
+    with pytest.raises(containers.ContainerError, match="needs a token"):
+        containers.inject_rules(HarnessConfig(repo_url="https://github.com/o/r.git", egress_inject=("git",)))
+    monkeypatch.setenv("HARNESS_GIT_TOKEN", "sekret")
+    with pytest.raises(containers.ContainerError, match="https://"):
+        containers.inject_rules(HarnessConfig(repo_url="git@github.com:o/r.git", egress_inject=("git",)))
+    with pytest.raises(containers.ContainerError, match="takes: git"):
+        containers.inject_rules(HarnessConfig(repo_url="https://github.com/o/r.git", egress_inject=("model",)))

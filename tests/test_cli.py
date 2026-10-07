@@ -15,7 +15,7 @@ def _args(**kw):
         namespace=None, container=None, kube_context=None, docker_container=None, pool=None,
         claim=None, claim_ttl=None, keep_claim=None, repo=None, slug="t",
         image=None, engine=None, claude_json=None, claude_settings=None, permission_mode=None,
-        egress=None, egress_allow=None, gateway_image=None,
+        egress=None, egress_allow=None, gateway_image=None, egress_inject=None,
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -55,3 +55,10 @@ def test_exit_codes(origin, tmp_path, capsys, terminal, waiting, code):
     ctx.terminal, ctx.waiting = terminal, waiting
     assert cli._finish(None, ctx) == code
     assert '"state": "%s"' % (terminal or ("waiting" if waiting else "none")) in capsys.readouterr().out
+
+
+def test_git_auth_is_left_to_the_gateway_when_it_injects(monkeypatch):
+    monkeypatch.setenv("HARNESS_GIT_TOKEN", "sekret")
+    from harness.config import HarnessConfig
+    assert cli._git_auth(HarnessConfig(), "https://github.com/o/r") != ()
+    assert cli._git_auth(HarnessConfig(egress_inject=("git",)), "https://github.com/o/r") == ()

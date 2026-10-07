@@ -1,0 +1,24 @@
+#!/bin/sh
+# burst-sandbox-trust: trust the CA certificate given on stdin. Run as root.
+#
+# The harness runs this in a sandbox whose gateway terminates TLS for some
+# hosts (to add credentials the sandbox never holds), with that gateway's CA.
+#
+# Leaves two files, which the harness points the usual variables at
+# (SSL_CERT_FILE, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO and
+# NODE_EXTRA_CA_CERTS):
+#   /etc/burst-harness/ca-bundle.crt   the system's CAs plus this one
+#   /etc/burst-harness/gateway-ca.crt  this one alone
+# and adds it to the system store too where that is possible, for software
+# that reads neither variable.
+set -eu
+dir=/etc/burst-harness
+mkdir -p "$dir"
+cat > "$dir/gateway-ca.crt"
+grep -q "BEGIN CERTIFICATE" "$dir/gateway-ca.crt" || { echo "burst-sandbox-trust: no certificate on stdin" >&2; exit 65; }
+cat /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem "$dir/gateway-ca.crt" > "$dir/ca-bundle.crt"
+chmod 644 "$dir/gateway-ca.crt" "$dir/ca-bundle.crt"
+# Root without capabilities, or a read-only root, may not be able to: the files above still work.
+if cp "$dir/gateway-ca.crt" /etc/pki/ca-trust/source/anchors/burst-gateway.crt 2>/dev/null; then
+  update-ca-trust 2>/dev/null || true
+fi

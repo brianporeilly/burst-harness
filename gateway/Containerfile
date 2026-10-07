@@ -7,7 +7,7 @@
 # the agent, and nothing in the harness is imported.
 FROM registry.fedoraproject.org/fedora-minimal:44
 
-RUN microdnf -y install --setopt=install_weak_deps=0 python3 nftables \
+RUN microdnf -y install --setopt=install_weak_deps=0 python3 nftables openssl \
  && microdnf clean all
 
 COPY burst_gateway.py /usr/local/bin/burst-gateway
@@ -18,6 +18,8 @@ RUN chmod 755 /usr/local/bin/burst-gateway /usr/local/bin/burst-gateway-netinit
 # net.ipv4.ip_unprivileged_port_start (the harness passes --sysctl for it), or
 # EGRESS_DNS=0 to go without. nftables is for burst-gateway-netinit, which the
 # harness runs as root from outside when the gateway is the sandbox's route.
+# openssl makes the CA and certificates when there are credentials to inject;
+# EGRESS_CA_DIR then has to be writable (a tmpfs, with a read-only root).
 USER 65532
 ENV PYTHONUNBUFFERED=1
 ENTRYPOINT ["burst-gateway"]

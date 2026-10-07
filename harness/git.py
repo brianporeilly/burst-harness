@@ -5,6 +5,11 @@ only on its own clone/fetch/push invocations (``git -c http.extraHeader=...``,
 which is not persisted to the repo's config), and opens pull requests from the
 driver with ``gh --repo``. The agent's shell in the target therefore has no
 credential to push with or to exfiltrate.
+
+With ``egress_inject = git`` the harness passes nothing at all: the target's
+gateway adds the token to requests for the repo (see containers.py), so git in
+the target -- the harness's and the agent's alike -- authenticates without the
+token ever being there.
 """
 
 from __future__ import annotations
@@ -43,11 +48,16 @@ def auth_args(url: str) -> Auth:
     tokens alike. Empty for SSH remotes and when no token is set, in which case
     git falls back to whatever the target already has.
     """
-    secret = token()
-    if not secret or not url.startswith("https://"):
+    basic = basic_credential()
+    if not basic or not url.startswith("https://"):
         return ()
-    basic = base64.b64encode(f"x-access-token:{secret}".encode()).decode()
     return ("-c", f"http.extraHeader=Authorization: Basic {basic}")
+
+
+def basic_credential() -> str:
+    """The token as HTTP Basic credentials, or "" when there is none."""
+    secret = token()
+    return base64.b64encode(f"x-access-token:{secret}".encode()).decode() if secret else ""
 
 
 def _redact(text: str) -> str:
@@ -106,11 +116,11 @@ def remote_url(target: ExecTarget, remote: str) -> str:
     return run(target, "remote", "get-url", remote, check=False)
 
 
-def clone(target: ExecTarget, url: str) -> str:
+def clone(target: ExecTarget, url: str, *, auth: Auth | None = None) -> str:
     """Clone `url` to the target's repo path. The parent directory must be writable."""
     dest = PurePosixPath(target.repo)
     target.run_shell(f"mkdir -p {shlex.quote(str(dest.parent))}", cwd="/")
-    run(target, "clone", "--quiet", url, dest.name, auth=auth_args(url), cwd=str(dest.parent))
+    run(target, "clone", "--quiet", url, dest.name, auth=auth_args(url) if auth is None else auth, cwd=str(dest.parent))
     return f"Cloned {redact_url(url)} into {dest}."
 
 

@@ -104,6 +104,15 @@ Calico has no FQDN policy) and the gateway as the pod's resolver, and revisit.
 
 ### 3. Interception and credential injection
 
+Done for git on podman/docker: `--egress-inject git`. The gateway makes a
+per-sandbox CA, terminates TLS only for the repo's host, and adds the token to
+requests for that repo; the harness then passes no token of its own, which
+closes the token-in-argv exposure for those runs.
+
+Remaining: model API credentials for the in-target engines (a placeholder in
+the sandbox, the real key added at the gateway), and making injection the
+default once that is in.
+
 - Gateway CA, trusted by the sandbox image (system store, plus the Node, Python
   and git settings).
 - GitHub token injected for the session's repos; then model API credentials for

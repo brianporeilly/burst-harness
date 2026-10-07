@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import shutil
 import ssl
 import struct
 import sys
@@ -119,3 +120,57 @@ def test_events_are_json_lines_without_empty_fields(capsys, monkeypatch):
     event = json.loads(capsys.readouterr().out)
     assert event["sandbox"] == "burst-t" and event["verdict"] == "deny" and event["port"] == 443
     assert "detail" not in event
+
+
+def test_inject_rules_match_host_and_path(monkeypatch):
+    rules = gw.Inject.parse(
+        '[{"host": "GitHub.com", "path": "/o/r.git/*", "headers": {"Authorization": "Basic abc"}}]'
+    )
+    monkeypatch.setattr(gw, "INJECT", rules)
+    assert gw.inject_for("github.com", "/o/r.git/info/refs?service=git-upload-pack") is rules[0]
+    assert gw.inject_for("github.com", "/o/r-other.git/info/refs") is None
+    assert gw.inject_for("api.github.com", "/o/r.git/info/refs") is None
+
+
+@pytest.mark.parametrize("path", [
+    "/o/r.git/../other.git/info/refs", "/o/r.git/%2e%2e/other.git/info/refs",
+    "/o/r.git/..%2Fother.git/info/refs", "/o/r.git//info/refs", "/o/r.git/./info/refs",
+])
+def test_inject_skips_paths_that_could_mean_something_else(monkeypatch, path):
+    monkeypatch.setattr(gw, "INJECT", gw.Inject.parse('[{"host": "github.com", "path": "/o/r.git/*", "headers": {"A": "b"}}]'))
+    assert gw.inject_for("github.com", path) is None
+
+
+def test_inject_rules_are_validated():
+    with pytest.raises(SystemExit, match="exact host"):
+        gw.Inject.parse('[{"host": "*.github.com", "headers": {}}]')
+    with pytest.raises(SystemExit, match="single lines"):
+        gw.Inject.parse('[{"host": "github.com", "headers": {"A": "b\\r\\nX: y"}}]')
+    assert gw.Inject.parse("") == ()
+
+
+def test_with_headers_replaces_the_requests_own():
+    rule = gw.Inject(host="github.com", headers=(("Authorization", "Basic real"),))
+    sent = gw.with_headers([b"Host: github.com\r\n", b"authorization: Basic guess\r\n"], rule)
+    assert sent == [b"Host: github.com\r\n", b"Authorization: Basic real\r\n"]
+    assert gw.with_headers([b"Host: github.com\r\n"], None) == [b"Host: github.com\r\n"]
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
+def test_certificates_chain_to_the_gateways_ca(tmp_path):
+    served = gw.make_certificates(tmp_path, ["github.com"])
+    client = ssl.create_default_context(cafile=str(tmp_path / "ca.crt"))
+    c_in, c_out, s_in, s_out = ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO()
+    c = client.wrap_bio(c_in, c_out, server_hostname="github.com")
+    srv = served.wrap_bio(s_in, s_out, server_side=True)
+    for _ in range(10):  # pump the handshake between the two ends
+        for side in (c, srv):
+            try:
+                side.do_handshake()
+            except ssl.SSLWantReadError:
+                pass
+        s_in.write(c_out.read())
+        c_in.write(s_out.read())
+    assert c.getpeercert()["subjectAltName"] == (("DNS", "github.com"),)
+    assert c.selected_alpn_protocol() is None  # the client offered none; the server only speaks http/1.1
+    assert (tmp_path / "ca.key").stat().st_mode & 0o077 == 0

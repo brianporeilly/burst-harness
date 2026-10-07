@@ -101,6 +101,11 @@ class HarnessConfig:
     # ANTHROPIC_BASE_URL's), over HTTPS.
     egress: str = "open"
     gateway_image: str = "ghcr.io/brianporeilly/burst-harness-gateway:main"
+    # Credentials the gateway adds on the way out, so the target never holds
+    # them. "git": the driver's git token, on requests to the repo being worked
+    # on. Needs egress = log or allowlist. Without it the harness passes the
+    # token itself, per command.
+    egress_inject: tuple[str, ...] = ()
     egress_allow: tuple[str, ...] = (
         "api.anthropic.com",
         "github.com", "*.githubusercontent.com",

@@ -124,6 +124,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "image": args.image,
         "egress": args.egress,
         "gateway_image": args.gateway_image,
+        "egress_inject": tuple(w.strip() for w in args.egress_inject.split(",") if w.strip()) if args.egress_inject else None,
         "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
         "engine": args.engine,
         "claude_json": args.claude_json,
@@ -164,6 +165,11 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str) -> ExecTa
     raise SystemExit(f"Unknown target {kind!r}. Use local, docker, podman, kubectl, or agent-sandbox.")
 
 
+def _git_auth(cfg: HarnessConfig, url: str) -> git.Auth:
+    """What the harness adds to its own git commands: nothing when the gateway adds the token."""
+    return () if "git" in cfg.egress_inject else git.auth_args(url)
+
+
 def _open(args: argparse.Namespace) -> HarnessContext:
     """Resolve config, acquire the target, and make sure the repo is checked out."""
     overrides = _overrides(args)
@@ -178,13 +184,15 @@ def _open(args: argparse.Namespace) -> HarnessContext:
             cfg = HarnessConfig.load(path.read_text(), overrides)
         repo_toml_read = True
 
+    if cfg.egress_inject and cfg.target not in ("docker", "podman"):
+        raise SystemExit("--egress-inject needs a gateway: --target podman or docker, with --egress log or allowlist.")
     target = _build_target(cfg, args.repo, args.slug)
     try:
         if cfg.repo_url:
             if git.is_repo(target):
                 print(f"Using the existing checkout at {target.repo}.")
             else:
-                print(git.clone(target, cfg.repo_url))
+                print(git.clone(target, cfg.repo_url, auth=_git_auth(cfg, cfg.repo_url)))
         if not git.is_repo(target):
             raise SystemExit(f"No git repository at {target.describe()}.")
         if not repo_toml_read and (text := target.read_file(CONFIG_FILENAME)):
@@ -203,7 +211,7 @@ def _open(args: argparse.Namespace) -> HarnessContext:
             slug=args.slug,
             branch=cfg.branch_prefix + args.slug,
             state_key=state.state_key(url, target.repo),
-            auth=git.auth_args(url),
+            auth=_git_auth(cfg, url),
             repo_slug=git.repo_slug(url),
         )
     except BaseException:
@@ -454,6 +462,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="Network for a fresh docker/podman container. log: no route out except a gateway "
                             "that records everything. allowlist: the gateway only reaches --egress-allow hosts, "
                             "over HTTPS (default: open).")
+    where.add_argument("--egress-inject", dest="egress_inject",
+                       help="Credentials the gateway adds so the container never holds them. 'git': the "
+                            "driver's git token, on requests to the repo. Needs --egress log or allowlist.")
     where.add_argument("--gateway-image", dest="gateway_image",
                        help="Image of the gateway sidecar, for --egress log/allowlist.")
     where.add_argument("--egress-allow", dest="egress_allow",
