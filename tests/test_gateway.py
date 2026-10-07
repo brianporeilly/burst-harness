@@ -25,6 +25,21 @@ def test_allowlist_matches_hosts_and_ports():
     assert not policy.allowed("evil.com", 443)
 
 
+def test_allowlist_entry_with_a_port_allows_only_that_port():
+    policy = gw.Policy.from_env({"EGRESS_ALLOW": "github.com,llm.lan:8080"})
+    assert policy.allowed("llm.lan", 8080)
+    assert not policy.allowed("llm.lan", 443)
+    assert not policy.allowed("github.com", 8080)
+    assert policy.host_allowed("llm.lan")
+
+
+def test_parse_inbound():
+    assert gw.parse_inbound("4096=10.89.1.2:4096, 8080=10.89.1.2:80") == {4096: ("10.89.1.2", 4096), 8080: ("10.89.1.2", 80)}
+    assert gw.parse_inbound("") == {}
+    with pytest.raises(SystemExit, match="PORT=ADDRESS:PORT"):
+        gw.parse_inbound("4096")
+
+
 def test_log_mode_allows_everything():
     policy = gw.Policy.from_env({"EGRESS_MODE": "log"})
     assert policy.allowed("anything.example", 8080)
@@ -74,7 +89,7 @@ def test_dns_without_redirect_refuses_and_records():
 
 
 def test_dns_with_redirect_answers_allowed_names_with_the_gateway(monkeypatch):
-    monkeypatch.setattr(gw, "POLICY", gw.Policy(allow=("github.com",)))
+    monkeypatch.setattr(gw, "POLICY", gw.Policy(allow=(("github.com", 0),)))
     packet = _query("github.com")
     reply, event = gw.dns_answer(packet, "10.89.1.254")
     flags, _, answers = struct.unpack("!HHH", reply[2:8])

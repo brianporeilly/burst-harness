@@ -62,3 +62,10 @@ def test_git_auth_is_left_to_the_gateway_when_it_injects(monkeypatch):
     from harness.config import HarnessConfig
     assert cli._git_auth(HarnessConfig(), "https://github.com/o/r") != ()
     assert cli._git_auth(HarnessConfig(egress_inject=("git",)), "https://github.com/o/r") == ()
+
+
+def test_session_needs_a_name_and_podman(monkeypatch):
+    with pytest.raises(SystemExit, match="needs a session name"):
+        cli.main(["session", "stop"])
+    with pytest.raises(SystemExit, match="podman for now"):
+        cli.main(["--target", "agent-sandbox", "session", "start", "x"])

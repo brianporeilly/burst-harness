@@ -13,6 +13,7 @@ python -m harness --repo /path/to/repo resume my-slug              # headless bu
 python -m harness --repo /path/to/repo run my-slug --task "..."    # start or resume, whichever applies
 python -m harness --repo /path/to/repo chat my-slug                # interactive, starts if new
 python -m harness list                                             # claims and Jobs in flight
+python -m harness session start my-box                             # a long-lived sandbox with a web UI
 ```
 
 `run` is idempotent — it starts the task if its branch does not exist yet and
@@ -280,6 +281,50 @@ that keeps the pod up. `images/sandbox/Containerfile` is a Fedora image meeting
 it, plus Python, Node, and a C toolchain for tasks. No credentials, no `gh`.
 `--egress-inject` additionally needs `burst-sandbox-trust` (see that script for
 what an image of your own has to provide).
+
+## Sessions
+
+A task runs and ends; a session stays. `harness session` starts a sandbox behind
+a gateway with opencode's web UI, for working with an agent by conversation. No
+branch, no task document, no terminal state: what happens in it is up to you.
+
+```bash
+python -m harness --repo-url https://github.com/me/scratch.git session start my-box
+python -m harness session list
+python -m harness session stop my-box      # containers go; the workspace stays
+python -m harness session start my-box     # ...and comes back where it was
+python -m harness session rm my-box        # delete the workspace too
+```
+
+`start` prints the UI's address and a password (user `opencode`), and prints them
+again if the session is already running. `--repo-url` is optional: without it the
+workspace starts empty. podman only, for now.
+
+- **What persists** is two volumes: `/workspace` and the agent's home (opencode's
+  conversations and settings). Stopping, or a crash, loses neither; `start`
+  brings up new containers on the same volumes, on the same port with the same
+  password. Anything installed outside those two directories does not persist.
+- **How you reach it.** The sandbox publishes nothing: it has no way in or out but
+  its gateway. The gateway listens on the host and passes connections in, each an
+  `inbound` event. It listens on `127.0.0.1` unless you say otherwise:
+  `--bind 0.0.0.0` (or a LAN address) to reach it from other machines, `--port`
+  to choose the port. The connection is plain HTTP behind a password; keep it to
+  a network you trust.
+- **Egress** is `--egress log` unless you ask for `allowlist`; a session always
+  has a gateway, since that is how it is reached. `--egress-inject git` works as
+  it does for tasks, and is how the session pushes: there are no terminal-state
+  tools here, and the protected-branch guardrails do not apply. Scope the token
+  and protect your branches accordingly.
+- **The model.** With `provider = "llamacpp"` (or `"openai"`) and `base_url`
+  set, the harness writes opencode's config from your model settings, and in
+  `allowlist` mode lets the session reach that one host and port — plain HTTP to
+  a llama-server on your LAN included. For anything else, pass
+  `--opencode-config my-opencode.json` (used as is; allow its hosts with
+  `--egress-allow`), or set a provider up in the UI.
+- An allowlist entry may name a port — `--egress-allow llm.lan:8080,...` — to
+  allow a host on that port instead of 443.
+
+Not there yet: a terminal in the browser, idle shutdown, and anything but podman.
 
 ## Engines
 

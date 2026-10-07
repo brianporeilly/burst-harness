@@ -9,8 +9,13 @@ the harness.
     EGRESS_MODE     allowlist (default): only EGRESS_ALLOW hosts on EGRESS_PORTS
                     log: everything is let through, and recorded
     EGRESS_ALLOW    comma-separated hosts; "*.example.com" matches subdomains
-                    (not example.com itself -- list both if you need both)
+                    (not example.com itself -- list both if you need both).
+                    "host:8080" allows that host on that port instead of on
+                    EGRESS_PORTS -- how a plain-HTTP service is let through.
     EGRESS_PORTS    comma-separated destination ports (default 443)
+    EGRESS_INBOUND  comma-separated "PORT=ADDRESS:PORT": connections to this
+                    gateway's PORT are passed to that address in the sandbox
+                    (default none). The way in to a UI the sandbox serves.
     EGRESS_LISTEN   proxy port (default 3128)
     EGRESS_DNS      UDP port of the resolver (default 53; 0 turns it off)
     EGRESS_REDIRECT port that redirected connections arrive on (default 0: off)
@@ -58,13 +63,14 @@ Events are JSON, one per line, on stdout -- `podman logs` is the audit trail.
 Everything else (startup, errors) goes to stderr.
 
     {"ts": ..., "sandbox": ..., "id": ..., "verdict": "allow" | "deny" | "fail" | "close",
-     "kind": "connect" | "http" | "tls" | "tcp" | "dns", "peer": ..., "host": ..., "port": ...}
+     "kind": "connect" | "http" | "tls" | "tcp" | "dns" | "inbound", "peer": ..., "host": ..., "port": ...}
 
 plus `method` and `path` for http, `qtype` for dns, `detail` on a deny or fail,
 and `bytes_up`, `bytes_down`, `ms` on the close of a connection that was allowed
 (same `id` as its allow). `via: "redirect"` marks a connection that did not use
 the proxy, and `dialled` the address it was aimed at when that was not this
-gateway. `tls` and `tcp` only ever arrive that way. A `request` is one HTTP
+gateway. `tls` and `tcp` only ever arrive that way. `inbound` is a connection
+passed in to the sandbox. A `request` is one HTTP
 request inside a terminated TLS connection, with `method`, `path`, `status`,
 and `injected` (the names of the headers added, never their values); the
 connection carrying it has `intercepted: true`.
@@ -96,7 +102,8 @@ QTYPES = {1: "A", 2: "NS", 5: "CNAME", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA
 @dataclass(frozen=True)
 class Policy:
     mode: str = "allowlist"
-    allow: tuple[str, ...] = ()
+    # (host pattern, port); port 0 means any of `ports`.
+    allow: tuple[tuple[str, int], ...] = ()
     ports: frozenset[int] = frozenset({443})
 
     @classmethod
@@ -106,15 +113,27 @@ class Policy:
             raise SystemExit(f"burst-gateway: EGRESS_MODE must be one of {', '.join(MODES)} (got {mode!r}).")
         return cls(
             mode=mode,
-            allow=tuple(h.strip().lower().rstrip(".") for h in env.get("EGRESS_ALLOW", "").split(",") if h.strip()),
+            allow=tuple(allow_entry(h) for h in env.get("EGRESS_ALLOW", "").split(",") if h.strip()),
             ports=frozenset(int(p) for p in env.get("EGRESS_PORTS", "443").split(",") if p.strip()),
         )
 
     def host_allowed(self, host: str) -> bool:
-        return self.mode == "log" or any(fnmatch.fnmatchcase(host, pattern) for pattern in self.allow)
+        """True if the host is allowed on some port."""
+        return self.mode == "log" or any(fnmatch.fnmatchcase(host, pattern) for pattern, _ in self.allow)
 
     def allowed(self, host: str, port: int) -> bool:
-        return self.mode == "log" or (port in self.ports and self.host_allowed(host))
+        return self.mode == "log" or any(
+            fnmatch.fnmatchcase(host, pattern) and (port == only if only else port in self.ports)
+            for pattern, only in self.allow
+        )
+
+
+def allow_entry(text: str) -> tuple[str, int]:
+    """An EGRESS_ALLOW entry as (host pattern, port), port 0 when it names none."""
+    host, sep, port = text.strip().lower().rpartition(":")
+    if sep and port.isdigit() and ":" not in host:
+        return host.rstrip("."), int(port)
+    return text.strip().lower().rstrip("."), 0
 
 
 @dataclass(frozen=True)
@@ -343,6 +362,32 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         await relay("http", reader, writer, to_upstream=origin_request(method, path, version, head[1:]), **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
+
+
+# --- inbound ---
+
+
+def parse_inbound(text: str) -> dict[int, tuple[str, int]]:
+    """EGRESS_INBOUND as {listening port: (address, port)}."""
+    routes = {}
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        listen, _, target = item.partition("=")
+        address, _, port = target.rpartition(":")
+        if not (listen.isdigit() and port.isdigit() and address):
+            raise SystemExit(f"burst-gateway: EGRESS_INBOUND entries are PORT=ADDRESS:PORT (got {item!r}).")
+        routes[int(listen)] = (address, int(port))
+    return routes
+
+
+def inbound_handler(address: str, port: int):
+    async def handle_inbound(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = str((writer.get_extra_info("peername") or ("?",))[0])
+        try:
+            await relay("inbound", reader, writer, peer=peer, host=address, port=port)
+        except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
+            writer.close()
+
+    return handle_inbound
 
 
 # --- terminated TLS: credentials ---
@@ -620,6 +665,9 @@ async def main() -> None:
         await loop.create_datagram_endpoint(Resolver, local_addr=("0.0.0.0", dns_port))
     if REDIRECT:
         await asyncio.start_server(handle_redirected, "0.0.0.0", REDIRECT)
+    for port, (address, target_port) in parse_inbound(os.environ.get("EGRESS_INBOUND", "")).items():
+        await asyncio.start_server(inbound_handler(address, target_port), "0.0.0.0", port)
+        print(f"burst-gateway: inbound :{port} -> {address}:{target_port}", file=sys.stderr, flush=True)
     if INJECT:
         hosts = sorted({rule.host for rule in INJECT})
         context = make_certificates(Path(os.environ.get("EGRESS_CA_DIR", "/run/burst-gateway")), hosts)
@@ -628,7 +676,7 @@ async def main() -> None:
         print(f"burst-gateway: adding credentials for {', '.join(hosts)}", file=sys.stderr, flush=True)
     server = await asyncio.start_server(handle, "0.0.0.0", listen)
     what = "everything (log only)" if POLICY.mode == "log" else \
-        f"ports {sorted(POLICY.ports)}; allow {', '.join(POLICY.allow) or '(nothing)'}"
+        f"ports {sorted(POLICY.ports)}; allow {', '.join(h + (f':{p}' if p else '') for h, p in POLICY.allow) or '(nothing)'}"
     print(f"burst-gateway: proxy :{listen}, dns :{dns_port or 'off'}, redirected :{REDIRECT or 'off'}; {what}",
           file=sys.stderr, flush=True)
     async with server:

@@ -6,7 +6,8 @@
 # process that keeps the pod alive. Everything else is for the task: add the
 # toolchains your repos need.
 #
-# Also provides tmux (sessions that survive a dropped exec) and Claude Code.
+# Also provides tmux (sessions that survive a dropped exec), Claude Code, and
+# opencode (`harness session`).
 #
 # Deliberately absent: credentials of any kind, and gh. The harness clones and
 # pushes with a token it passes per command, and opens PRs from the driver, so
@@ -43,6 +44,13 @@ USER root
 RUN install -m 755 "$(readlink -f /home/agent/.local/bin/claude)" /usr/local/bin/claude \
  && rm -rf /home/agent/.local /home/agent/.claude /home/agent/.claude.json /home/agent/.cache /home/agent/.npm \
  && claude --version
+# opencode, for `harness session`: its web UI is what a session serves. Pinned
+# for the same reason as Claude Code; its own updater is turned off in the
+# config the harness writes.
+ARG OPENCODE_VERSION=1.18.35
+RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" \
+ && opencode --version \
+ && rm -rf /home/agent/.npm /home/agent/.cache /home/agent/.local /home/agent/.config
 USER 1000
 
 # Claude Code config is composed at container start by burst-sandbox-init from

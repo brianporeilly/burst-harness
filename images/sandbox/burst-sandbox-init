@@ -63,8 +63,11 @@ compose() {
   while [ "$i" -le "$n" ]; do files="$files $work/$name.$i"; i=$((i + 1)); done
   # shellcheck disable=SC2086
   jq -s 'reduce .[] as $layer ({}; . * $layer)' $files > "$work/$name.out"
-  chmod 600 "$work/$name.out"
-  mv "$work/$name.out" "$dest"
+  # Written beside its destination, not moved from $work: a file moved out of
+  # /tmp keeps this container's SELinux label, and when $HOME is a volume the
+  # next container to mount it could not read the result.
+  (umask 077 && cat "$work/$name.out" > "$dest.new")
+  mv "$dest.new" "$dest"
 }
 
 if ! { mkdir -p "$HOME/.claude" && [ -w "$HOME" ]; } 2>/dev/null; then

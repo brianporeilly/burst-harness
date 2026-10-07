@@ -93,3 +93,8 @@ def test_model_rule_is_refused_for_an_engine_on_the_driver(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
     with pytest.raises(containers.ContainerError, match="never leaves"):
         containers.inject_rules(HarnessConfig(engine="strands", egress_inject=("model",)))
+
+
+def test_allowlist_takes_extra_entries_once():
+    cfg = HarnessConfig(repo_url="https://github.com/o/r.git", egress_allow=("github.com",))
+    assert containers.allowlist(cfg, ("llm.lan:8080", "github.com")) == ["github.com", "llm.lan:8080"]

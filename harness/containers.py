@@ -39,6 +39,9 @@ from urllib.parse import urlsplit
 
 from . import git
 from .agent_sandbox import LABEL_MANAGED_BY, LABEL_TASK, MANAGED_BY, REQUIRED_COMMANDS, label_value
+
+# On the containers of a `harness session`: the session's name.
+LABEL_SESSION = "burst-harness/session"
 from .config import HarnessConfig
 from .exec_target import DockerTarget
 
@@ -84,9 +87,9 @@ def run_argv(cfg: HarnessConfig, *, binary: str, name: str, slug: str, network_a
     ]
 
 
-def allowlist(cfg: HarnessConfig) -> list[str]:
+def allowlist(cfg: HarnessConfig, extra: tuple[str, ...] = ()) -> list[str]:
     """egress_allow plus the hosts this run needs to reach no matter what."""
-    hosts = list(cfg.egress_allow)
+    hosts = list(dict.fromkeys((*cfg.egress_allow, *extra)))
     for url in (cfg.repo_url, os.environ.get("ANTHROPIC_BASE_URL", "")):
         parts = urlsplit(url)
         if parts.scheme == "https" and parts.hostname and parts.hostname not in hosts:
@@ -192,13 +195,22 @@ def _routed_network(binary: str, network: str) -> tuple[str, str]:
     return subnet, gateway
 
 
-def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tuple[str, str, list[str]]:
+def start_egress(
+    cfg: HarnessConfig, *, binary: str, name: str, slug: str,
+    allow: tuple[str, ...] = (), inbound: tuple[tuple[str, int, int], ...] = (), labels: tuple[str, ...] = (),
+) -> tuple[str, str, list[str]]:
     """Create the internal network and gateway sidecar.
+
+    `allow` adds to the allowlist. `inbound` is (host address, host port,
+    container port): the gateway publishes each on the host and passes what
+    arrives to the container. `labels` are extra `--label` flags.
 
     Returns (network, proxy, run flags that put a container behind them).
     """
+    if inbound and binary != "podman":
+        raise ContainerError("Passing connections in to a container needs podman (it has to have a fixed address).")
     if cfg.egress == "allowlist":
-        hosts = allowlist(cfg)
+        hosts = allowlist(cfg, allow)
         policy, summary = ["-e", f"EGRESS_ALLOW={','.join(hosts)}"], f"allowlist: {', '.join(hosts)}"
     else:
         check_reachable(cfg)
@@ -214,9 +226,15 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
     # Only podman can give a network a route (`network create --route`); on
     # docker the sandbox has no route at all and only the proxy gets out.
     redirect = binary == "podman"
-    subnet = address = ""
+    subnet = address = fixed = ""
     if redirect:
         subnet, address = _routed_network(binary, network)
+        # The container's own address, fixed so the gateway can be told where to pass connections in.
+        fixed = str(ipaddress.ip_network(subnet)[2])
+        for host, host_port, port in inbound:
+            policy += ["-p", f"{host}:{host_port}:{port}"]
+        if inbound:
+            policy += ["-e", "EGRESS_INBOUND=" + ",".join(f"{port}={fixed}:{port}" for _, _, port in inbound)]
         # NET_ADMIN is for burst-gateway-netinit, run as root below; the
         # gateway's own process is unprivileged and never holds it. With
         # forwarding off, what the rules do not redirect goes nowhere.
@@ -225,7 +243,7 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
         _run(binary, "network", "create", "--internal", network)
     try:
         _run(
-            binary, "run", "--detach", "--name", proxy, *_labels(slug),
+            binary, "run", "--detach", "--name", proxy, *_labels(slug), *labels,
             "--network", DEFAULT_NETWORK.get(binary, "bridge"),
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only",
             # Lets the unprivileged gateway bind its resolver to port 53.
@@ -258,7 +276,7 @@ def start_egress(cfg: HarnessConfig, *, binary: str, name: str, slug: str) -> tu
         env += [f"{k}={SANDBOX_CA_BUNDLE}" for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO")]
         env.append(f"NODE_EXTRA_CA_CERTS={SANDBOX_CA}")
     # "." clears the host's search domains, which would otherwise be inherited.
-    flags = ["--network", network, "--dns", ip, "--dns-search", "."]
+    flags = ["--network", network, *(["--ip", fixed] if fixed else []), "--dns", ip, "--dns-search", "."]
     for item in env:
         flags += ["-e", item]
     print(f"Egress via {proxy} ({summary}).")

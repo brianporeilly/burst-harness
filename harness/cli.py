@@ -10,12 +10,12 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import agent_sandbox, containers, git, state
+from . import agent_sandbox, containers, git, session, state
 from .agent import build_agent
 from .claude_code import ClaudeCodeEngine
 from .config import CONFIG_FILENAME, HarnessConfig
 from .context import HarnessContext
-from .exec_target import ExecTarget, KubectlTarget, LocalTarget
+from .exec_target import ExecError, ExecTarget, KubectlTarget, LocalTarget
 
 ENGINES = ("strands", "claude-code")
 
@@ -420,6 +420,32 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_session(args: argparse.Namespace) -> int:
+    """Long-lived interactive sandboxes: see session.py."""
+    cfg = HarnessConfig.load(None, _overrides(args))
+    if cfg.target not in ("local", "podman"):
+        raise SystemExit(f"harness session runs on podman for now (target is {cfg.target}).")
+    try:
+        if args.action == "list":
+            rows = session.list_sessions(cfg)
+            if not rows:
+                print("No sessions.")
+            for row in rows:
+                print(f"{row['name']:<24} {row['status']:<8} {row['ui']:<28} {row['repo']}")
+            return 0
+        if not args.name:
+            raise SystemExit(f"harness session {args.action} needs a session name.")
+        if args.action == "start":
+            print(session.start(cfg, args.name, port=args.port or 0, bind=args.bind or "", config_file=args.opencode_config or ""))
+        elif args.action == "stop":
+            print(session.stop(cfg, args.name))
+        else:
+            print(session.remove(cfg, args.name))
+    except (session.SessionError, containers.ContainerError, git.GitError, ExecError) as err:
+        raise SystemExit(str(err)) from err
+    return 0
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     """Remove a target a run kept: a sandbox claim, or a container with its egress sidecar."""
     cfg = HarnessConfig.load(None, _overrides(args))
@@ -529,6 +555,18 @@ def main(argv: list[str] | None = None) -> int:
 
     ls = sub.add_parser("list", help="Show containers, sandbox claims, and harness Jobs in flight.")
     ls.set_defaults(func=cmd_list)
+
+    sess = sub.add_parser("session", help="Long-lived interactive sandboxes with a web UI (podman).")
+    sess.add_argument("action", choices=["start", "stop", "rm", "list"],
+                      help="start: start it, or show a running one. stop: remove the containers, keep the "
+                           "workspace. rm: delete the workspace too. list: sessions and where they are.")
+    sess.add_argument("name", nargs="?", help="The session's name.")
+    sess.add_argument("--port", type=int, help="Host port for the UI (default: a free one, then the same one).")
+    sess.add_argument("--bind", help="Host address the UI listens on (default 127.0.0.1; a LAN address or "
+                                     "0.0.0.0 to reach it from other machines).")
+    sess.add_argument("--opencode-config", dest="opencode_config",
+                      help="An opencode.json to use as is, instead of one written from the harness's model settings.")
+    sess.set_defaults(func=cmd_session)
 
     release = sub.add_parser("release", help="Remove a kept target (--claim, or --docker-container).")
     release.set_defaults(func=cmd_release)

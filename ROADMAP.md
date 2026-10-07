@@ -119,6 +119,18 @@ to terminated hosts (each request is its own connection).
 
 ### 4. Sessions
 
+Done on podman: `harness session start | stop | rm | list`, optional repo, two
+volumes (workspace and home), opencode's web UI reached through the gateway
+behind a per-session password, opencode configured from the harness's
+llama.cpp / OpenAI-compatible model settings, and `host:port` allowlist entries
+for a plain-HTTP model server.
+
+Differs from the plan below: opencode is not an `--engine` (there is nothing
+for it to do in a task yet); it is what a session runs.
+
+Remaining: the optional web terminal (zellij), idle reaping and a lifetime,
+root-in-container opt-in, opencode's model credentials at the gateway.
+
 - `opencode` engine; llama.cpp via its OpenAI-compatible endpoint.
 - `harness session`: start detached, list, reattach, stop. Optional repo.
 - A named volume (a PVC in the cluster) for the workspace and UI state, so a
