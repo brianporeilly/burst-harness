@@ -433,14 +433,16 @@ def cmd_session(args: argparse.Namespace) -> int:
             if not rows:
                 print("No sessions.")
             for row in rows:
-                print(f"{row['name']:<24} {row['status']:<8} {row['ui']:<28} {row['repo']}")
+                print(f"{row['name']:<24} {row['status']:<8} {row['agent']:<12} {row['ui']:<34} {row['repo']}")
             return 0
         if not args.name:
             raise SystemExit(f"harness session {args.action} needs a session name.")
         if args.action == "start":
             print(session.start(cfg, args.name, port=args.port or 0, bind=args.bind or "", config_file=args.opencode_config or "",
                                 terminal=args.terminal, terminal_port=args.terminal_port or 0,
-                                idle=args.idle, lifetime=args.lifetime))
+                                idle=args.idle, lifetime=args.lifetime, agent=args.agent,
+                                allow=tuple(h.strip() for h in args.allow.split(",") if h.strip())
+                                if args.allow is not None else None))
         elif args.action == "stop":
             print(session.stop(cfg, args.name))
         else:
@@ -601,6 +603,11 @@ def main(argv: list[str] | None = None) -> int:
     sess.add_argument("--port", type=int, help="Host port for the UI (default: a free one, then the same one).")
     sess.add_argument("--bind", help="Host address the UI listens on (default 127.0.0.1; a LAN address or "
                                      "0.0.0.0 to reach it from other machines).")
+    sess.add_argument("--agent", choices=["opencode", "claude-code"],
+                      help="What you talk to: opencode's web UI, or Claude Code in a terminal in the browser. "
+                           "Default: as the session was last started; opencode for a new one.")
+    sess.add_argument("--allow", help="The session's own allowlist entries, comma-separated (host or host:port), "
+                                      "kept with it and added to the defaults each start. Replaces what it had.")
     sess.add_argument("--terminal", action=argparse.BooleanOptionalAction, default=None,
                       help="Also serve a terminal in the browser (zellij), behind its own login token. "
                            "Default: as the session was last started; off for a new one.")

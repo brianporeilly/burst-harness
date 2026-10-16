@@ -318,8 +318,9 @@ what an image of your own has to provide).
 ## Sessions
 
 A task runs and ends; a session stays. `harness session` starts a sandbox behind
-a gateway with opencode's web UI, for working with an agent by conversation. No
-branch, no task document, no terminal state: what happens in it is up to you.
+a gateway with an agent you reach from the browser — opencode's web UI, or
+(`--agent claude-code`) Claude Code in a terminal in the browser. No branch, no
+task document, no terminal state: what happens in it is up to you.
 
 ```bash
 python -m harness --repo-url https://github.com/me/scratch.git session start my-box
@@ -370,10 +371,40 @@ workspace starts empty. podman only, for now.
   makes real, so the key is never in the session. For anything else, pass
   `--opencode-config my-opencode.json` (used as is; allow its hosts with
   `--egress-allow`), or set a provider up in the UI.
+- **Claude Code** (`--agent claude-code`): the session's UI is a zellij terminal
+  opened on Claude Code, behind a login token. It gets `ANTHROPIC_API_KEY` /
+  `CLAUDE_CODE_OAUTH_TOKEN` from the driver — or placeholders, with
+  `--egress-inject model` — and with neither you can log in from the terminal.
+- **Its own allowlist** (`--allow a.com,llm.lan:8080`): kept with the session
+  and added to the defaults each time it starts. Approving a refusal with
+  `--scope permanent` adds to this list, not to every sandbox's.
 - An allowlist entry may name a port — `--egress-allow llm.lan:8080,...` — to
   allow a host on that port instead of 443.
 
 Not there yet: anything but podman.
+
+## Orchestrator
+
+A web page for sessions, on this machine: create one with the options above
+(agent, repository, allowlist or allow-all-and-record, the session's own
+allowlist, credentials at the gateway, model, root, terminal, idle and lifetime),
+open its UI, watch its gateway's events live, and approve what it refused —
+once, for this run, for two hours, or always.
+
+```bash
+pip install -r orchestrator/requirements.txt
+python -m orchestrator            # http://127.0.0.1:8700/
+```
+
+It drives the same `harness session` and `harness egress` code, so sessions it
+makes are ordinary sessions; it remembers what each was created with, so
+starting one again means the same thing. Credentials it can hand on come from
+its own environment, as for the harness; the page shows which are there.
+
+Local only, with no login: it answers only to `127.0.0.1` / `localhost`, and
+refuses changes that lack a header a page on another site cannot send. A proof
+of concept on podman; the cluster version sits behind the same backend
+interface (`orchestrator/backend.py`).
 
 ## Engines
 

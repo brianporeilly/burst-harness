@@ -93,3 +93,28 @@ def test_anthropic_key_reaches_opencode_as_itself_or_as_a_placeholder(monkeypatc
 def test_describe_shows_when_it_stops():
     record = {"bind": "127.0.0.1", "port": 1, "password": "pw", "idle": 7200, "lifetime": 0}
     assert "after idle 7200s" in session.describe(record)
+
+
+def test_urls_and_describe_for_a_claude_code_session():
+    record = {"bind": "127.0.0.1", "port": 4200, "password": "pw", "agent": "claude-code",
+              "terminal": {"port": 4200, "token": "tok", "path": "claude"}, "allow": ["example.com"]}
+    assert session.urls(record) == {"terminal": "http://127.0.0.1:4200/claude", "ui": "http://127.0.0.1:4200/claude"}
+    shown = session.describe(record)
+    assert "Claude Code" in shown and "tok" in shown and "pw" not in shown and "example.com" in shown
+
+
+def test_claude_env_swaps_in_placeholders_when_the_gateway_holds_the_key(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example")
+    assert session.claude_env(HarnessConfig())["ANTHROPIC_API_KEY"] == "real-key"
+    held = session.claude_env(HarnessConfig(egress_inject=("model",)))
+    assert "placeholder" in held["ANTHROPIC_API_KEY"] and held["ANTHROPIC_BASE_URL"] == "https://proxy.example"
+
+
+def test_add_allow_keeps_entries_once(tmp_path):
+    cfg = HarnessConfig(state_dir=str(tmp_path))
+    with pytest.raises(session.SessionError):
+        session.add_allow(cfg, "nope", "example.com")
+    session.save_record(cfg, "box", {"name": "box", "allow": []})
+    assert session.add_allow(cfg, "box", "example.com") and not session.add_allow(cfg, "box", "example.com")
+    assert session.load_record(cfg, "box")["allow"] == ["example.com"]

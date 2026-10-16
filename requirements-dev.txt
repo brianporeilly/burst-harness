@@ -1,1 +1,3 @@
 pytest==8.4.2
+-r orchestrator/requirements.txt
+httpx==0.28.1

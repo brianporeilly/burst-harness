@@ -1,8 +1,8 @@
 # Roadmap
 
 Where this is going: replace OpenHands on the cluster with something of our own
-that can run both autonomous agents (today's `run`) and interactive ones, with
-network access that is controlled and auditable. Local podman stays a
+that can run autonomous agents (today's `run`), interactive ones, and scheduled
+jobs, with network access that is controlled and auditable. Local podman stays a
 first-class path throughout; every phase lands there first.
 
 ## Goals
@@ -23,6 +23,7 @@ UIs are LAN-only (WireGuard covers remote); nothing is exposed publicly.
 | **Gateway** | `gateway/`, own image | A sandbox's only network peer: policy, audit events, credential injection, inbound UI traffic. Imports nothing from the harness; configuration in, JSONL events out. Replaces `burst-egress-proxy`. |
 | **Control plane** | a separate project, later | API, audit store, approvals UI, session routing. Launches `harness` rather than reimplementing it. |
 | **Cluster network policy** | home-ops | Default-deny egress around sandboxes, routes to session UIs. |
+| **Jobs** | their own repos, one per instance | Scheduled or triggered runs: a `job.toml` (harness config plus a `[job]` table) and a prompt. Run and rendered by the harness (phase 8). |
 
 Not adding: a second backend abstraction (`ExecTarget` with `acquire` /
 `release` / `attach_hint` is it, and `agent-sandbox` is already the k8s
@@ -165,17 +166,128 @@ or say it is waiting.
 
 ### 6. Cluster
 
+Decided (2026-10-13): **one shared gateway per sandbox namespace**, not a
+sidecar. A sidecar shares the sandbox pod's network identity, so Calico cannot
+tell it from the agent: if the gateway can reach the internet, so can the agent
+(the fail-open case from phase 2). A shared gateway lets Calico allow sandbox
+pods to reach only it, needing no extra privileges. It tells sandboxes apart by
+pod IP; per-sandbox policy and credentials are pushed to it after a claim, the
+way approvals already reach a running gateway, which keeps warm pools usable.
+agent-sandbox stays the substrate. Open: whether a claimed sandbox's volume can
+outlive a stop, which sessions need. home-ops #1083 (in-cluster task runs,
+without a gateway) comes first.
+
 - Gateway alongside each claimed sandbox; default-deny egress NetworkPolicy
   allowing only it (home-ops).
 - HTTPRoute per session.
 - Verify user-namespace pods before allowing root there.
 
-### 7. Control plane (separate project)
+### 7. Control plane (orchestrator)
+
+Started (2026-10-13) as a proof of concept in this repo, `orchestrator/`, on
+podman: a local web page that creates and manages sessions with every option a
+session has, shows each gateway's events live, and approves refusals. It calls
+the harness's session and egress code directly; it moves to its own repo when
+the Kubernetes backend arrives. Sessions can now run Claude Code (in a browser
+terminal) as well as opencode, and keep their own allowlists. OpenHands is not
+used and is to be removed from home-ops once this covers the same ground.
+
+Original plan:
 
 API and dashboard over what the earlier phases emit: live event feed, pending
 approvals, session list and launch, audit store (SQLite to start). A
 mobile-friendly chat front end or a Slack bot belongs here if opencode's own UI
 turns out not to be enough. A shared gateway is reconsidered at this point.
+
+### 8. Jobs
+
+Added 2026-10-16, from a design brief on the workloads to run (not checked in).
+A job is an unattended, mostly read-only run with a narrow brief, on a
+schedule or a trigger: a Renovate and repo health digest, Gmail triage, a
+"where I left off" digest, a cluster watcher, PR reviews, and at work, Slack
+digests and a `/catchup` command. Two instances, personal (cluster) and work
+(podman or docker), share only the harness code and the job contract. Their
+credentials, config and state are kept apart.
+
+**Jobs live in their own repos.** One repo per instance, say `burst-jobs`
+(personal) and one at work. Each job is a directory holding:
+
+- `job.toml`: harness config, the same fields as `.harness.toml` (model,
+  engine, image, egress allowlist, injection), plus a `[job]` table with
+  `trigger`, `output`, `mode` and `secrets`;
+- `prompt.md`: the brief;
+- an optional `scripts/` folder, copied into the sandbox. Deterministic work
+  runs from here, such as Gmail's rules-first pass, so the model only sees
+  what is ambiguous.
+
+The harness does not know any particular job. Adding one means adding a
+directory, not changing harness code. Because a job spec is harness config
+with one more table, this is not the separate YAML spec ruled out above.
+
+**Contract:**
+
+- **Trigger:** `schedule = "0 7 * * *"`, a webhook, or a Slack command. Cron
+  is rendered (below). Event triggers arrive at the control plane.
+- **Mode:** `report` (the default) or `act`, enforced by the gateway, not the
+  prompt. In report mode, the job's API hosts are intercepted and only
+  read methods are allowed (for Gmail, also a list of read endpoints). A
+  hijacked report job therefore cannot archive, merge or post.
+- **Secrets:** named, and injected by the gateway where possible: GitHub and
+  Slack tokens, and Gmail OAuth with the `gmail.modify` scope. Gmail needs
+  something new: the gateway refreshing an access token from a refresh token.
+- **Output:** the job writes its report to a file. The driver posts it to
+  Slack, stdout or similar, the same way it opens PRs today, so the sandbox
+  needs no token that can post.
+- **State:** a small SQLite file per job, on a volume mounted at `/state`
+  (last run, processed IDs, pending plans). This is a podman volume locally
+  and a PVC in the cluster, backed up the way home-ops backs up other PVCs.
+- **Run log:** every run records its result and its gateway events, so a job
+  that quietly stops working gets noticed (a "no successful run in N days"
+  check).
+
+**Approvals for actions** follow phase 5's rule: never wait in memory. A run
+in act mode starts as a plan ("archive 212 messages from these 9 senders"),
+which goes into the job's state and out to Slack. Approving it, by sender or
+category, records the decision through the control plane. The next run, or
+one the approval triggers, carries out only what was approved. A restart
+loses nothing, because nothing is waiting.
+
+**Steps:**
+
+1. `harness job run <dir>` on podman: load the spec, run without a repo,
+   collect the report, post it. First job: the Renovate and repo health
+   digest. It is read-only and needs one token, so it exercises the whole
+   path: trigger, container, model, Slack.
+2. `harness job render <dir> --to systemd|cronjob`. Both outputs schedule the
+   same driver command, so the renderer stays small. The CronJob runs the
+   driver image, as home-ops #1083 does, and it starts the sandbox through
+   agent-sandbox. Until phase 6's gateway exists, a cluster job's credentials
+   are passed into the sandbox, so only read-only tokens are acceptable there.
+3. State volumes, report mode enforced at the gateway, and the run log.
+4. Gmail: report-only triage and an action-needed digest first. Then cleanup
+   as a dry run with approvals, then with actions enabled. Every action gets a
+   label (`bot/archived`, `bot/trashed`), and nothing is ever sent or drafted.
+   On the cluster, this waits for phase 6's gateway.
+5. Event triggers through the control plane: webhooks (a phone shortcut for
+   capturing tasks), Slack commands and interactions (approvals,
+   `/catchup`), and Forgejo label events (below).
+6. The work instance: the same harness, its own jobs repo, on podman.
+
+**PR reviews on Forgejo** become a job like the rest. Adding a label (say
+`ai-review`) to a PR starts a review, in a sandbox that can only clone. The
+driver posts the review through Forgejo's API, which needs a small forge layer
+because PRs go through `gh` today. The trigger is a Forgejo webhook to the
+control plane, or a `pull_request_target` workflow on a Forgejo Runner (none
+is deployed yet). Labelling needs write access, so the label is the trust
+gate. No PRs from forks until phase 6's gateway is in place.
+
+**Not decided:**
+
+- The personal instance's models: local on the cluster, or a cloud API with
+  scoped keys. This decides whether Gmail triage can run entirely on the
+  cluster. Routing is per job either way, via `job.toml`'s model fields.
+- Whether a job reaches Gmail and Slack with `curl` plus scripts, or through
+  MCP servers in the sandbox.
 
 ## Open
 

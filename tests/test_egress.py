@@ -97,3 +97,18 @@ def test_refused_summary_names_each_destination_once():
     text = refused_summary("\n".join(json.dumps(e) for e in lines).encode() + b"\nnot json\n")
     assert "Refused: example.com, llm.lan:8080." in text
     assert refused_summary(b"") == ""
+
+
+def test_permanent_approval_on_a_session_goes_to_that_session(monkeypatch, tmp_path):
+    from harness import session
+    cfg = HarnessConfig(state_dir=str(tmp_path))
+    session.save_record(cfg, "box", {"name": "box", "allow": []})
+    box = {"approvals": []}
+    gw = {**GATEWAY, "name": "burst-session-box-egress", "task": "session-box"}
+    monkeypatch.setattr(egress, "gateways", lambda: [gw])
+    monkeypatch.setattr(egress, "events", lambda g: [deny("a-1", "example.com")])
+    monkeypatch.setattr(egress, "read_approvals", lambda g: list(box["approvals"]))
+    monkeypatch.setattr(egress, "write_approvals", lambda g, a: box.__setitem__("approvals", a))
+    assert "session box" in egress.approve(cfg, "a-1", "permanent")
+    assert session.load_record(cfg, "box")["allow"] == ["example.com"]
+    assert containers.approved(cfg) == []

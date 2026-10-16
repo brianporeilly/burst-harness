@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Burst Orchestrator</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #dde1e8;
+    --accent: #2f6fde; --accent-text: #ffffff; --ok: #1f8a4c; --warn: #b26b00; --bad: #c0362c;
+    --chip: #eef1f6; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1e26; --text: #e4e7ee; --muted: #9aa3b4; --line: #2b313d;
+      --accent: #5b8ff0; --accent-text: #0d1117; --ok: #4cc283; --warn: #e3a33d; --bad: #f06a5e; --chip: #232936;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+           padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; min-width: 0; }
+  .panel h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .spread { justify-content: space-between; }
+  .muted { color: var(--muted); }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); }
+  button, .button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+                    padding: 5px 11px; border-radius: 6px; cursor: pointer; text-decoration: none; }
+  button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .session { border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 8px; cursor: pointer; }
+  .session.selected { border-color: var(--accent); }
+  .session .name { font-weight: 600; }
+  form { display: grid; gap: 10px; }
+  label { display: grid; gap: 3px; font-size: 13px; }
+  label.inline { display: flex; gap: 6px; align-items: center; }
+  input[type=text], input[type=number], select, textarea {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; width: 100%; }
+  textarea { font-family: var(--mono); font-size: 12px; min-height: 54px; }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; display: grid; gap: 8px; margin: 0; }
+  legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+  .secret { font-family: var(--mono); font-size: 12px; background: var(--chip); padding: 2px 6px; border-radius: 4px;
+            overflow-wrap: anywhere; }
+  .events { font-family: var(--mono); font-size: 12px; max-height: 420px; overflow: auto; border: 1px solid var(--line);
+            border-radius: 6px; padding: 6px; background: var(--bg); }
+  .event { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .event.deny { color: var(--bad); } .event.allow { color: var(--ok); } .event.fail { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .error { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .hidden { display: none !important; }
+  details summary { cursor: pointer; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Burst Orchestrator</h1>
+  <div class="row" id="creds"></div>
+</header>
+<main>
+  <section class="panel">
+    <div class="row spread"><h2>Sessions</h2><button class="primary" id="new">New session</button></div>
+    <div id="sessions"><p class="muted">Loading...</p></div>
+  </section>
+
+  <section class="panel" id="detail">
+    <p class="muted">Choose a session, or create one.</p>
+  </section>
+
+  <section class="panel hidden" id="create">
+    <div class="row spread"><h2>New session</h2><button id="cancel">Cancel</button></div>
+    <form id="form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required pattern="[a-z0-9][a-z0-9-]{0,39}" placeholder="scratch"></label>
+        <label>Agent
+          <select name="agent">
+            <option value="opencode">opencode (web UI)</option>
+            <option value="claude-code">Claude Code (terminal in the browser)</option>
+          </select>
+        </label>
+      </div>
+      <label>Repository to clone (optional) <input type="text" name="repo_url" placeholder="https://github.com/you/repo.git"></label>
+      <fieldset>
+        <legend>Network</legend>
+        <label>Egress
+          <select name="egress">
+            <option value="allowlist">Allowlist: refuse the rest, approve as you go</option>
+            <option value="log">Allow everything, but record it</option>
+          </select>
+        </label>
+        <label>This session's allowlist, on top of the defaults (one per line: host, *.host, or host:port)
+          <textarea name="allow" placeholder="example.com&#10;llm.lan:8080"></textarea>
+        </label>
+        <details><summary>Defaults every session gets</summary><p class="muted" id="defaults"></p></details>
+      </fieldset>
+      <fieldset>
+        <legend>Credentials held by the gateway (the sandbox never sees them)</legend>
+        <label class="inline"><input type="checkbox" name="inject" value="git"> Git token, for the repository above</label>
+        <label class="inline"><input type="checkbox" name="inject" value="model"> Model key (Anthropic)</label>
+      </fieldset>
+      <fieldset>
+        <legend>Model</legend>
+        <div class="grid2">
+          <label>Provider
+            <select name="provider">
+              <option value="">Default</option><option value="anthropic">Anthropic</option>
+              <option value="llamacpp">llama.cpp server</option><option value="openai">OpenAI-compatible</option>
+            </select>
+          </label>
+          <label>Model <input type="text" name="model" placeholder="default"></label>
+        </div>
+        <div class="grid2">
+          <label>Base URL <input type="text" name="base_url" placeholder="http://llm.lan:8080"></label>
+          <label>Context window (tokens) <input type="number" name="context_window" min="0" placeholder="default"></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Sandbox</legend>
+        <label class="inline"><input type="checkbox" name="root"> Root, so the agent can install packages (fixed once created)</label>
+        <label class="inline" id="terminal-row"><input type="checkbox" name="terminal"> Also a terminal in the browser</label>
+        <div class="grid2">
+          <label>Stop when idle for <input type="text" name="idle" placeholder="never (e.g. 2h)"></label>
+          <label>Stop after <input type="text" name="lifetime" placeholder="never (e.g. 1d)"></label>
+        </div>
+      </fieldset>
+      <div class="row"><button class="primary" type="submit">Create</button><span class="error" id="form-error"></span></div>
+    </form>
+  </section>
+</main>
+
+<template id="detail-template">
+  <div class="row spread"><h2 data-name></h2><div class="row" data-actions></div></div>
+  <div data-error class="error"></div>
+  <div data-access></div>
+  <h2 style="margin-top:14px">Waiting for approval</h2>
+  <div data-pending><p class="muted">Nothing refused.</p></div>
+  <h2 style="margin-top:14px">Gateway events</h2>
+  <div class="events" data-events><p class="muted">Not running.</p></div>
+</template>
+
+<script>
+"use strict";
+const api = async (path, options = {}) => {
+  const response = await fetch(path, {
+    ...options,
+    headers: { "Content-Type": "application/json", "X-Orchestrator": "1", ...(options.headers || {}) },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || body.detail || response.statusText);
+  return body;
+};
+const el = (tag, attrs = {}, ...children) => {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value);
+  }
+  for (const child of children.flat()) if (child != null) node.append(child);
+  return node;
+};
+const statusChip = (s) => el("span", { class: "chip " + ({ running: "ok", starting: "warn", failed: "bad" }[s] || "") }, s);
+const duration = (seconds) => !seconds ? "" : seconds % 86400 === 0 ? `${seconds / 86400}d`
+  : seconds % 3600 === 0 ? `${seconds / 3600}h` : seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
+
+let sessions = [], selected = null, stream = null, streaming = null;
+
+async function loadInfo() {
+  const info = await api("/api/info");
+  const creds = document.getElementById("creds");
+  const label = { git: "git token", anthropic_api_key: "Anthropic key", claude_oauth_token: "Claude token" };
+  creds.replaceChildren(...Object.entries(info.credentials).map(([key, present]) =>
+    el("span", { class: "chip " + (present ? "ok" : ""), title: present ? "available to hand on" : "not set in the orchestrator's environment" },
+       (present ? "✓ " : "✗ ") + label[key])));
+  const d = info.defaults;
+  document.getElementById("defaults").textContent =
+    [...d.allow, ...d.allowed_for_good].join(", ") + (d.allowed_for_good.length ? "  (the last ones approved for good)" : "");
+}
+
+async function refresh() {
+  try { sessions = await api("/api/sessions"); } catch (err) { return; }
+  const list = document.getElementById("sessions");
+  if (!sessions.length) { list.replaceChildren(el("p", { class: "muted" }, "No sessions yet.")); }
+  else list.replaceChildren(...sessions.map((s) => el("div", {
+      class: "session" + (s.name === selected ? " selected" : ""), onclick: () => select(s.name) },
+    el("div", { class: "row spread" }, el("span", { class: "name" }, s.name), statusChip(s.status)),
+    el("div", { class: "muted" }, [s.agent, s.repo ? s.repo.replace(/^https:\/\//, "") : "empty workspace",
+                                    s.egress === "log" ? "allow all, recorded" : "allowlist"].join(" · ")))));
+  if (selected) renderDetail();
+}
+
+function select(name) {
+  selected = name;
+  document.getElementById("create").classList.add("hidden");
+  document.getElementById("detail").classList.remove("hidden");
+  refresh();
+}
+
+async function act(label, work) {
+  try { await work(); } catch (err) { alert(`${label}: ${err.message}`); }
+  refresh();
+}
+
+function renderDetail() {
+  const s = sessions.find((x) => x.name === selected);
+  const detail = document.getElementById("detail");
+  if (!s) { detail.replaceChildren(el("p", { class: "muted" }, "Gone.")); closeStream(); return; }
+  if (detail.dataset.name !== s.name) {
+    detail.dataset.name = s.name;
+    detail.replaceChildren(document.getElementById("detail-template").content.cloneNode(true));
+    closeStream();
+  }
+  detail.querySelector("[data-name]").textContent = s.name;
+  const running = s.status === "running";
+  const actions = [];
+  if (!running && s.status !== "starting") actions.push(el("button", { class: "primary", onclick: () => act("Start", () => api(`/api/sessions/${s.name}/start`, { method: "POST" })) }, "Start"));
+  if (running) actions.push(el("button", { onclick: () => act("Stop", () => api(`/api/sessions/${s.name}/stop`, { method: "POST" })) }, "Stop"));
+  actions.push(el("button", { class: "danger", onclick: () => confirm(`Delete ${s.name} and its workspace?`) &&
+    act("Remove", async () => { await api(`/api/sessions/${s.name}`, { method: "DELETE" }); selected = null; }) }, "Remove"));
+  detail.querySelector("[data-actions]").replaceChildren(...actions);
+  detail.querySelector("[data-error]").textContent = s.error || "";
+
+  const facts = [
+    ["Agent", s.agent], ["Repository", s.repo || "none (empty workspace)"],
+    ["Egress", s.egress === "log" ? "everything allowed, all recorded" : "allowlist"],
+    ["Own allowlist", s.allow.length ? s.allow.join(", ") : "nothing beyond the defaults"],
+    ["Root", s.root ? "yes" : "no"],
+    ["Stops", [s.idle && `after ${duration(s.idle)} idle`, s.lifetime && `after ${duration(s.lifetime)}`].filter(Boolean).join(", ") || "when you stop it"],
+  ];
+  const rows = facts.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v)));
+  if (running && s.urls) {
+    rows.unshift(el("tr", {}, el("th", {}, "Open"), el("td", {}, el("div", { class: "row" },
+      el("a", { class: "button primary", href: s.urls.ui, target: "_blank", rel: "noopener" }, s.agent === "claude-code" ? "Claude Code" : "opencode"),
+      s.urls.terminal && s.agent !== "claude-code" ? el("a", { class: "button", href: s.urls.terminal, target: "_blank", rel: "noopener" }, "Terminal") : null))));
+    if (s.password) rows.splice(1, 0, el("tr", {}, el("th", {}, "Password"), el("td", {}, el("span", { class: "secret" }, s.password), el("span", { class: "muted" }, "  user opencode"))));
+    if (s.token) rows.splice(1, 0, el("tr", {}, el("th", {}, "Terminal token"), el("td", {}, el("span", { class: "secret" }, s.token))));
+  }
+  detail.querySelector("[data-access]").replaceChildren(el("table", {}, rows));
+
+  if (running) { loadPending(s.name); openStream(s.name); }
+  else { closeStream(); detail.querySelector("[data-pending]").replaceChildren(el("p", { class: "muted" }, "Not running.")); }
+}
+
+async function loadPending(name) {
+  let rows;
+  try { rows = await api(`/api/sessions/${name}/pending`); } catch { return; }
+  const box = document.querySelector("#detail [data-pending]");
+  if (!box || selected !== name) return;
+  if (!rows.length) { box.replaceChildren(el("p", { class: "muted" }, "Nothing refused.")); return; }
+  const approve = (id, scope) => act("Approve", () => api("/api/approve", { method: "POST", body: JSON.stringify({ id, scope }) }));
+  box.replaceChildren(el("table", {}, rows.map((r) => el("tr", {},
+    el("td", {}, el("strong", {}, r.destination), el("div", { class: "muted" }, `${r.times}× · last ${r.last.slice(11, 19)}`)),
+    el("td", {}, el("div", { class: "row" },
+      el("button", { title: "One connection", onclick: () => approve(r.id, "once") }, "Once"),
+      el("button", { title: "Until the session is next stopped", onclick: () => approve(r.id, "session") }, "This run"),
+      el("button", { title: "For two hours", onclick: () => approve(r.id, "2h") }, "2h"),
+      el("button", { class: "primary", title: "Add to this session's allowlist", onclick: () => approve(r.id, "permanent") }, "Always")))))));
+}
+
+function closeStream() { if (stream) { stream.close(); stream = null; streaming = null; } }
+
+function openStream(name) {
+  if (streaming === name) return;
+  closeStream();
+  const box = document.querySelector("#detail [data-events]");
+  box.replaceChildren();
+  streaming = name;
+  stream = new EventSource(`/api/sessions/${name}/events`);
+  stream.onmessage = (message) => {
+    const e = JSON.parse(message.data);
+    if (e.verdict === "close") return;
+    const where = e.kind === "dns" ? `${e.host} (${e.qtype})` : e.port ? `${e.host}:${e.port}` : e.host;
+    const extra = [e.method && `${e.method} ${e.path || ""}`, e.status, e.via, e.injected && `+${e.injected.join(",")}`, e.detail]
+      .filter(Boolean).join("  ");
+    const line = el("div", { class: `event ${e.verdict}`, title: message.data },
+      `${(e.ts || "").slice(11, 19)}  ${e.verdict.padEnd(5)} ${e.kind.padEnd(8)} ${where || ""}  ${extra}`);
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 20;
+    box.append(line);
+    while (box.childElementCount > 500) box.firstElementChild.remove();
+    if (atBottom) box.scrollTop = box.scrollHeight;
+    if (e.verdict === "deny") loadPending(name);
+  };
+  stream.addEventListener("end", closeStream);
+}
+
+document.getElementById("new").onclick = () => {
+  document.getElementById("create").classList.remove("hidden");
+  document.getElementById("detail").classList.add("hidden");
+  closeStream(); selected = null; refresh();
+};
+document.getElementById("cancel").onclick = () => {
+  document.getElementById("create").classList.add("hidden");
+  document.getElementById("detail").classList.remove("hidden");
+};
+const form = document.getElementById("form");
+const agentChanged = () => document.getElementById("terminal-row").classList.toggle("hidden", form.agent.value === "claude-code");
+form.agent.onchange = agentChanged; agentChanged();
+form.onsubmit = async (event) => {
+  event.preventDefault();
+  const data = new FormData(form);
+  const spec = {
+    name: data.get("name"), agent: data.get("agent"), repo_url: data.get("repo_url"), egress: data.get("egress"),
+    allow: data.get("allow"), inject: data.getAll("inject"), root: data.has("root"),
+    terminal: data.has("terminal"), idle: data.get("idle"), lifetime: data.get("lifetime"),
+    provider: data.get("provider"), model: data.get("model"), base_url: data.get("base_url"),
+    context_window: Number(data.get("context_window") || 0),
+  };
+  const error = document.getElementById("form-error");
+  error.textContent = "";
+  try {
+    await api("/api/sessions", { method: "POST", body: JSON.stringify(spec) });
+    form.reset(); agentChanged();
+    select(spec.name);
+  } catch (err) { error.textContent = err.message; }
+};
+
+loadInfo().catch(() => {});
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>

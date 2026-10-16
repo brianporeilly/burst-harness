@@ -12,8 +12,9 @@ id; nothing waits. Approving is a separate act, by whoever runs the sandbox:
 
 Scopes: `once` is one connection; `session` lasts until that gateway stops (so,
 for a `harness session`, until it is next stopped); a duration (`90m`, `2h`,
-`1d`) expires; `permanent` is also written to `state_dir`/egress/approved.json,
-which every allowlist includes from then on.
+`1d`) expires; `permanent` is kept: for a `harness session`, in that session's
+own allowlist, added each time it starts; for a task's container, in
+`state_dir`/egress/approved.json, which every allowlist includes from then on.
 
 An approval reaches a running gateway as a line in its approvals file, which it
 re-reads when the file changes. Nothing is restarted, and an approval only ever
@@ -28,7 +29,7 @@ import subprocess
 import time
 from typing import Any
 
-from . import containers
+from . import containers, session
 from .config import HarnessConfig
 
 APPROVALS_FILE = f"{containers.GATEWAY_CA_DIR}/approvals.json"
@@ -127,6 +128,9 @@ def approve(cfg: HarnessConfig, request_id: str, scope: str = "session") -> str:
         write_approvals(gateway, [*kept, {"allow": where, "id": request_id, **extra}])
         sandbox = gateway["name"].removesuffix("-egress")
         if scope.strip().lower() == "permanent":
+            if name := session_of(gateway):
+                session.add_allow(cfg, name, where)
+                return f"Approved {where} for session {name}, from now on."
             allow(cfg, where)
             return f"Approved {where} for {sandbox}, and for every allowlist from now on."
         return f"Approved {where} for {sandbox} ({scope})."
@@ -134,6 +138,12 @@ def approve(cfg: HarnessConfig, request_id: str, scope: str = "session") -> str:
         f"No running gateway has a refusal with id {request_id}. If its sandbox has stopped, "
         "`harness egress allow HOST` allows a host from the next start."
     )
+
+
+def session_of(gateway: dict[str, str]) -> str:
+    """The `harness session` a gateway belongs to, or "" for a task's."""
+    task = gateway.get("task", "")
+    return task.removeprefix("session-") if task.startswith("session-") else ""
 
 
 def _check(host: str) -> str:

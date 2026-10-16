@@ -1,9 +1,11 @@
 """`harness session`: a long-lived sandbox you talk to, rather than a task that runs.
 
-A session is a container behind a gateway, a workspace that outlives it, and
-opencode's web UI. There is no branch, no task document and no terminal state:
-you (and the agent you chat with) decide what happens in it. A repo is
-optional -- without `--repo-url` the workspace starts empty.
+A session is a container behind a gateway, a workspace that outlives it, and an
+agent you reach from the browser: opencode's web UI (`--agent opencode`, the
+default), or Claude Code running in a terminal in the browser (`--agent
+claude-code`). There is no branch, no task document and no terminal state: you
+(and the agent) decide what happens in it. A repo is optional -- without
+`--repo-url` the workspace starts empty.
 
     harness session start NAME     start it, or say where a running one is
     harness session list           sessions, running and stopped
@@ -12,7 +14,13 @@ optional -- without `--repo-url` the workspace starts empty.
 
 `start --terminal` adds a terminal in the browser (zellij), on its own port and
 behind its own login token, reached the same way. It is a shell in the sandbox:
-whoever can log in to it can do what the agent can.
+whoever can log in to it can do what the agent can. A Claude Code session is
+that terminal, opened on a zellij session running `claude`.
+
+`start --allow a.com,llm.lan:8080` sets the session's own allowlist entries,
+kept with the session and added to the gateway's allowlist each time it starts
+(as is anything approved for it with `harness egress approve --scope
+permanent`).
 
 `start --idle 2h` stops a session that has had nothing go in or out for that
 long, and `--lifetime` stops it regardless. No process of the harness's outlives
@@ -66,6 +74,19 @@ UI_USER = "opencode"
 ZELLIJ_PORT = 8082
 TERMINAL_PORT = 8083
 ZELLIJ_CONFIG = "web_server true\nshow_startup_tips false\nshow_release_notes false\n"
+AGENTS = ("opencode", "claude-code")
+# The zellij session a Claude Code session's terminal opens on, and its layout:
+# `claude` in the workspace, falling back to a shell when it exits.
+CLAUDE_ZELLIJ_SESSION = "claude"
+CLAUDE_LAYOUT = """layout {
+    pane size=1 borderless=true { plugin location="tab-bar"; }
+    pane command="bash" { args "-lc" "claude; exec bash"; }
+    pane size=2 borderless=true { plugin location="status-bar"; }
+}
+"""
+# What Claude Code reads from its environment, passed from the driver's (or as
+# placeholders, with `--egress-inject model`).
+CLAUDE_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
 WORKSPACE = "/workspace"
 HOME = "/home/agent"
 OPENCODE_CONFIG = f"{HOME}/.config/opencode/opencode.json"
@@ -215,34 +236,76 @@ def _wait_for_ui(bind: str, port: int, timeout: float = 60) -> bool:
     return False
 
 
+def urls(record: dict[str, Any]) -> dict[str, str]:
+    """Where the session's UI and terminal are, from this machine."""
+    host = _local(record["bind"])
+    found = {}
+    if terminal := record.get("terminal"):
+        found["terminal"] = f"http://{host}:{terminal['port']}/" + (terminal.get("path") or "")
+    found["ui"] = found["terminal"] if record.get("agent") == "claude-code" else f"http://{host}:{record['port']}/"
+    return found
+
+
 def describe(record: dict[str, Any]) -> str:
-    where = f"http://{_local(record['bind'])}:{record['port']}/"
+    where = urls(record)["ui"]
     if record["bind"] == "0.0.0.0":
         where += f"  (and on this machine's other addresses, port {record['port']})"
-    lines = [f"  UI:        {where}", f"  user:      {UI_USER}", f"  password:  {record['password']}"]
+    if record.get("agent") == "claude-code":
+        lines = [f"  UI:        {where}  (Claude Code, in a terminal)", f"  token:     {record['terminal']['token']}"]
+    else:
+        lines = [f"  UI:        {where}", f"  user:      {UI_USER}", f"  password:  {record['password']}"]
+    if record.get("allow"):
+        lines.append(f"  allows:    {', '.join(record['allow'])} (as well as the defaults)")
     limits = [f"{what} {record[key]}s" for what, key in (("idle", "idle"), ("lifetime", "lifetime")) if record.get(key)]
     if limits:
         lines.append(f"  stops:     after {', '.join(limits)}")
-    if terminal := record.get("terminal"):
-        lines += [f"  terminal:  http://{_local(record['bind'])}:{terminal['port']}/", f"  token:     {terminal['token']}"]
+    if (terminal := record.get("terminal")) and record.get("agent") != "claude-code":
+        lines += [f"  terminal:  {urls(record)['terminal']}", f"  token:     {terminal['token']}"]
     return "\n".join(lines)
 
 
-def start_terminal(box: str, workdir: str) -> str:
-    """Start zellij's web server and the relay in front of it. Returns a new login token."""
+def claude_env(cfg: HarnessConfig) -> dict[str, str]:
+    """What a Claude Code session's terminal gets in its environment."""
+    found = {name: os.environ[name] for name in CLAUDE_ENV if os.environ.get(name)}
+    if "model" in cfg.egress_inject:
+        found = {name: containers.MODEL_CREDENTIALS[name][1] if name in containers.MODEL_CREDENTIALS else value
+                 for name, value in found.items()}
+    return found
+
+
+def start_terminal(box: str, workdir: str, *, env: dict[str, str] | None = None, claude: bool = False) -> str:
+    """Start zellij's web server and the relay in front of it. Returns a new login token.
+
+    `env` is passed, by name, to zellij and so to every shell it opens. With
+    `claude`, a zellij session running Claude Code is started for the browser
+    to attach to.
+    """
+    env = env or {}
+
     def run(*argv: str, detach: bool = False) -> subprocess.CompletedProcess[str]:
-        return _podman("exec", *(["--detach"] if detach else []), "--workdir", workdir, box, *argv)
+        names = [arg for key in env for arg in ("-e", key)]
+        return _podman("exec", *(["--detach"] if detach else []), "--workdir", workdir, *names, box, *argv, env=env)
 
     # zellij will not start its web server without a config file. One you have
     # edited (it is in the home volume) is left alone.
     setup = ('mkdir -p "$HOME/.config/zellij" && { [ -f "$HOME/.config/zellij/config.kdl" ] || '
              f'printf {shlex.quote(ZELLIJ_CONFIG)} > "$HOME/.config/zellij/config.kdl"; }}')
+    if claude:
+        layout = '"$HOME/.config/zellij/layouts/harness-claude.kdl"'
+        setup += f' && mkdir -p "$HOME/.config/zellij/layouts" && printf %s {shlex.quote(CLAUDE_LAYOUT)} > {layout}'
     if (proc := run("sh", "-c", setup)).returncode != 0:
         raise SessionError(f"Could not write zellij's config: {proc.stderr.strip()}")
     for command in (f"exec zellij web --start --port {ZELLIJ_PORT} >> /tmp/zellij-web.log 2>&1",
                     f"exec socat TCP-LISTEN:{TERMINAL_PORT},fork,reuseaddr TCP:127.0.0.1:{ZELLIJ_PORT}"):
         if (proc := run("sh", "-c", command, detach=True)).returncode != 0:
             raise SessionError(f"Could not start the terminal: {proc.stderr.strip()}")
+    if claude:
+        # A fresh one each start: zellij would otherwise offer to resurrect the
+        # last container's, with `claude` waiting for a keypress.
+        run("zellij", "delete-session", "--force", CLAUDE_ZELLIJ_SESSION)
+        proc = run("zellij", "--layout", "harness-claude", "attach", "--create-background", CLAUDE_ZELLIJ_SESSION)
+        if proc.returncode != 0:
+            raise SessionError(f"Could not start Claude Code's terminal session: {(proc.stderr or proc.stdout).strip()}")
     # Tokens are shown once and stored hashed, so each start makes a fresh one
     # and retires the rest: the one on record is always the one that works.
     run("zellij", "web", "--revoke-all-tokens")
@@ -253,24 +316,43 @@ def start_terminal(box: str, workdir: str) -> str:
     return match[0]
 
 
-def start(
+def start(cfg: HarnessConfig, name: str, **options: Any) -> str:
+    """Start the session, or report a running one. Returns what to tell the user. See launch()."""
+    record, notes, already = launch(cfg, name, **options)
+    if already:
+        return f"Session {name} is already running.\n{describe(record)}"
+    box = container_name(name)
+    return "\n".join([f"Session {name} is up ({box}, egress {record['egress']} via {box}-egress).", *notes, describe(record)])
+
+
+def launch(
     cfg: HarnessConfig, name: str, *, port: int = 0, bind: str = "", config_file: str = "",
     terminal: bool | None = None, terminal_port: int = 0, idle: str | None = None, lifetime: str | None = None,
-) -> str:
-    """Start the session, or report a running one. Returns what to tell the user.
+    agent: str | None = None, allow: tuple[str, ...] | None = None,
+) -> tuple[dict[str, Any], list[str], bool]:
+    """Start the session, or find it running. Returns (its record, notes for the
+    user, whether it was already running).
 
-    `terminal`, `idle` and `lifetime` None keep whatever the session had last time.
+    `terminal`, `idle`, `lifetime`, `agent` and `allow` None keep whatever the
+    session had last time. `allow` replaces the session's own allowlist entries.
     """
     box = container_name(name)
     if not shutil.which(BINARY):
         raise SessionError(f"{BINARY} is not installed or not on PATH.")
     record = load_record(cfg, name)
     if state(name) == "running" and record:
-        return f"Session {name} is already running.\n{describe(record)}"
+        return record, [], True
+    agent = agent or record.get("agent") or "opencode"
+    if agent not in AGENTS:
+        raise SessionError(f"A session's agent is one of {', '.join(AGENTS)} (got {agent!r}).")
+    claude = agent == "claude-code"
+    allowed = list(dict.fromkeys(allow if allow is not None else record.get("allow") or []))
     # Whatever is left of an earlier run goes; the volumes are what carry over.
     _target(cfg, name, WORKSPACE).release()
 
-    if config_file:
+    if claude:
+        config, endpoint = None, ()
+    elif config_file:
         try:
             config = json.loads(Path(config_file).expanduser().read_text())
             if not isinstance(config, dict):
@@ -303,17 +385,23 @@ def start(
     had_terminal = record.get("terminal") or {}
     if terminal is None:
         terminal = bool(had_terminal)
-    inbound = [(bind, port, UI_PORT)]
-    if terminal:
-        terminal_port = terminal_port or had_terminal.get("port") or _free_port(bind)
-        inbound.append((bind, terminal_port, TERMINAL_PORT))
+    if claude:
+        # Claude Code's UI is the terminal, so the session's port is the terminal's.
+        terminal, terminal_port = True, port
+        inbound = [(bind, port, TERMINAL_PORT)]
+    else:
+        inbound = [(bind, port, UI_PORT)]
+        if terminal:
+            terminal_port = terminal_port or (had_terminal.get("port") if had_terminal.get("port") != port else 0) \
+                or _free_port(bind)
+            inbound.append((bind, terminal_port, TERMINAL_PORT))
     repo = f"{WORKSPACE}/repo" if cfg.repo_url else WORKSPACE
     label = ("--label", f"{containers.LABEL_SESSION}={name}")
     slug = f"session-{name}"
 
     try:
         network, proxy, flags = containers.start_egress(
-            cfg, binary=BINARY, name=box, slug=slug, allow=endpoint, inbound=tuple(inbound), labels=label,
+            cfg, binary=BINARY, name=box, slug=slug, allow=(*endpoint, *allowed), inbound=tuple(inbound), labels=label,
             gateway_env=gateway_env,
         )
     except ContainerError as err:
@@ -327,7 +415,7 @@ def start(
                                              network_args=[*flags, *label, *mounts])[1:], *wait)
         if proc.returncode != 0:
             raise SessionError(f"{BINARY} run {cfg.image} failed: {proc.stderr.strip()}")
-        needed = (*REQUIRED_COMMANDS, "opencode", *(("zellij", "socat") if terminal else ()))
+        needed = (*REQUIRED_COMMANDS, "claude" if claude else "opencode", *(("zellij", "socat") if terminal else ()))
         if missing := target.missing_commands(needed):
             raise SessionError(f"{cfg.image} is missing: {', '.join(missing)}. See images/sandbox/Containerfile.")
         if cfg.egress_inject:
@@ -340,7 +428,9 @@ def start(
             else:
                 auth = () if "git" in cfg.egress_inject else git.auth_args(cfg.repo_url)
                 notes.append(git.clone(target, cfg.repo_url, auth=auth))
-        if config is not None:
+        if claude:
+            pass  # Claude Code needs no config written: burst-sandbox-init composes its own at start.
+        elif config is not None:
             target.run_shell(f"mkdir -p {shlex.quote(str(Path(OPENCODE_CONFIG).parent))} && cat > {shlex.quote(OPENCODE_CONFIG)}",
                              stdin=json.dumps(config, indent=2) + "\n", cwd="/")
         else:
@@ -352,18 +442,22 @@ def start(
         # The password, and any model key, go in by name from this process's
         # environment: they are in neither a command line nor the container's
         # own configuration.
-        serve = f"exec opencode web --hostname 0.0.0.0 --port {UI_PORT} >> /tmp/opencode.log 2>&1"
-        secret_env = {"OPENCODE_SERVER_PASSWORD": password, **model_env(cfg)}
-        proc = _podman("exec", "--detach", "--workdir", repo, *(arg for key in secret_env for arg in ("-e", key)),
-                       box, "sh", "-c", serve, env=secret_env)
-        if proc.returncode != 0:
-            raise SessionError(f"Could not start opencode: {proc.stderr.strip()}")
-        if not _wait_for_ui(bind, port):
-            log = target.run_shell("tail -n 20 /tmp/opencode.log", check=False, cwd="/").stdout.strip()
-            raise SessionError(f"opencode's UI did not come up on port {port}.\n{log}")
+        if not claude:
+            serve = f"exec opencode web --hostname 0.0.0.0 --port {UI_PORT} >> /tmp/opencode.log 2>&1"
+            secret_env = {"OPENCODE_SERVER_PASSWORD": password, **model_env(cfg)}
+            proc = _podman("exec", "--detach", "--workdir", repo, *(arg for key in secret_env for arg in ("-e", key)),
+                           box, "sh", "-c", serve, env=secret_env)
+            if proc.returncode != 0:
+                raise SessionError(f"Could not start opencode: {proc.stderr.strip()}")
+            if not _wait_for_ui(bind, port):
+                log = target.run_shell("tail -n 20 /tmp/opencode.log", check=False, cwd="/").stdout.strip()
+                raise SessionError(f"opencode's UI did not come up on port {port}.\n{log}")
+        elif not claude_env(cfg):
+            notes.append(f"No Claude Code credential on the driver ({', '.join(CLAUDE_ENV[:2])}): log in from "
+                         "the terminal, or start the session again with one set.")
         token = ""
         if terminal:
-            token = start_terminal(box, repo)
+            token = start_terminal(box, repo, env=claude_env(cfg) if claude else None, claude=claude)
             if not _wait_for_ui(bind, terminal_port):
                 log = target.run_shell("tail -n 20 /tmp/zellij-web.log", check=False, cwd="/").stdout.strip()
                 raise SessionError(f"The terminal did not come up on port {terminal_port}.\n{log}")
@@ -375,13 +469,24 @@ def start(
         "name": name, "bind": bind, "port": port, "password": password,
         "repo_url": git.redact_url(cfg.repo_url), "image": cfg.image, "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "root": cfg.container_root, **limits,
+        "root": cfg.container_root, **limits, "agent": agent, "allow": allowed,
     }
     if terminal:
-        record["terminal"] = {"port": terminal_port, "token": token}
+        record["terminal"] = {"port": terminal_port, "token": token,
+                              **({"path": CLAUDE_ZELLIJ_SESSION} if claude else {})}
     save_record(cfg, name, record)
-    lines = [f"Session {name} is up ({box}, egress {cfg.egress} via {proxy}).", *notes, describe(record)]
-    return "\n".join(lines)
+    return record, notes, False
+
+
+def add_allow(cfg: HarnessConfig, name: str, entry: str) -> bool:
+    """Add an entry to a session's own allowlist, for its next start. False if it had it already."""
+    record = load_record(cfg, name)
+    if not record:
+        raise SessionError(f"No session named {name}.")
+    if entry in record.get("allow", []):
+        return False
+    save_record(cfg, name, {**record, "allow": [*record.get("allow", []), entry]})
+    return True
 
 
 def stop(cfg: HarnessConfig, name: str) -> str:
@@ -414,7 +519,8 @@ def list_sessions(cfg: HarnessConfig) -> list[dict[str, str]]:
         rows.append({
             "name": name,
             "status": "running" if running else "stopped",
-            "ui": f"http://{record['bind']}:{record['port']}/" if running and record else "-",
+            "agent": record.get("agent") or "opencode",
+            "ui": urls(record)["ui"] if running and record else "-",
             "repo": record.get("repo_url") or "-",
         })
     return rows
