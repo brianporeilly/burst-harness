@@ -349,6 +349,8 @@ workspace starts empty. podman only, for now.
   because it is a shell in the sandbox — whoever can log in can do whatever the
   agent can, including use credentials the gateway adds. A session remembers the
   choice; `--no-terminal` turns it off. The token is replaced on every start.
+  The link opens straight onto a zellij session (`shell`) already in the
+  workspace, rather than zellij's session picker.
 - **Stopping by itself** (`--idle 2h`, `--lifetime 1d`). Nothing of the harness
   keeps running after `start`, so the gateway keeps count: it sees everything
   that goes in or out, and exits after that long with no new activity (or that
@@ -365,7 +367,9 @@ workspace starts empty. podman only, for now.
 - **The model.** With `provider = "llamacpp"` (or `"openai"`) and `base_url`
   set, the harness writes opencode's config from your model settings, and in
   `allowlist` mode lets the session reach that one host and port — plain HTTP to
-  a llama-server on your LAN included. With the default `anthropic` provider and
+  a llama-server on your LAN included. Leave `model_id` unset and opencode is
+  given the name of the model the server lists, rather than the harness's
+  default Claude model. With the default `anthropic` provider and
   `ANTHROPIC_API_KEY` on the driver, opencode is pointed at `model_id` and given
   the key — or, with `--egress-inject model`, a placeholder that the gateway
   makes real, so the key is never in the session. For anything else, pass

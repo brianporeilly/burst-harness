@@ -34,6 +34,7 @@
                     padding: 5px 11px; border-radius: 6px; cursor: pointer; text-decoration: none; }
   button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
   button.danger { color: var(--bad); }
+  button.small { padding: 1px 8px; font-size: 12px; }
   button:disabled { opacity: .5; cursor: default; }
   .session { border: 1px solid var(--line); border-radius: 6px; padding: 10px; margin-bottom: 8px; cursor: pointer; }
   .session.selected { border-color: var(--accent); }
@@ -169,6 +170,15 @@ const el = (tag, attrs = {}, ...children) => {
   for (const child of children.flat()) if (child != null) node.append(child);
   return node;
 };
+// 127.0.0.1 and localhost are secure contexts, so the async clipboard API is there.
+const copyButton = (text) => {
+  const button = el("button", { class: "small", title: "Copy to the clipboard", onclick: async () => {
+    try { await navigator.clipboard.writeText(text); button.textContent = "Copied"; }
+    catch { button.textContent = "Copy failed"; }
+    setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  } }, "Copy");
+  return button;
+};
 const statusChip = (s) => el("span", { class: "chip " + ({ running: "ok", starting: "warn", failed: "bad" }[s] || "") }, s);
 const duration = (seconds) => !seconds ? "" : seconds % 86400 === 0 ? `${seconds / 86400}d`
   : seconds % 3600 === 0 ? `${seconds / 3600}h` : seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
@@ -242,8 +252,10 @@ function renderDetail() {
     rows.unshift(el("tr", {}, el("th", {}, "Open"), el("td", {}, el("div", { class: "row" },
       el("a", { class: "button primary", href: s.urls.ui, target: "_blank", rel: "noopener" }, s.agent === "claude-code" ? "Claude Code" : "opencode"),
       s.urls.terminal && s.agent !== "claude-code" ? el("a", { class: "button", href: s.urls.terminal, target: "_blank", rel: "noopener" }, "Terminal") : null))));
-    if (s.password) rows.splice(1, 0, el("tr", {}, el("th", {}, "Password"), el("td", {}, el("span", { class: "secret" }, s.password), el("span", { class: "muted" }, "  user opencode"))));
-    if (s.token) rows.splice(1, 0, el("tr", {}, el("th", {}, "Terminal token"), el("td", {}, el("span", { class: "secret" }, s.token))));
+    if (s.password) rows.splice(1, 0, el("tr", {}, el("th", {}, "Password"), el("td", {}, el("div", { class: "row" },
+      el("span", { class: "secret" }, s.password), copyButton(s.password), el("span", { class: "muted" }, "user opencode")))));
+    if (s.token) rows.splice(1, 0, el("tr", {}, el("th", {}, "Terminal token"), el("td", {}, el("div", { class: "row" },
+      el("span", { class: "secret" }, s.token), copyButton(s.token)))));
   }
   detail.querySelector("[data-access]").replaceChildren(el("table", {}, rows));
 

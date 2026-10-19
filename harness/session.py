@@ -75,9 +75,12 @@ ZELLIJ_PORT = 8082
 TERMINAL_PORT = 8083
 ZELLIJ_CONFIG = "web_server true\nshow_startup_tips false\nshow_release_notes false\n"
 AGENTS = ("opencode", "claude-code")
-# The zellij session a Claude Code session's terminal opens on, and its layout:
-# `claude` in the workspace, falling back to a shell when it exits.
+# The zellij session the terminal opens on, started in the workspace before the
+# web server, so the browser goes straight to it rather than to zellij's session
+# picker. A Claude Code session's runs `claude` (this layout), falling back to a
+# shell when it exits; an opencode session's is a plain shell.
 CLAUDE_ZELLIJ_SESSION = "claude"
+SHELL_ZELLIJ_SESSION = "shell"
 CLAUDE_LAYOUT = """layout {
     pane size=1 borderless=true { plugin location="tab-bar"; }
     pane command="bash" { args "-lc" "claude; exec bash"; }
@@ -161,23 +164,50 @@ def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
         base = cfg.base_url
     else:
         return None
+    model, name = cfg.model_id, cfg.model_id
+    if cfg.provider == "llamacpp" and cfg.model_id == HarnessConfig.model_id:
+        # No model chosen, so the harness's default (a Claude model) is all we
+        # have: ask the server what it serves instead. A model switcher in front
+        # of llama.cpp needs the right name; llama.cpp itself answers to any, and
+        # names its model by the file's path, which opencode would misread
+        # (`harness/<model>`), so only the file's name is kept.
+        model = name = (served_model(base) or "llama.cpp").rsplit("/", 1)[-1].removesuffix(".gguf")
     return {
         "$schema": "https://opencode.ai/config.json",
         "provider": {"harness": {
             "npm": "@ai-sdk/openai-compatible",
             "name": cfg.provider,
             "options": {"baseURL": base, "apiKey": os.environ.get("OPENAI_API_KEY") or "none"},
-            "models": {cfg.model_id: {
-                "name": cfg.model_id,
+            "models": {model: {
+                "name": name,
                 "limit": {"context": cfg.context_window_limit,
                           "output": min(cfg.max_tokens, cfg.context_window_limit // 2)},
             }},
         }},
-        "model": f"harness/{cfg.model_id}",
+        "model": f"harness/{model}",
         # The image is immutable and pinned; nothing is shared to opencode's service.
         "autoupdate": False,
         "share": "disabled",
     }
+
+
+# How a container reaches its host, which the driver, on that host, reaches as itself.
+HOST_ALIASES = ("host.containers.internal", "host.docker.internal")
+
+
+def served_model(base: str) -> str | None:
+    """The first model an OpenAI-compatible server at `base` lists, or None if it
+    cannot be asked from here."""
+    url = urlsplit(base)
+    if url.hostname in HOST_ALIASES:
+        url = url._replace(netloc=url.netloc.replace(url.hostname, "127.0.0.1", 1))
+    try:
+        with urllib.request.urlopen(url.geturl().rstrip("/") + "/models", timeout=3) as response:
+            listed = json.load(response).get("data") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    first = listed[0] if listed and isinstance(listed[0], dict) else {}
+    return str(first["id"]) if first.get("id") else None
 
 
 def model_endpoint(config: dict[str, Any] | None) -> tuple[str, ...]:
@@ -273,12 +303,16 @@ def claude_env(cfg: HarnessConfig) -> dict[str, str]:
     return found
 
 
+def terminal_session(claude: bool) -> str:
+    return CLAUDE_ZELLIJ_SESSION if claude else SHELL_ZELLIJ_SESSION
+
+
 def start_terminal(box: str, workdir: str, *, env: dict[str, str] | None = None, claude: bool = False) -> str:
     """Start zellij's web server and the relay in front of it. Returns a new login token.
 
-    `env` is passed, by name, to zellij and so to every shell it opens. With
-    `claude`, a zellij session running Claude Code is started for the browser
-    to attach to.
+    `env` is passed, by name, to zellij and so to every shell it opens. A zellij
+    session is started in `workdir` for the browser to attach to: running
+    Claude Code with `claude`, a shell otherwise.
     """
     env = env or {}
 
@@ -299,13 +333,13 @@ def start_terminal(box: str, workdir: str, *, env: dict[str, str] | None = None,
                     f"exec socat TCP-LISTEN:{TERMINAL_PORT},fork,reuseaddr TCP:127.0.0.1:{ZELLIJ_PORT}"):
         if (proc := run("sh", "-c", command, detach=True)).returncode != 0:
             raise SessionError(f"Could not start the terminal: {proc.stderr.strip()}")
-    if claude:
-        # A fresh one each start: zellij would otherwise offer to resurrect the
-        # last container's, with `claude` waiting for a keypress.
-        run("zellij", "delete-session", "--force", CLAUDE_ZELLIJ_SESSION)
-        proc = run("zellij", "--layout", "harness-claude", "attach", "--create-background", CLAUDE_ZELLIJ_SESSION)
-        if proc.returncode != 0:
-            raise SessionError(f"Could not start Claude Code's terminal session: {(proc.stderr or proc.stdout).strip()}")
+    # A fresh one each start: zellij would otherwise offer to resurrect the last
+    # container's, with its commands waiting for a keypress.
+    session = terminal_session(claude)
+    run("zellij", "delete-session", "--force", session)
+    proc = run("zellij", *(("--layout", "harness-claude") if claude else ()), "attach", "--create-background", session)
+    if proc.returncode != 0:
+        raise SessionError(f"Could not start the terminal's zellij session: {(proc.stderr or proc.stdout).strip()}")
     # Tokens are shown once and stored hashed, so each start makes a fresh one
     # and retires the rest: the one on record is always the one that works.
     run("zellij", "web", "--revoke-all-tokens")
@@ -472,8 +506,7 @@ def launch(
         "root": cfg.container_root, **limits, "agent": agent, "allow": allowed,
     }
     if terminal:
-        record["terminal"] = {"port": terminal_port, "token": token,
-                              **({"path": CLAUDE_ZELLIJ_SESSION} if claude else {})}
+        record["terminal"] = {"port": terminal_port, "token": token, "path": terminal_session(claude)}
     save_record(cfg, name, record)
     return record, notes, False
 

@@ -302,5 +302,7 @@ gate. No PRs from forks until phase 6's gateway is in place.
 - Whether podman can publish ports from an `--internal` network, or whether
   inbound UI traffic must always enter through the gateway (assumed above).
 - zellij web's TLS and token requirements behind a proxy.
+- Signing in once, at the orchestrator, instead of to each session's opencode
+  password and zellij token. Not before the orchestrator has a login of its own.
 - Cluster Kubernetes, runtime and kernel versions against what
   `hostUsers: false` needs.

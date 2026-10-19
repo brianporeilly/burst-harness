@@ -43,9 +43,39 @@ def test_no_opencode_config_for_other_providers():
     assert session.model_endpoint(None) == ()
 
 
-def test_output_limit_never_exceeds_half_the_context():
+def test_output_limit_never_exceeds_half_the_context(monkeypatch):
+    monkeypatch.setattr(session, "served_model", lambda base: None)
     config = session.opencode_config(HarnessConfig(provider="llamacpp", base_url="http://l:1", context_window_limit=8192))
-    assert config["provider"]["harness"]["models"][HarnessConfig().model_id]["limit"]["output"] == 4096
+    assert config["provider"]["harness"]["models"]["llama.cpp"]["limit"]["output"] == 4096
+
+
+def test_llamacpp_without_a_model_uses_what_the_server_serves(monkeypatch):
+    asked = []
+    monkeypatch.setattr(session, "served_model", lambda base: asked.append(base) or "/models/Qwen3-Coder-30B.gguf")
+    config = session.opencode_config(HarnessConfig(provider="llamacpp", base_url="http://l:1"))
+    assert asked == ["http://l:1/v1"]
+    assert config["model"] == "harness/Qwen3-Coder-30B"
+    assert config["provider"]["harness"]["models"]["Qwen3-Coder-30B"]["name"] == "Qwen3-Coder-30B"
+    # A model that was chosen is used as given, without asking.
+    config = session.opencode_config(HarnessConfig(provider="llamacpp", base_url="http://l:1", model_id="qwen3"))
+    assert config["model"] == "harness/qwen3" and len(asked) == 1
+
+
+def test_served_model_asks_the_server_and_reaches_the_host_as_loopback():
+    import http.server, threading
+    class Models(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"data": [{"id": "qwen3"}]}).encode() if self.path == "/v1/models" else b"{}"
+            self.send_response(200 if self.path == "/v1/models" else 404); self.end_headers(); self.wfile.write(body)
+        def log_message(self, *args): pass
+    server = http.server.HTTPServer(("127.0.0.1", 0), Models)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        assert session.served_model(f"http://host.containers.internal:{port}/v1") == "qwen3"
+        assert session.served_model(f"http://127.0.0.1:{port}/nothing") is None
+    finally:
+        server.shutdown()
 
 
 def test_record_is_private_and_round_trips(tmp_path):
