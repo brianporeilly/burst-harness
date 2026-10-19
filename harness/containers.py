@@ -236,11 +236,12 @@ def _routed_network(binary: str, network: str) -> tuple[str, str]:
 def start_egress(
     cfg: HarnessConfig, *, binary: str, name: str, slug: str,
     allow: tuple[str, ...] = (), inbound: tuple[tuple[str, int, int], ...] = (), labels: tuple[str, ...] = (),
-    gateway_env: tuple[str, ...] = (),
+    gateway_env: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (),
 ) -> tuple[str, str, list[str]]:
     """Create the internal network and gateway sidecar.
 
-    `allow` adds to the allowlist. `inbound` is (host address, host port,
+    `allow` adds to the allowlist, and `inject` to the EGRESS_INJECT rules
+    `egress_inject` makes. `inbound` is (host address, host port,
     container port): the gateway publishes each on the host and passes what
     arrives to the container. `labels` are extra `--label` flags, `gateway_env`
     extra NAME=VALUE settings for the gateway.
@@ -261,7 +262,7 @@ def start_egress(
     # The gateway's one writable place: its CA when it adds credentials, and
     # approvals made while it runs (`harness egress approve`).
     policy += ["--tmpfs", f"{GATEWAY_CA_DIR}:rw,mode=1777"]
-    if rules := inject_rules(cfg):
+    if rules := [*inject_rules(cfg), *inject]:
         # By name only: the value comes from this process's environment, so the
         # token is not in the argv of the command that starts the gateway.
         secrets_env["EGRESS_INJECT"] = json.dumps(rules)
@@ -333,8 +334,16 @@ def gateway_address(flags: list[str]) -> str:
     return flags[flags.index("--dns") + 1]
 
 
-def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerTarget:
-    """Attach to `cfg.docker_container`, or start a fresh one from `cfg.image`."""
+def acquire(
+    cfg: HarnessConfig, *, binary: str, repo: str, slug: str,
+    allow: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (), env: dict[str, str] | None = None,
+) -> DockerTarget:
+    """Attach to `cfg.docker_container`, or start a fresh one from `cfg.image`.
+
+    `allow` and `inject` add to the gateway's allowlist and credential rules (see
+    start_egress). `env` is set in a fresh container's environment, passed by name
+    so values stay out of argv.
+    """
     if cfg.docker_container:
         return DockerTarget(repo=repo, container=cfg.docker_container, binary=binary)
     if not cfg.image:
@@ -347,13 +356,16 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
     name = f"burst-{label_value(slug)[:40]}-{secrets.token_hex(3)}"
     network = proxy = ""
     network_args: list[str] = []
-    if cfg.egress_inject and cfg.egress == "open":
+    if (cfg.egress_inject or inject) and cfg.egress == "open":
         raise ContainerError("--egress-inject needs a gateway to do it: --egress log or allowlist.")
     if cfg.egress != "open":
-        network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug)
+        network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug,
+                                                    allow=allow, inject=inject)
+    env = env or {}
     proc = subprocess.run(
-        run_argv(cfg, binary=binary, name=name, slug=slug, network_args=network_args),
-        capture_output=True, text=True,
+        run_argv(cfg, binary=binary, name=name, slug=slug,
+                 network_args=[*network_args, *(arg for key in env for arg in ("-e", key))]),
+        capture_output=True, text=True, env={**os.environ, **env} if env else None,
     )
     target = DockerTarget(repo=repo, container=name, binary=binary, owned=True, proxy=proxy, network=network,
                           events=events_path(cfg, name) if proxy else "")
@@ -367,7 +379,7 @@ def acquire(cfg: HarnessConfig, *, binary: str, repo: str, slug: str) -> DockerT
                 f"{cfg.image} is missing required commands: {', '.join(missing)}. "
                 "See images/sandbox/Containerfile for the contract."
             )
-        if proxy and cfg.egress_inject:
+        if proxy and (cfg.egress_inject or inject):
             trust_gateway(binary, proxy=proxy, name=name)
     except Exception:
         target.release()

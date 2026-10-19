@@ -1,0 +1,34 @@
+# A read-only digest of open Renovate PRs across your GitHub repos: grouped,
+# with breaking-change risk from their release notes, and which look safe.
+#
+#   GITHUB_TOKEN=<read-only fine-grained token> ANTHROPIC_API_KEY=... \
+#     harness job run examples/jobs/repo-digest
+#
+# Harness settings first (any HarnessConfig field), then [job].
+
+# engine = "strands" is the default: the loop runs on the driver and calls the
+# model from there, so the model's key never enters the sandbox. Any provider:
+#   provider = "llamacpp"
+#   base_url = "http://llm.lan:8080"
+#   model_id = "qwen3-14b"
+#
+# Or Claude Code in the sandbox, which can use a subscription's token
+# (CLAUDE_CODE_OAUTH_TOKEN) and then needs the model host, kept at the gateway:
+#   engine = "claude-code"
+#   egress_inject = ["model"]
+#   egress_allow = ["api.anthropic.com"]
+#   claude_args = "--allowedTools Bash(python3:*),Bash(jq:*),Read,Write"
+
+# Replaces the default list: the sandbox needs nothing but GitHub's API, which
+# the secret below adds.
+egress_allow = []
+
+[job]
+trigger = "0 7 * * 1-5"
+mode = "report"
+output = ["stdout", "file:~/.burst-harness/reports/repo-digest/%Y-%m-%d.md"]
+
+[job.secrets.github]
+env = "GITHUB_TOKEN"
+host = "api.github.com"
+value = "Bearer {}"

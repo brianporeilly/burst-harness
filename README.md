@@ -406,6 +406,62 @@ refuses changes that lack a header a page on another site cannot send. A proof
 of concept on podman; the cluster version sits behind the same backend
 interface (`orchestrator/backend.py`).
 
+## Jobs
+
+A job is a run with a narrow brief that ends in a report, not a pull request:
+a digest of Renovate PRs, a cluster summary. It is a directory, meant to live
+in a repo of jobs of your own:
+
+```
+my-job/
+  job.toml     harness settings (any of the above) and a [job] table
+  prompt.md    the brief
+  scripts/     optional; copied into the sandbox at /workspace/scripts
+```
+
+```bash
+harness job check examples/jobs/repo-digest   # what a run would use, what is missing
+GITHUB_TOKEN=... ANTHROPIC_API_KEY=... harness job run examples/jobs/repo-digest
+```
+
+A run is a fresh podman (or docker) container behind a gateway, with no repo,
+and an agent working in `/workspace` from the prompt. `engine` picks it:
+
+- `strands` (the default): the harness's own loop on the driver, its shell and
+  file tools running in the sandbox, ending when the model calls
+  `finish_report`. Any provider above (Anthropic, OpenAI-compatible,
+  llama.cpp, ...); the model is called from the driver, so its key never
+  enters the sandbox and its endpoint needs no allowlist entry.
+- `claude-code`: Claude Code headless in the sandbox, which can use a
+  subscription's token. Its model calls go through the gateway (use
+  `egress_inject = ["model"]` to keep the key there).
+- `opencode`: `opencode run` in the sandbox, with a session's model settings
+  (Anthropic, or `llamacpp`/`openai` with `base_url`, which must be on the
+  allowlist). Permissions are set to allow its shell and edits: nobody is there
+  to answer a prompt.
+
+The last two write `/workspace/report.md`. The harness takes the report and
+sends it to each of `[job] output`: `stdout`, `file:PATH` (strftime, so `%Y-%m-%d` works),
+`slack:CHANNEL` (chat.postMessage, `SLACK_BOT_TOKEN`) or `slack` (an incoming
+webhook, `SLACK_WEBHOOK_URL`). Slack is posted to from the driver, so the
+sandbox never holds a token that can post. A run that ends without a report
+sends a short notice instead, and exits 1.
+
+`[job.secrets.NAME]` names a credential from the driver's environment
+(`env`). With `host`, the gateway adds it to every request to that host (as
+`header`, default `Authorization`, with `value`, default `Bearer {}`) and the
+sandbox never sees it; `sandbox_env` then gives the sandbox a placeholder, for
+tools that insist on a token. Without `host`, it is passed into the sandbox as
+`sandbox_env`; either way it is in the container's environment, set by name so
+the value is not on a command line. Secrets' hosts are added to the allowlist.
+
+Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
+"allowlist"`. A job's settings sit between your config file and `HARNESS_*`.
+Headless Claude Code runs only the tools it is allowed (`claude_args =
+"--allowedTools ..."`, or `claude_settings`). `[job] trigger` (cron or
+`manual`) is read by the scheduler (to come), not by `run`; `mode = "act"` is
+refused until approvals exist. See ROADMAP.md, phase 8.
+
 ## Engines
 
 `--engine` picks the agent loop; everything around it — target, clone, branch,

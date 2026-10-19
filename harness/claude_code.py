@@ -103,12 +103,7 @@ class ClaudeCodeEngine:
                 f"engine=claude-code needs {', '.join(missing)} in {self.target.describe()} "
                 "(the burst-harness-sandbox image has both)."
             )
-        # The outcome file is Claude's message to the harness, never a commit.
-        self.target.run_shell(
-            f'exclude="$(git rev-parse --git-path info/exclude)" && mkdir -p "$(dirname "$exclude")" '
-            f'&& (grep -qxF {shlex.quote("/" + OUTCOME_PATH)} "$exclude" 2>/dev/null '
-            f'|| echo {shlex.quote("/" + OUTCOME_PATH)} >> "$exclude") && rm -f {shlex.quote(OUTCOME_PATH)}'
-        )
+        self._exclude_outcome()
         if not self.remote:
             # Local: Claude runs as you, with your own ~/.claude config and
             # environment. The harness does not touch either.
@@ -158,6 +153,14 @@ class ClaudeCodeEngine:
                 )
             self.target.run_shell(shlex.join(["burst-sandbox-init", *seeds]), cwd="/")
             print("Applied your Claude Code config to the target.")
+
+    def _exclude_outcome(self) -> None:
+        # The outcome file is Claude's message to the harness, never a commit.
+        self.target.run_shell(
+            f'exclude="$(git rev-parse --git-path info/exclude)" && mkdir -p "$(dirname "$exclude")" '
+            f'&& (grep -qxF {shlex.quote("/" + OUTCOME_PATH)} "$exclude" 2>/dev/null '
+            f'|| echo {shlex.quote("/" + OUTCOME_PATH)} >> "$exclude") && rm -f {shlex.quote(OUTCOME_PATH)}'
+        )
 
     def cleanup(self) -> None:
         """Remove the credentials file from a remote target."""

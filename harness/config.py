@@ -183,6 +183,7 @@ class HarnessConfig:
         overrides: dict[str, Any] | None = None,
         *,
         user_config: Path | None = USER_CONFIG,
+        job: dict[str, Any] | None = None,
     ) -> "HarnessConfig":
         """Build config in increasing order of specificity.
 
@@ -194,10 +195,16 @@ class HarnessConfig:
         The repo file is limited to REPO_SETTABLE: it is written by whoever
         controls the repo, and settings like token_command or base_url would let
         it run commands on, or redirect credentials from, the driver.
+
+        A job's settings (`job`, from its job.toml) go between the user's file
+        and the repo's. They are not limited: a job is the user's own
+        configuration, like their config file.
         """
         cfg = cls()
         if user_config is not None and user_config.is_file():
             cfg = cfg._merge(tomllib.loads(user_config.read_text()), source=str(user_config))
+        if job:
+            cfg = cfg._merge(job, source="job.toml")
         if repo_toml:
             values = tomllib.loads(repo_toml)
             if refused := sorted(set(values) - REPO_SETTABLE):

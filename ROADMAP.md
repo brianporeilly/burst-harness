@@ -257,7 +257,13 @@ loses nothing, because nothing is waiting.
 1. `harness job run <dir>` on podman: load the spec, run without a repo,
    collect the report, post it. First job: the Renovate and repo health
    digest. It is read-only and needs one token, so it exercises the whole
-   path: trigger, container, model, Slack.
+   path: trigger, container, model, Slack. **Done (2026-10-16):** `harness
+   job run|check`; engines strands (the default: loop on the driver, any
+   provider, the key never in the sandbox), claude-code and opencode;
+   outputs stdout, file and Slack; secrets added by the gateway at a host,
+   or passed in; a failure notice when there is no report. Example:
+   `examples/jobs/repo-digest` (the Renovate part only). Verified on podman
+   with a stand-in llama.cpp server; not yet run with a real model.
 2. `harness job render <dir> --to systemd|cronjob`. Both outputs schedule the
    same driver command, so the renderer stays small. The CronJob runs the
    driver image, as home-ops #1083 does, and it starts the sandbox through

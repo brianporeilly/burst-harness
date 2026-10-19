@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import agent_sandbox, containers, egress, git, session, state
+from . import agent_sandbox, containers, egress, git, job, session, state
 from .agent import build_agent
 from .claude_code import ClaudeCodeEngine
 from .config import CONFIG_FILENAME, HarnessConfig
@@ -480,6 +480,20 @@ def cmd_egress(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_job(args: argparse.Namespace) -> int:
+    """Scheduled or triggered runs that end in a report: see job.py."""
+    try:
+        spec = job.load(args.dir)
+        cfg = job.config(spec, _overrides(args))
+        if args.action == "check":
+            print(job.describe(spec, cfg))
+            job.check(spec)
+            return 0
+        return job.run(spec, cfg)
+    except (job.JobError, containers.ContainerError) as err:
+        raise SystemExit(str(err)) from err
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     """Remove a target a run kept: a sandbox claim, or a container with its egress sidecar."""
     cfg = HarnessConfig.load(None, _overrides(args))
@@ -630,7 +644,14 @@ def main(argv: list[str] | None = None) -> int:
                          "(90m, 2h, 1d), or permanent.")
     eg.set_defaults(func=cmd_egress)
 
-    release = sub.add_parser("release", help="Remove a kept target (--claim, or --docker-container).")
+    jb = sub.add_parser("job", help="Run a job: a directory with job.toml and prompt.md, ending in a report.")
+    jb.add_argument("action", choices=["run", "check"],
+                    help="run: one run, in a fresh container, its report sent to the job's outputs. "
+                         "check: show what a run would use, and what is missing.")
+    jb.add_argument("dir", help="The job's directory.")
+    jb.set_defaults(func=cmd_job)
+
+    release = sub.add_parser("release",help="Remove a kept target (--claim, or --docker-container).")
     release.set_defaults(func=cmd_release)
 
     args = parser.parse_args(argv)
