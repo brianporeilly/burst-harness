@@ -354,6 +354,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     from strands.vended_plugins.context_offloader import ContextOffloader
     from strands.vended_tools import file_editor, shell
 
+    from .agent import offload_storage
     from .cli import _report
     from .models import build_model
 
@@ -384,7 +385,8 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         system_prompt=_rules(target, has_scripts=has_scripts, ending=CALL_FINISH),
         # As for tasks: a sandbox with its own tools (podman, kubectl) registers them itself.
         tools=[*([] if sandbox.get_tools() else [shell, file_editor]), finish_report],
-        plugins=[ContextOffloader(max_result_tokens=cfg.offload_max_result_tokens,
+        plugins=[ContextOffloader(storage=offload_storage(target, str(state_dir)),
+                                  max_result_tokens=cfg.offload_max_result_tokens,
                                   preview_tokens=cfg.offload_preview_tokens)],
         conversation_manager=SlidingWindowConversationManager(
             window_size=cfg.window_size, per_turn=True, pin_first=cfg.pin_first,

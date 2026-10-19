@@ -15,6 +15,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import file_editor, handoff_to_user, shell
 
+from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
 from .models import build_model
 from .tools import HarnessContext, make_tools
@@ -42,6 +43,17 @@ End every session in exactly one terminal state:
 Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
 
 
+# Where the context offloader keeps large tool results when the target is not
+# this machine. Strands binds the offloader's storage to the agent's sandbox, so
+# its path is one in the target; the driver's state_dir does not exist there.
+SANDBOX_OFFLOAD_DIR = "/tmp/burst-harness-offload"
+
+
+def offload_storage(target: ExecTarget, state_dir: str) -> LocalFileStorage:
+    """Storage for ContextOffloader: state_dir for a local target, else a path in the target."""
+    return LocalFileStorage(state_dir if isinstance(target, LocalTarget) else SANDBOX_OFFLOAD_DIR)
+
+
 def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
     """Construct the agent for a run. Returns the agent and its session manager.
 
@@ -66,6 +78,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
 
     plugins: list[object] = [
         ContextOffloader(
+            storage=offload_storage(target, str(state_dir)),
             max_result_tokens=cfg.offload_max_result_tokens,
             preview_tokens=cfg.offload_preview_tokens,
         )

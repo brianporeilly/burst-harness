@@ -10,6 +10,7 @@ the agent's tools and the harness's own commands cannot drift apart.
 
 from __future__ import annotations
 
+import asyncio
 import shlex
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -27,7 +28,8 @@ from strands.vended_tools.shell.types import SANDBOX_SHELL_DESCRIPTION
 class CommandSandbox(PosixShellSandbox):
     """Execute commands by prefixing them with an exec argv."""
 
-    def __init__(self, prefix: list[str], *, working_dir: str | None = None, where: str = "") -> None:
+    def __init__(self, prefix: list[str], *, working_dir: str | None = None, where: str = "",
+                 stdin_prefix: list[str] | None = None) -> None:
         """Initialize the sandbox.
 
         Args:
@@ -35,12 +37,15 @@ class CommandSandbox(PosixShellSandbox):
                 the command goes (e.g. ``[..., "exec", pod, "--"]``).
             working_dir: Directory commands run in. None uses the target's own.
             where: How to describe the target to the model.
+            stdin_prefix: The same, passing stdin through (`exec -i`), which
+                write_file uses. None writes as PosixShellSandbox does.
         """
         if not prefix:
             raise ValueError("CommandSandbox needs a non-empty exec prefix.")
         self.prefix = list(prefix)
         self.working_dir = working_dir
         self.where = where
+        self.stdin_prefix = list(stdin_prefix) if stdin_prefix else None
 
     def _shell(self, command: str, *, cwd: str | None, env: dict[str, str] | None = None) -> str:
         effective_cwd = cwd if cwd is not None else self.working_dir
@@ -72,6 +77,29 @@ class CommandSandbox(PosixShellSandbox):
             enoent_message=f"{self.prefix[0]} is not installed or not on PATH",
         ):
             yield chunk
+
+    async def write_file(self, path: str, content: bytes, **kwargs: Any) -> None:
+        """Write bytes to a file in the target, sent on stdin.
+
+        PosixShellSandbox puts the content, base64-encoded, in the command,
+        which is one argument here: past 128 KiB (Linux's limit on a single
+        argument) the exec fails before reaching the target.
+        """
+        if self.stdin_prefix is None:
+            await super().write_file(path, content, **kwargs)
+            return
+        quoted = shlex.quote(path)
+        command = self._shell(f'mkdir -p "$(dirname {quoted})" && cat > {quoted}', cwd=None)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.stdin_prefix[0], *self.stdin_prefix[1:], "sh", "-c", command,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as err:
+            raise OSError(f"{self.stdin_prefix[0]} is not installed or not on PATH") from err
+        _, stderr = await proc.communicate(content)
+        if proc.returncode != 0:
+            raise OSError(stderr.decode(errors="replace").strip() or f"Failed to write file: {path}")
 
     def get_tools(self) -> list[AgentTool]:
         """Sandbox-bound tools, described so the model knows where it is working."""

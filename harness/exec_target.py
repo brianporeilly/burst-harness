@@ -164,7 +164,8 @@ class SubprocessTarget(ExecTarget):
     def sandbox(self) -> "Sandbox":
         from .exec_sandbox import CommandSandbox
 
-        return CommandSandbox(self.exec_prefix(), working_dir=self.repo, where=self.describe())
+        return CommandSandbox(self.exec_prefix(), working_dir=self.repo, where=self.describe(),
+                              stdin_prefix=self.exec_prefix(stdin=True))
 
 
 @dataclass(frozen=True)
