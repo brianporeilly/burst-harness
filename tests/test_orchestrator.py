@@ -111,3 +111,90 @@ def test_spec_overrides_only_what_was_chosen():
     spec = SessionSpec.parse({"name": "box", "provider": "llamacpp", "base_url": "http://llm.lan:8080", "model": "qwen"})
     assert spec.overrides() == {"repo_url": "", "egress": "allowlist", "egress_inject": (), "container_root": False,
                                 "provider": "llamacpp", "base_url": "http://llm.lan:8080", "model_id": "qwen"}
+
+
+def _jobs_dir(tmp_path):
+    from harness import job
+
+    root = tmp_path / "my-jobs"
+    for name, extra in (("digest", '[job.secrets.gh]\nenv = "GITHUB_TOKEN"\nhost = "api.github.com"\n'),
+                        ("watcher", "")):
+        (root / name).mkdir(parents=True)
+        (root / name / "prompt.md").write_text("do it")
+        (root / name / "job.toml").write_text(extra)
+    (root / "not-a-job").mkdir()
+    return root, job
+
+
+@pytest.fixture
+def jobs_client(tmp_path):
+    from orchestrator.jobs import JobRunner
+
+    root, job = _jobs_dir(tmp_path)
+    runner = JobRunner([root])
+    test = TestClient(create_app(FakeBackend(), runner), base_url="http://127.0.0.1:8700")
+    test.runner, test.job = runner, job
+    return test
+
+
+def test_jobs_are_found_with_what_they_lack_and_their_runs(jobs_client, monkeypatch):
+    job = jobs_client.job
+    listed = jobs_client.get("/api/jobs").json()
+    assert [j["name"] for j in listed["jobs"]] == ["digest", "watcher"]
+    digest = listed["jobs"][0]
+    assert digest["missing"] == ["GITHUB_TOKEN"] and digest["last_run"] is None and digest["engine"] == "strands"
+    # A run made from the command line is listed: the record is the harness's.
+    cfg = job.config(job.load(jobs_client.runner.discover()["watcher"]))
+    run_dir = job.runs_dir(cfg, "watcher") / "20261020T120000Z-abcd"
+    job._write_run(run_dir, {"id": "20261020T120000Z-abcd", "job": "watcher", "state": "reported",
+                             "started": "2026-10-20T12:00:00Z", "seconds": 9, "egress": {"requests": {"a.com": 2}}})
+    (run_dir / "report.md").write_text("# All clear")
+    detail = jobs_client.get("/api/jobs/watcher").json()
+    assert detail["last_success"]["id"] == "20261020T120000Z-abcd" and "trigger" in detail["describe"]
+    assert [r["id"] for r in detail["runs"]] == ["20261020T120000Z-abcd"]
+    run = jobs_client.get("/api/jobs/watcher/runs/20261020T120000Z-abcd").json()
+    assert run["report"] == "# All clear" and run["output"] is None
+    assert jobs_client.get("/api/jobs/watcher/runs/../../etc").status_code in (400, 404)
+    assert jobs_client.get("/api/jobs/watcher/runs/20991020T120000Z-ffff").status_code == 400
+    assert jobs_client.get("/api/jobs/nope").status_code == 400
+
+
+def test_a_run_whose_process_is_gone_is_interrupted(jobs_client):
+    job = jobs_client.job
+    cfg = job.config(job.load(jobs_client.runner.discover()["watcher"]))
+    job._write_run(job.runs_dir(cfg, "watcher") / "20261020T120000Z-abcd",
+                   {"id": "20261020T120000Z-abcd", "job": "watcher", "state": "running", "pid": 2 ** 22 + 12345})
+    detail = jobs_client.get("/api/jobs/watcher").json()
+    assert detail["runs"][0]["state"] == "interrupted" and not detail["running"]
+
+
+def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
+    from orchestrator import jobs as jobs_module
+
+    started = []
+
+    class FakeProcess:
+        def __init__(self, argv, **kwargs):
+            started.append((argv, kwargs["env"]))
+
+        def wait(self):
+            import time
+            time.sleep(0.5)
+
+    monkeypatch.setattr(jobs_module.subprocess, "Popen", FakeProcess)
+    assert jobs_client.post("/api/jobs/digest/run").status_code == 403  # no X-Orchestrator header
+    refused = jobs_client.post("/api/jobs/digest/run", headers=CHANGE)
+    assert refused.status_code == 400 and "GITHUB_TOKEN" in refused.json()["error"]
+    response = jobs_client.post("/api/jobs/watcher/run", headers=CHANGE)
+    assert response.status_code == 202
+    run_id = response.json()["run"]
+    (argv, env), = started
+    assert argv[-3:] == ["job", "run", str(jobs_client.runner.discover()["watcher"])]
+    assert env[jobs_client.job.RUN_ID_ENV] == run_id
+    assert jobs_client.post("/api/jobs/watcher/run", headers=CHANGE).status_code == 400  # already running
+    assert jobs_client.get("/api/jobs/watcher").json()["runs"][0] == {"id": run_id, "job": "watcher", "state": "starting"}
+
+
+def test_without_job_directories_the_jobs_api_says_how_to_add_them(client):
+    assert client.get("/api/jobs").json() == {"directories": [], "jobs": []}
+    assert "--jobs" in client.get("/api/jobs/x").json()["error"]

@@ -443,3 +443,41 @@ def test_the_cluster_watcher_script_parses():
 
     source = Path(__file__).parent.parent / "examples/jobs/cluster-watcher/scripts/cluster_state.py"
     ast.parse(source.read_text())
+
+
+def test_each_run_is_recorded_with_its_report_and_egress(tmp_path, monkeypatch, fake_claude, capsys):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "report")
+    monkeypatch.setenv(job.RUN_ID_ENV, "20261020T120000Z-abcd")
+    spec = job.load(_write_job(tmp_path, BASIC.replace("REPORTS", str(tmp_path / "r"))))
+    cfg = job.config(spec)
+    assert job.run(spec, cfg, acquire=_local(tmp_path)) == 0
+    assert '"run": "20261020T120000Z-abcd"' in capsys.readouterr().out
+    (record,) = job.list_runs(cfg, "digest")
+    assert record["id"] == "20261020T120000Z-abcd" and record["state"] == "reported"
+    assert record["engine"] == "claude-code" and record["finished"] and "pid" not in record
+    assert (job.runs_dir(cfg, "digest") / record["id"] / "report.md").read_text().startswith("# Digest")
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "fail")
+    monkeypatch.setenv(job.RUN_ID_ENV, "not an id")  # ignored: a fresh one is made
+    assert job.run(spec, cfg, acquire=_local(tmp_path)) == 1
+    newest, oldest = job.list_runs(cfg, "digest")
+    assert newest["state"] == "failed" and newest["reason"] and job.RUN_ID.fullmatch(newest["id"])
+    assert oldest["id"] == "20261020T120000Z-abcd"
+    assert not (job.runs_dir(cfg, "digest") / newest["id"] / "report.md").exists()
+
+
+def test_egress_summary_counts_requests_per_host_and_lists_refusals(tmp_path):
+    events = tmp_path / "events.jsonl"
+    events.write_text("\n".join(json.dumps(e) for e in [
+        {"kind": "connect", "verdict": "allow", "host": "api.github.com", "intercepted": True},
+        {"kind": "request", "verdict": "allow", "host": "api.github.com", "method": "GET"},
+        {"kind": "request", "verdict": "allow", "host": "api.github.com", "method": "GET"},
+        {"kind": "connect", "verdict": "allow", "host": "pypi.org"},
+        {"kind": "request", "verdict": "deny", "host": "api.github.com", "method": "POST", "path": "/x", "detail": "read-only"},
+        {"kind": "connect", "verdict": "deny", "host": "evil.com", "port": 443},
+        {"kind": "connect", "verdict": "close", "host": "pypi.org"},
+    ]) + "\nnot json\n")
+    summary = job.egress_summary(str(events))
+    assert summary["requests"] == {"api.github.com": 2, "pypi.org": 1}
+    assert summary["refused_count"] == 2 and summary["refused"][0]["detail"] == "read-only"
+    assert job.egress_summary("")["requests"] == {}

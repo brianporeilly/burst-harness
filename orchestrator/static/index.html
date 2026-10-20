@@ -61,14 +61,34 @@
   .error { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; }
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button { border-radius: 999px; }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  pre.text { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0;
+             background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; max-height: 480px;
+             overflow: auto; }
+  tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--chip); }
+  tr.selected td { background: var(--chip); }
+  h3 { font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Burst Orchestrator</h1>
+  <div class="row"><h1>Burst Orchestrator</h1>
+    <nav class="tabs"><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button></nav>
+  </div>
   <div class="row" id="creds"></div>
 </header>
-<main>
+<main id="jobs-view" class="hidden">
+  <section class="panel">
+    <h2>Jobs</h2>
+    <div id="jobs"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="panel" id="job-detail">
+    <p class="muted">Choose a job.</p>
+  </section>
+</main>
+<main id="sessions-view">
   <section class="panel">
     <div class="row spread"><h2>Sessions</h2><button class="primary" id="new">New session</button></div>
     <div id="sessions"><p class="muted">Loading...</p></div>
@@ -336,9 +356,124 @@ form.onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
+// --- jobs ---
+
+let jobs = [], selectedJob = null, selectedRun = null, tab = "sessions";
+const runChip = (state) => el("span", { class: "chip " + ({ reported: "ok", running: "warn", starting: "warn",
+  failed: "bad", interrupted: "bad" }[state] || "") }, state || "never run");
+const when = (iso) => {
+  if (!iso) return "";
+  const seconds = (Date.now() - Date.parse(iso)) / 1000;
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
+};
+
+async function refreshJobs() {
+  let data;
+  try { data = await api("/api/jobs"); } catch { return; }
+  jobs = data.jobs;
+  const list = document.getElementById("jobs");
+  if (!data.directories.length) {
+    list.replaceChildren(el("p", { class: "muted" }, "No job directories. Start the orchestrator with ",
+      el("code", {}, "--jobs DIR"), ": a job's directory, or a repo of them."));
+    return;
+  }
+  if (!jobs.length) { list.replaceChildren(el("p", { class: "muted" }, `No jobs in ${data.directories.join(", ")}.`)); return; }
+  list.replaceChildren(...jobs.map((j) => el("div", {
+      class: "session" + (j.name === selectedJob ? " selected" : ""), onclick: () => selectJob(j.name) },
+    el("div", { class: "row spread" }, el("span", { class: "name" }, j.name),
+       j.error ? el("span", { class: "chip bad" }, "broken") : runChip(j.running ? "running" : j.last_run && j.last_run.state)),
+    el("div", { class: "muted" }, j.error ? j.error.slice(0, 120) : [
+      j.engine, j.trigger === "manual" ? "manual" : `cron ${j.trigger}`,
+      j.last_success ? `last good ${when(j.last_success.started)}` : "no good run yet",
+    ].join(" · ")),
+    j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null)));
+  if (selectedJob) renderJob();
+}
+
+function selectJob(name) { selectedJob = name; selectedRun = null; refreshJobs(); }
+
+async function renderJob() {
+  const box = document.getElementById("job-detail");
+  let j;
+  try { j = await api(`/api/jobs/${selectedJob}`); } catch (err) { box.replaceChildren(el("p", { class: "error" }, err.message)); return; }
+  if (selectedJob !== j.name) return;
+  if (!selectedRun && j.runs && j.runs.length) selectedRun = j.runs[0].id;
+  // Redrawn only when something shown has changed, so an open section or a scrolled report stays put.
+  const key = JSON.stringify([j.name, j.running, j.missing, j.error, selectedRun, (j.runs || []).map((r) => [r.id, r.state])]);
+  if (box.dataset.key === key) { if (selectedRun) renderRun(j.name, selectedRun); return; }
+  box.dataset.key = key;
+  const runButton = el("button", { class: "primary", onclick: async () => {
+    runButton.disabled = true;
+    try { const started = await api(`/api/jobs/${j.name}/run`, { method: "POST" }); selectedRun = started.run; }
+    catch (err) { alert(`Run: ${err.message}`); }
+    refreshJobs();
+  } }, j.running ? "Running..." : "Run now");
+  runButton.disabled = Boolean(j.running || j.error || (j.missing && j.missing.length));
+  const rows = (j.runs || []).map((r) => el("tr", {
+      class: "clickable" + (r.id === selectedRun ? " selected" : ""), onclick: () => { selectedRun = r.id; renderJob(); } },
+    el("td", {}, r.started ? new Date(r.started).toLocaleString() : r.id), el("td", {}, runChip(r.state)),
+    el("td", {}, r.seconds != null ? `${r.seconds}s` : ""),
+    el("td", {}, r.egress && r.egress.refused_count ? el("span", { class: "chip bad" }, `${r.egress.refused_count} refused`) : "")));
+  box.replaceChildren(
+    el("div", { class: "row spread" }, el("h2", {}, j.name), runButton),
+    j.error ? el("div", { class: "error" }, j.error) : null,
+    j.missing && j.missing.length ? el("p", { class: "error" },
+      `The orchestrator's environment is missing ${j.missing.join(", ")}. Set it where the orchestrator is started.`) : null,
+    j.describe ? el("pre", { class: "text" }, j.describe) : null,
+    j.prompt ? el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, j.prompt)) : null,
+    el("h3", {}, "Runs"),
+    rows.length ? el("table", {}, el("tr", {}, el("th", {}, "Started"), el("th", {}, "Outcome"), el("th", {}, "Took"), el("th", {}, "")), rows)
+      : el("p", { class: "muted" }, "No runs yet."),
+    el("div", { id: "run-detail" }),
+  );
+  if (selectedRun) renderRun(j.name, selectedRun);
+}
+
+async function renderRun(name, id) {
+  let r;
+  try { r = await api(`/api/jobs/${name}/runs/${id}`); } catch (err) { return; }
+  const box = document.getElementById("run-detail");
+  if (!box || selectedRun !== id) return;
+  const key = JSON.stringify([r.id, r.state, (r.output || "").length, r.report != null]);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const egress = r.egress || {};
+  const hosts = Object.entries(egress.requests || {});
+  const openOutput = box.querySelector("details[data-output]")?.open;
+  box.replaceChildren(
+    el("h3", {}, "Run ", el("code", {}, r.id), " ", runChip(r.state)),
+    r.reason ? el("p", { class: "error" }, r.reason) : null,
+    r.delivery_errors ? el("p", { class: "error" }, `Delivery: ${r.delivery_errors.join("; ")}`) : null,
+    r.report != null ? el("pre", { class: "text" }, r.report)
+      : el("p", { class: "muted" }, r.state === "running" || r.state === "starting" ? "Running..." : "No report."),
+    hosts.length || egress.refused_count ? el("div", {},
+      el("h3", {}, "Network"),
+      el("table", {}, hosts.map(([host, count]) => el("tr", {}, el("td", {}, host), el("td", {}, `${count} request${count === 1 ? "" : "s"}`))),
+        (egress.refused || []).map((d) => el("tr", {}, el("td", { class: "error" }, `${d.method || d.kind} ${d.host}${d.path || ""}`),
+          el("td", { class: "error" }, d.detail || "refused"))))) : null,
+    r.output != null ? el("details", { "data-output": "" }, el("summary", {}, "Output"), el("pre", { class: "text" }, r.output)) : null,
+  );
+  if (openOutput) box.querySelector("details[data-output]").open = true;
+}
+
+function showTab(name) {
+  tab = name;
+  for (const button of document.querySelectorAll(".tabs button")) button.classList.toggle("active", button.dataset.tab === name);
+  document.getElementById("sessions-view").classList.toggle("hidden", name !== "sessions");
+  document.getElementById("jobs-view").classList.toggle("hidden", name !== "jobs");
+  try { localStorage.setItem("tab", name); } catch {}
+  if (name === "jobs") refreshJobs(); else refresh();
+}
+for (const button of document.querySelectorAll(".tabs button")) button.onclick = () => showTab(button.dataset.tab);
+
 loadInfo().catch(() => {});
-refresh();
-setInterval(refresh, 3000);
+let savedTab = "sessions";
+try { savedTab = localStorage.getItem("tab") || "sessions"; } catch {}
+showTab(savedTab === "jobs" ? "jobs" : "sessions");
+setInterval(() => (tab === "jobs" ? refreshJobs() : refresh()), 3000);
 </script>
 </body>
 </html>

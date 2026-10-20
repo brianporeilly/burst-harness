@@ -489,6 +489,17 @@ def cmd_job(args: argparse.Namespace) -> int:
             print(job.describe(spec, cfg))
             job.check(spec)
             return 0
+        if args.action == "runs":
+            runs = job.list_runs(cfg, spec.name)
+            for item in runs:
+                refused = (item.get("egress") or {}).get("refused_count")
+                print(f"{item['id']}  {item.get('state', '?'):8}  {item.get('seconds', '-'):>5}s  "
+                      f"{item.get('engine', '')}"
+                      + (f"  {refused} refused" if refused else "")
+                      + (f"  {item['reason']}" if item.get("reason") else ""))
+            if not runs:
+                print(f"No runs of {spec.name} yet.")
+            return 0
         return job.run(spec, cfg)
     except (job.JobError, containers.ContainerError) as err:
         raise SystemExit(str(err)) from err
@@ -645,9 +656,10 @@ def main(argv: list[str] | None = None) -> int:
     eg.set_defaults(func=cmd_egress)
 
     jb = sub.add_parser("job", help="Run a job: a directory with job.toml and prompt.md, ending in a report.")
-    jb.add_argument("action", choices=["run", "check"],
+    jb.add_argument("action", choices=["run", "check", "runs"],
                     help="run: one run, in a fresh container, its report sent to the job's outputs. "
-                         "check: show what a run would use, and what is missing.")
+                         "check: show what a run would use, and what is missing. "
+                         "runs: its recent runs.")
     jb.add_argument("dir", help="The job's directory.")
     jb.set_defaults(func=cmd_job)
 

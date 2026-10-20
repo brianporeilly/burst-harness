@@ -24,15 +24,17 @@ from harness import containers, egress, git, session
 from harness.exec_target import ExecError
 
 from .backend import Backend, SessionSpec, SpecError
+from .jobs import JobRunner, JobsError
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
-USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError)
+USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
+               JobsError)
 
 
-def create_app(backend: Backend) -> FastAPI:
+def create_app(backend: Backend, jobs: JobRunner | None = None) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
@@ -109,5 +111,30 @@ def create_app(backend: Backend) -> FastAPI:
             yield "event: end\ndata: {}\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
+
+    # --- jobs ---
+
+    def runner() -> JobRunner:
+        if jobs is None:
+            raise JobsError("No job directories: start the orchestrator with --jobs DIR.")
+        return jobs
+
+    @app.get("/api/jobs")
+    def list_jobs() -> dict[str, Any]:
+        if jobs is None:
+            return {"directories": [], "jobs": []}
+        return {"directories": [str(d) for d in jobs.directories], "jobs": jobs.jobs()}
+
+    @app.get("/api/jobs/{name}")
+    def job_detail(name: str) -> dict[str, Any]:
+        return runner().job(name)
+
+    @app.post("/api/jobs/{name}/run", status_code=202)
+    def run_job(name: str) -> dict[str, str]:
+        return {"name": name, "run": runner().run(name)}
+
+    @app.get("/api/jobs/{name}/runs/{run_id}")
+    def run_detail(name: str, run_id: str) -> dict[str, Any]:
+        return runner().run_detail(name, run_id)
 
     return app

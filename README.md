@@ -405,6 +405,19 @@ makes are ordinary sessions; it remembers what each was created with, so
 starting one again means the same thing. Credentials it can hand on come from
 its own environment, as for the harness; the page shows which are there.
 
+It shows jobs too (see Jobs, below), given where to find them:
+
+```bash
+python -m orchestrator --jobs ~/Developer/code/strands-harness-jobs
+```
+
+`--jobs` is a job's directory or one of them (repeatable). The Jobs tab lists
+each job with its last outcome and what its secrets need from the orchestrator's
+environment, runs one on demand (`harness job run`, as a subprocess, with the
+orchestrator's environment), and shows every run: its report, its output, and
+the hosts its gateway let through or refused. Runs started from the command
+line are there too.
+
 Local only, with no login: it answers only to `127.0.0.1` / `localhost`, and
 refuses changes that lack a header a page on another site cannot send. A proof
 of concept on podman; the cluster version sits behind the same backend

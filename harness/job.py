@@ -48,6 +48,11 @@ prompt. Which agent is `engine`:
 * opencode: `opencode run` in the sandbox, configured as for a session. It
   writes /workspace/report.md.
 
+Every run is recorded under the state directory, jobs/NAME/runs/RUN-ID/:
+run.json (when, how long, the outcome, the gateway's events summed up) and
+report.md. A run in progress is there too, as "running". `harness job runs
+DIR` lists them; the orchestrator shows them.
+
 The driver takes the report and sends it to each output. The sandbox has no token that can post: Slack is
 posted to from here, with SLACK_BOT_TOKEN (`slack:CHANNEL`, chat.postMessage)
 or SLACK_WEBHOOK_URL (`slack`, an incoming webhook) from the driver's
@@ -561,16 +566,86 @@ def _acquire(cfg: HarnessConfig, spec: JobSpec) -> SubprocessTarget:
     )
 
 
+RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4,12}")
+# Set by whoever starts `harness job run` and wants to find its record (the orchestrator).
+RUN_ID_ENV = "HARNESS_JOB_RUN_ID"
+
+
+def runs_dir(cfg: HarnessConfig, name: str) -> Path:
+    return cfg.resolve_state_dir(f"jobs/{name}/runs")
+
+
+def new_run_id() -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + os.urandom(3).hex()
+
+
+def _write_run(directory: Path, record: dict[str, Any]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = directory / "run.json.new"
+    temporary.write_text(json.dumps(record, indent=1))
+    temporary.replace(directory / "run.json")
+
+
+def list_runs(cfg: HarnessConfig, name: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    """A job's runs, newest first."""
+    base = runs_dir(cfg, name)
+    if not base.is_dir():
+        return []
+    found = []
+    for directory in sorted((d for d in base.iterdir() if RUN_ID.fullmatch(d.name)), reverse=True)[:limit]:
+        try:
+            found.append(json.loads((directory / "run.json").read_text()))
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+def egress_summary(path: str) -> dict[str, Any]:
+    """A run's gateway events summed up: requests per host, and what was refused."""
+    hosts: dict[str, int] = {}
+    refused: list[dict[str, Any]] = []
+    try:
+        lines = Path(path).read_text().splitlines() if path else []
+    except OSError:
+        lines = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("verdict") == "deny":
+            refused.append({key: event[key] for key in ("kind", "host", "port", "method", "path", "detail")
+                            if event.get(key) not in (None, "")})
+        elif event.get("verdict") == "allow" and event.get("kind") in ("request", "connect", "http", "tls"):
+            if event.get("kind") != "request" and event.get("intercepted"):
+                continue  # its requests are counted instead
+            host = str(event.get("host"))
+            hosts[host] = hosts.get(host, 0) + 1
+    return {"requests": hosts, "refused": refused[:50], "refused_count": len(refused), "events": path}
+
+
 def run(spec: JobSpec, cfg: HarnessConfig, *,
         acquire: Callable[[HarnessConfig, JobSpec], SubprocessTarget] = _acquire) -> int:
     """One run: start the sandbox, run the job, send its report. 0 when a report was sent everywhere.
 
     Whatever goes wrong, from the image to the model, the outputs hear about it.
+    The run is recorded (see the module's docstring) from start to finish.
     """
     check(spec)
     started = time.time()
+    run_id = os.environ.get(RUN_ID_ENV, "")
+    run_id = run_id if RUN_ID.fullmatch(run_id) else new_run_id()
+    record_dir = runs_dir(cfg, spec.name) / run_id
+    record: dict[str, Any] = {
+        "id": run_id, "job": spec.name, "path": str(spec.path), "state": "running",
+        "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+        "engine": cfg.engine, "model": f"{cfg.provider} {cfg.model_id}", "mode": spec.mode,
+        "pid": os.getpid(),
+    }
+    _write_run(record_dir, record)
     report: str | None = None
     reason = ""
+    events = ""
     target: SubprocessTarget | None = None
     try:
         target = acquire(cfg, spec)
@@ -584,14 +659,22 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         traceback.print_exc()
         reason = f"{type(err).__name__}: {err}"
     finally:
-        if target is not None and (released := target.release()):
-            print(released)
+        if target is not None:
+            events = str(getattr(target, "events", "") or "")
+            if released := target.release():
+                print(released)
     failures = deliver(spec, report, reason=reason)
-    print("HARNESS_JOB " + json.dumps({
+    outcome = {
         "job": spec.name, "engine": cfg.engine, "state": "reported" if report is not None else "failed",
         "seconds": round(time.time() - started), "delivery_errors": failures or None,
         "reason": None if report is not None else reason,
-    }))
+    }
+    if report is not None:
+        (record_dir / "report.md").write_text(report)
+    record.pop("pid", None)
+    _write_run(record_dir, {**record, **outcome, "finished": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "egress": egress_summary(events)})
+    print("HARNESS_JOB " + json.dumps({**outcome, "run": run_id}))
     return 0 if report is not None and not failures else 1
 
 

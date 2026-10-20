@@ -191,6 +191,10 @@ the harness's session and egress code directly; it moves to its own repo when
 the Kubernetes backend arrives. Sessions can now run Claude Code (in a browser
 terminal) as well as opencode, and keep their own allowlists. OpenHands is not
 used and is to be removed from home-ops once this covers the same ground.
+Jobs (2026-10-20): a Jobs tab, given `--jobs DIR`, lists jobs and their last
+outcome, runs one on demand, and shows each run's report, output and network
+summary, from the run log the harness now keeps (`harness job runs`).
+Scheduling, when it comes, is likely to live here (or in launchd/CronJobs).
 
 Original plan:
 

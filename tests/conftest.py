@@ -17,6 +17,8 @@ def _isolated_env(monkeypatch, tmp_path):
         if name.startswith("HARNESS_") or name in ("GH_TOKEN", "GITHUB_TOKEN", "ANTHROPIC_API_KEY"):
             monkeypatch.delenv(name)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # Snapshots and job run records go here, not in the real ~/.burst-harness.
+    monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     for key, value in GIT_ENV.items():
         monkeypatch.setenv(key, value)
 
