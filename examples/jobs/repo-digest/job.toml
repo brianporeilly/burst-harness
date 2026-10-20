@@ -6,6 +6,9 @@
 #
 # Harness settings first (any HarnessConfig field), then [job].
 
+# The model is model_id, whichever engine runs it (default claude-opus-5-5):
+#   model_id = "claude-sonnet-5-5"
+#
 # engine = "strands" is the default: the loop runs on the driver and calls the
 # model from there, so the model's key never enters the sandbox. Any provider:
 #   provider = "llamacpp"

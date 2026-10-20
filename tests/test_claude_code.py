@@ -125,3 +125,16 @@ def test_failed_claude_is_not_retried(origin, tmp_path, monkeypatch, fake_claude
     _start(ctx)
     assert len(fake_claude()) == 1
     assert ctx.terminal is None
+
+
+def test_claude_is_given_the_model_unless_claude_args_names_one(origin, tmp_path, monkeypatch, fake_claude):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "pause")
+    _start(_ctx(origin, tmp_path))
+    argv = fake_claude()[0]
+    assert argv[argv.index("--model") + 1] == cli.HarnessConfig().model_id
+
+    monkeypatch.setenv("HARNESS_CLAUDE_ARGS", "--model sonnet")
+    ctx = cli._open(_args(repo=str(tmp_path / "w2"), repo_url=str(origin), engine="claude-code"))
+    _start(ctx)
+    argv = fake_claude()[-1]
+    assert argv.count("--model") == 1 and argv[argv.index("--model") + 1] == "sonnet"

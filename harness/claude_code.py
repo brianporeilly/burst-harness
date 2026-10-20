@@ -196,12 +196,16 @@ class ClaudeCodeEngine:
     def command(self, *args: str) -> str:
         """A shell string running `claude` with the harness's settings and yours."""
         cfg = self.ctx.cfg
+        yours = shlex.split(cfg.claude_args)
+        # model_id, unless claude_args picks one: without it Claude Code uses
+        # its own default, whatever the harness's settings say.
+        model = [] if any(arg == "--model" or arg.startswith("--model=") for arg in yours) else ["--model", cfg.model_id]
         argv = [
-            "claude", *args,
+            "claude", *args, *model,
             "--permission-mode", cfg.claude_permission_mode,
             "--settings", self.hook_settings(),
             "--append-system-prompt", self.rules(),
-            *shlex.split(cfg.claude_args),
+            *yours,
         ]
         env = f"set -a && . {shlex.quote(ENV_FILE)} && set +a && " if self.has_env_file else ""
         return env + shlex.join(argv)

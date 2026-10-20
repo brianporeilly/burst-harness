@@ -437,7 +437,8 @@ and an agent working in `/workspace` from the prompt. `engine` picks it:
   llama.cpp, ...); the model is called from the driver, so its key never
   enters the sandbox and its endpoint needs no allowlist entry.
 - `claude-code`: Claude Code headless in the sandbox, which can use a
-  subscription's token. Its model calls go through the gateway (use
+  subscription's token. It is passed `--model <model_id>`, unless
+  `claude_args` has a `--model` of its own. Its model calls go through the gateway (use
   `egress_inject = ["model"]` to keep the key there).
 - `opencode`: `opencode run` in the sandbox, with a session's model settings
   (Anthropic, or `llamacpp`/`openai` with `base_url`, which must be on the
