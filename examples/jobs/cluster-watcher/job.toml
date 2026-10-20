@@ -1,0 +1,33 @@
+# A plain-English summary of what needs attention in a Kubernetes cluster:
+# unhealthy nodes and pods, failing jobs, warning events, certificates close
+# to expiry, Flux objects not ready, stale backups (kopiur, CloudNativePG).
+#
+#   KUBE_TOKEN=<read-only ServiceAccount token> harness job run examples/jobs/cluster-watcher
+#
+# The token is a ServiceAccount's that can only read (rbac.yaml, here), not
+# your kubeconfig's: the gateway adds it on requests to the API server, so the
+# sandbox never holds it, and report mode refuses anything but reads anyway.
+# The server's CA, for the gateway to verify it with:
+#
+#   kubectl config view --raw --minify \
+#     -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d > ca.crt
+#
+# Set the API server's address here and in prompt.md.
+
+# The model is called from the driver (engine = "strands", the default), so it
+# can be a local one -- this job reads nothing that needs a large model:
+#   provider = "llamacpp"
+#   base_url = "http://llm.lan:8080"
+#   model_id = "qwen3-14b"
+
+egress_allow = []
+
+[job]
+trigger = "0 8 * * *"
+mode = "report"
+output = ["stdout", "file:~/.burst-harness/reports/cluster-watcher/%Y-%m-%d.md"]
+
+[job.secrets.kube]
+env = "KUBE_TOKEN"
+host = "10.0.0.5:6443"
+ca_file = "ca.crt"

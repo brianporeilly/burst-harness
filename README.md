@@ -459,6 +459,14 @@ sandbox never sees it; `sandbox_env` then gives the sandbox a placeholder, for
 tools that insist on a token. Without `host`, it is passed into the sandbox as
 `sandbox_env`; either way it is in the container's environment, set by name so
 the value is not on a command line. Secrets' hosts are added to the allowlist.
+A secret's `host` can carry a port (`host = "10.0.0.5:6443"`), and `ca_file`
+names the server's own CA when it is not a public one, for the gateway to
+verify it with -- a Kubernetes API server, say. The gateway chooses its
+certificate by the host it allowed, so an IP address works.
+
+Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub) and
+`examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
+read-only ServiceAccount from its `rbac.yaml`).
 
 Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
 "allowlist"`. A job's settings sit between your config file and `HARNESS_*`.

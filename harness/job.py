@@ -19,6 +19,11 @@ A job is a directory, kept in its own repo (one per instance, personal or work):
     value = "Bearer {}"            # the header's value (header = "Authorization" by default)
     sandbox_env = "GH_TOKEN"       # optional: a placeholder there, for tools that insist on a token
 
+    [job.secrets.kube]
+    env = "KUBE_TOKEN"
+    host = "10.0.0.5:6443"         # host:port for anything but 443
+    ca_file = "~/.kube/ca.crt"     # the server's own CA, if it is not a public one
+
 A secret with no `host` is passed into the sandbox instead, as `sandbox_env`.
 
 Report mode is enforced by the gateway, not the prompt: every request the
@@ -124,13 +129,31 @@ class Secret:
     header: str = "Authorization"
     value: str = "Bearer {}"
     sandbox_env: str = ""
+    ca_file: str = ""
+
+    @property
+    def hostname(self) -> str:
+        return self.host.rsplit(":", 1)[0] if ":" in self.host else self.host
+
+    @property
+    def port(self) -> int:
+        return int(self.host.rsplit(":", 1)[1]) if ":" in self.host else 443
 
     def placeholder(self) -> str:
         return f"burst-gateway-placeholder-{self.name}"
 
     def rule(self) -> dict[str, object]:
         """The gateway rule that adds it, on every request to its host."""
-        return {"host": self.host, "headers": {self.header: self.value.format(os.environ[self.env])}}
+        rule: dict[str, object] = {"host": self.hostname, "headers": {self.header: self.value.format(os.environ[self.env])}}
+        if self.port != 443:
+            rule["port"] = self.port
+        return rule
+
+    def upstream_ca(self) -> dict[str, str] | None:
+        """The gateway's EGRESS_UPSTREAM_CA entry for the host, from ca_file."""
+        if not self.ca_file:
+            return None
+        return {"host": self.hostname, "ca": Path(self.ca_file).expanduser().read_text()}
 
 
 @dataclass(frozen=True)
@@ -176,6 +199,9 @@ def load(directory: str | Path) -> JobSpec:
     for key in ("claude_json", "claude_settings"):
         if isinstance(values.get(key), str) and values[key] and not Path(values[key]).expanduser().is_absolute():
             values[key] = str(path / values[key])
+    for item in (table.get("secrets") or {}).values() if isinstance(table.get("secrets"), dict) else ():
+        if isinstance(item, dict) and isinstance(item.get("ca_file"), str) and item["ca_file"]:
+            item["ca_file"] = str(path / Path(item["ca_file"]).expanduser())
     spec = JobSpec(
         name=name, path=path, prompt=prompt, settings=values,
         trigger=_trigger(table.get("trigger", "manual")),
@@ -267,7 +293,7 @@ def _secrets(value: Any) -> tuple[Secret, ...]:
     for name, item in value.items():
         if not isinstance(item, dict) or not isinstance(item.get("env"), str):
             raise JobError(f"[job.secrets.{name}] needs env = \"VAR\": the driver's variable holding it.")
-        if unknown := sorted(set(item) - {"env", "host", "header", "value", "sandbox_env"}):
+        if unknown := sorted(set(item) - {"env", "host", "header", "value", "sandbox_env", "ca_file"}):
             raise JobError(f"[job.secrets.{name}]: unknown setting(s) {', '.join(unknown)}.")
         if not all(isinstance(v, str) for v in item.values()):
             raise JobError(f"[job.secrets.{name}]: every setting is a string.")
@@ -280,8 +306,18 @@ def _secrets(value: Any) -> tuple[Secret, ...]:
         if not secret.host and not secret.sandbox_env:
             raise JobError(f"[job.secrets.{name}] needs host (the gateway adds it there) or sandbox_env "
                            "(it is passed into the sandbox as that variable).")
-        if secret.host and (not re.fullmatch(r"[A-Za-z0-9.-]+", secret.host) or "{}" not in secret.value):
-            raise JobError(f"[job.secrets.{name}]: host is a hostname, and value contains {{}} for the secret.")
+        if secret.host and (not re.fullmatch(r"[A-Za-z0-9.-]+(:[0-9]{1,5})?", secret.host) or "{}" not in secret.value):
+            raise JobError(f"[job.secrets.{name}]: host is a hostname (or hostname:port), and value contains {{}} "
+                           "for the secret.")
+        if secret.ca_file:
+            if not secret.host:
+                raise JobError(f"[job.secrets.{name}]: ca_file is the CA of the host the gateway adds it at; set host.")
+            ca = Path(secret.ca_file).expanduser()
+            if not ca.is_absolute():
+                raise JobError(f"[job.secrets.{name}]: ca_file is resolved against the job's directory; "
+                               "load() should have made it absolute.")
+            if not ca.is_file() or "BEGIN CERTIFICATE" not in ca.read_text(errors="replace"):
+                raise JobError(f"[job.secrets.{name}]: ca_file {ca} is not a PEM certificate.")
         found.append(secret)
     return tuple(found)
 
@@ -336,6 +372,7 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
     ]
     for s in spec.secrets:
         where = f"added by the gateway at {s.host}" if s.host else f"passed into the sandbox as {s.sandbox_env}"
+        where += f", verified with {s.ca_file}" if s.ca_file else ""
         lines.append(f"  secret   {s.name}: ${s.env}, {where}")
     if spec.scripts:
         lines.append(f"  scripts  {spec.scripts} -> {WORKDIR}/{SCRIPTS_DIR}")
@@ -343,6 +380,7 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
 
 
 def _hosts(spec: JobSpec) -> tuple[str, ...]:
+    """Allowlist entries for the secrets' hosts: `host`, or `host:port` off 443."""
     return tuple(s.host for s in spec.secrets if s.host)
 
 
@@ -519,6 +557,7 @@ def _acquire(cfg: HarnessConfig, spec: JobSpec) -> SubprocessTarget:
         allow=_hosts(spec), inject=tuple(s.rule() for s in spec.secrets if s.host),
         env={s.sandbox_env: s.placeholder() if s.host else os.environ[s.env] for s in spec.secrets if s.sandbox_env},
         read_only=write_rules(spec, cfg),
+        upstream_ca=tuple(ca for s in spec.secrets if (ca := s.upstream_ca())),
     )
 
 

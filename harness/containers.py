@@ -237,7 +237,7 @@ def start_egress(
     cfg: HarnessConfig, *, binary: str, name: str, slug: str,
     allow: tuple[str, ...] = (), inbound: tuple[tuple[str, int, int], ...] = (), labels: tuple[str, ...] = (),
     gateway_env: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (),
-    read_only: tuple[dict[str, object], ...] | None = None,
+    read_only: tuple[dict[str, object], ...] | None = None, upstream_ca: tuple[dict[str, str], ...] = (),
 ) -> tuple[str, str, list[str]]:
     """Create the internal network and gateway sidecar.
 
@@ -248,7 +248,8 @@ def start_egress(
     extra NAME=VALUE settings for the gateway. `read_only`, when given, makes
     the gateway refuse every request that writes except those it lists
     (EGRESS_WRITES rules); it then terminates all TLS, so the sandbox has to
-    trust its CA (trust_gateway).
+    trust its CA (trust_gateway). `upstream_ca` is EGRESS_UPSTREAM_CA entries,
+    for hosts whose certificates are not signed by a public CA.
 
     Returns (network, proxy, run flags that put a container behind them).
     """
@@ -272,6 +273,9 @@ def start_egress(
         secrets_env["EGRESS_INJECT"] = json.dumps(rules)
         policy += ["-e", "EGRESS_INJECT"]
         summary += "; adds credentials for " + ", ".join(sorted({str(rule["host"]) for rule in rules}))
+    if upstream_ca:
+        secrets_env["EGRESS_UPSTREAM_CA"] = json.dumps(list(upstream_ca))
+        policy += ["-e", "EGRESS_UPSTREAM_CA"]
     if read_only is not None:
         policy += ["-e", "EGRESS_READONLY=1", "-e", f"EGRESS_WRITES={json.dumps(list(read_only))}"]
         summary += "; read-only" + (" except " + ", ".join(f"{w['method']} {w['host']}{w.get('path', '')}"
@@ -345,7 +349,7 @@ def gateway_address(flags: list[str]) -> str:
 def acquire(
     cfg: HarnessConfig, *, binary: str, repo: str, slug: str,
     allow: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (), env: dict[str, str] | None = None,
-    read_only: tuple[dict[str, object], ...] | None = None,
+    read_only: tuple[dict[str, object], ...] | None = None, upstream_ca: tuple[dict[str, str], ...] = (),
 ) -> DockerTarget:
     """Attach to `cfg.docker_container`, or start a fresh one from `cfg.image`.
 
@@ -371,7 +375,8 @@ def acquire(
         raise ContainerError("Read-only needs a gateway to enforce it: egress log or allowlist.")
     if cfg.egress != "open":
         network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug,
-                                                    allow=allow, inject=inject, read_only=read_only)
+                                                    allow=allow, inject=inject, read_only=read_only,
+                                                    upstream_ca=upstream_ca)
     env = env or {}
     proc = subprocess.run(
         run_argv(cfg, binary=binary, name=name, slug=slug,

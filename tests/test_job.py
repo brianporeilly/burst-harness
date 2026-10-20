@@ -410,3 +410,36 @@ def test_writes_entries_are_checked(tmp_path):
         (directory / "job.toml").write_text(f"[job]\n{bad}\n")
         with pytest.raises(job.JobError, match="writes"):
             job.load(directory)
+
+
+def test_a_secret_can_name_a_port_and_the_hosts_own_ca(tmp_path, monkeypatch):
+    from harness import job
+
+    directory = tmp_path / "watcher"
+    directory.mkdir()
+    (directory / "prompt.md").write_text("do it")
+    (directory / "ca.crt").write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+    (directory / "job.toml").write_text(
+        '[job.secrets.kube]\nenv = "KUBE_TOKEN"\nhost = "10.0.0.5:6443"\nca_file = "ca.crt"\n')
+    spec = job.load(directory)
+    secret = spec.secrets[0]
+    assert (secret.hostname, secret.port) == ("10.0.0.5", 6443)
+    assert job._hosts(spec) == ("10.0.0.5:6443",)  # the allowlist entry
+    monkeypatch.setenv("KUBE_TOKEN", "t0k")
+    assert secret.rule() == {"host": "10.0.0.5", "port": 6443, "headers": {"Authorization": "Bearer t0k"}}
+    assert secret.upstream_ca() == {"host": "10.0.0.5", "ca": (directory / "ca.crt").read_text()}
+
+    (directory / "ca.crt").write_text("not a certificate")
+    with pytest.raises(job.JobError, match="not a PEM"):
+        job.load(directory)
+    (directory / "job.toml").write_text('[job.secrets.kube]\nenv = "K"\nsandbox_env = "K"\nca_file = "ca.crt"\n')
+    with pytest.raises(job.JobError, match="set host"):
+        job.load(directory)
+
+
+def test_the_cluster_watcher_script_parses():
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).parent.parent / "examples/jobs/cluster-watcher/scripts/cluster_state.py"
+    ast.parse(source.read_text())

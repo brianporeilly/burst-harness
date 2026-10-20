@@ -277,6 +277,11 @@ loses nothing, because nothing is waiting.
    call it from the sandbox, and a job's own `writes`. State volumes and the
    run log are still to come; the run log goes with the orchestrator's jobs
    view (below).
+   Second example job: `examples/jobs/cluster-watcher` (2026-10-20), against
+   the cluster's API server through the gateway: a ServiceAccount token
+   added at `host:port`, the server verified against its own CA, report mode
+   refusing anything but reads. Its script boils the cluster down to what is
+   wrong before the model sees it.
 4. Gmail: report-only triage and an action-needed digest first. Then cleanup
    as a dry run with approvals, then with actions enabled. Every action gets a
    label (`bot/archived`, `bot/trashed`), and nothing is ever sent or drafted.

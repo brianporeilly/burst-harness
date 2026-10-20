@@ -203,21 +203,41 @@ def _handshake(served, host, cafile):
 
 
 @pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
-def test_certificates_chain_to_the_gateways_ca_and_are_made_on_demand(tmp_path, monkeypatch):
-    monkeypatch.setattr(gw, "_RELAYED", {1: {"host": "api.github.com"}})
+def test_certificates_chain_to_the_gateways_ca_and_are_made_on_demand(tmp_path):
     certificates = gw.Certificates(tmp_path)
-    served = certificates.server_context()
-    c = _handshake(served, "api.github.com", str(tmp_path / "ca.crt"))
+    assert certificates.contexts == {}
+    c = _handshake(certificates.context("api.github.com"), "api.github.com", str(tmp_path / "ca.crt"))
     assert c.getpeercert()["subjectAltName"] == (("DNS", "api.github.com"),)
     assert c.selected_alpn_protocol() is None  # the client offered none; the server only speaks http/1.1
     assert (tmp_path / "ca.key").stat().st_mode & 0o077 == 0
-    assert set(certificates.contexts) == {"api.github.com"}
-    # A name no relay of ours is carrying gets no certificate, and no handshake.
-    with pytest.raises(ssl.SSLError):
-        _handshake(served, "elsewhere.com", str(tmp_path / "ca.crt")).getpeercert()
-    assert "elsewhere.com" not in certificates.contexts
+    assert certificates.context("api.github.com") is certificates.contexts["api.github.com"]
+    # An IP address gets an IP SAN, which is what a client checks it against.
+    c = _handshake(certificates.context("192.0.2.100"), "192.0.2.100", str(tmp_path / "ca.crt"))
+    assert c.getpeercert()["subjectAltName"] == (("IP Address", "192.0.2.100"),)
     with pytest.raises(ValueError):
         certificates.context("bad/name")
+
+
+def test_credentials_can_be_for_another_port(monkeypatch):
+    rules = gw.Inject.parse('[{"host": "10.0.0.5", "port": 6443, "headers": {"Authorization": "Bearer t"}}]')
+    monkeypatch.setattr(gw, "INJECT", rules)
+    monkeypatch.setattr(gw, "INTERCEPT", 1)
+    monkeypatch.setattr(gw, "READONLY", False)
+    assert gw.inject_for("10.0.0.5", "/api", 6443) is rules[0]
+    assert gw.inject_for("10.0.0.5", "/api", 443) is None and gw.inject_for("10.0.0.5", "/api") is None
+    assert gw.intercepts("10.0.0.5", 6443) and not gw.intercepts("10.0.0.5", 443)
+    with pytest.raises(SystemExit, match="port"):
+        gw.Inject.parse('[{"host": "a.com", "port": "x", "headers": {"A": "b"}}]')
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
+def test_upstream_ca_is_a_context_per_host(tmp_path):
+    gw.Certificates(tmp_path)
+    found = gw.upstream_cas(json.dumps([{"host": "10.0.0.5", "ca": (tmp_path / "ca.crt").read_text()}]))
+    assert set(found) == {"10.0.0.5"} and found["10.0.0.5"].verify_mode == ssl.CERT_REQUIRED
+    assert gw.upstream_cas("") == {}
+    with pytest.raises(SystemExit, match="PEM"):
+        gw.upstream_cas('[{"host": "a.com", "ca": "nope"}]')
 
 
 def test_read_only_lets_reads_and_listed_writes_through(monkeypatch):

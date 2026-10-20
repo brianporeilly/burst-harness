@@ -1,0 +1,63 @@
+# A ServiceAccount that can read what cluster_state.py reads, and nothing else
+# (no secrets, no configmaps, no exec). Apply it (or put it in your GitOps
+# repo), then use its token as KUBE_TOKEN:
+#
+#   kubectl -n burst-jobs get secret cluster-watcher-token -o jsonpath='{.data.token}' | base64 -d
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: burst-jobs
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-watcher
+  namespace: burst-jobs
+---
+# A long-lived token, revoked by deleting this Secret.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cluster-watcher-token
+  namespace: burst-jobs
+  annotations:
+    kubernetes.io/service-account.name: cluster-watcher
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: burst-cluster-watcher
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods, events, persistentvolumeclaims]
+    verbs: [get, list]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [get, list]
+  - apiGroups: [kustomize.toolkit.fluxcd.io]
+    resources: [kustomizations]
+    verbs: [get, list]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list]
+  - apiGroups: [kopiur.home-operations.com]
+    resources: [snapshotpolicies]
+    verbs: [get, list]
+  - apiGroups: [postgresql.cnpg.io]
+    resources: [clusters]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: burst-cluster-watcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: burst-cluster-watcher
+subjects:
+  - kind: ServiceAccount
+    name: cluster-watcher
+    namespace: burst-jobs
