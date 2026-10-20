@@ -237,6 +237,7 @@ def start_egress(
     cfg: HarnessConfig, *, binary: str, name: str, slug: str,
     allow: tuple[str, ...] = (), inbound: tuple[tuple[str, int, int], ...] = (), labels: tuple[str, ...] = (),
     gateway_env: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (),
+    read_only: tuple[dict[str, object], ...] | None = None,
 ) -> tuple[str, str, list[str]]:
     """Create the internal network and gateway sidecar.
 
@@ -244,7 +245,10 @@ def start_egress(
     `egress_inject` makes. `inbound` is (host address, host port,
     container port): the gateway publishes each on the host and passes what
     arrives to the container. `labels` are extra `--label` flags, `gateway_env`
-    extra NAME=VALUE settings for the gateway.
+    extra NAME=VALUE settings for the gateway. `read_only`, when given, makes
+    the gateway refuse every request that writes except those it lists
+    (EGRESS_WRITES rules); it then terminates all TLS, so the sandbox has to
+    trust its CA (trust_gateway).
 
     Returns (network, proxy, run flags that put a container behind them).
     """
@@ -268,6 +272,10 @@ def start_egress(
         secrets_env["EGRESS_INJECT"] = json.dumps(rules)
         policy += ["-e", "EGRESS_INJECT"]
         summary += "; adds credentials for " + ", ".join(sorted({str(rule["host"]) for rule in rules}))
+    if read_only is not None:
+        policy += ["-e", "EGRESS_READONLY=1", "-e", f"EGRESS_WRITES={json.dumps(list(read_only))}"]
+        summary += "; read-only" + (" except " + ", ".join(f"{w['method']} {w['host']}{w.get('path', '')}"
+                                                         for w in read_only) if read_only else "")
     network, proxy = f"{name}-net", f"{name}-egress"
     # Only podman can give a network a route (`network create --route`); on
     # docker the sandbox has no route at all and only the proxy gets out.
@@ -317,7 +325,7 @@ def start_egress(
     if cfg.egress == "allowlist":
         # Claude Code's telemetry and update checks would only be refused.
         env.append("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
-    if rules:
+    if rules or read_only is not None:
         # Written by burst-sandbox-trust once the container is up.
         env += [f"{k}={SANDBOX_CA_BUNDLE}" for k in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO")]
         env.append(f"NODE_EXTRA_CA_CERTS={SANDBOX_CA}")
@@ -337,11 +345,12 @@ def gateway_address(flags: list[str]) -> str:
 def acquire(
     cfg: HarnessConfig, *, binary: str, repo: str, slug: str,
     allow: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (), env: dict[str, str] | None = None,
+    read_only: tuple[dict[str, object], ...] | None = None,
 ) -> DockerTarget:
     """Attach to `cfg.docker_container`, or start a fresh one from `cfg.image`.
 
-    `allow` and `inject` add to the gateway's allowlist and credential rules (see
-    start_egress). `env` is set in a fresh container's environment, passed by name
+    `allow` and `inject` add to the gateway's allowlist and credential rules, and
+    `read_only` limits it to reading (see start_egress). `env` is set in a fresh container's environment, passed by name
     so values stay out of argv.
     """
     if cfg.docker_container:
@@ -358,9 +367,11 @@ def acquire(
     network_args: list[str] = []
     if (cfg.egress_inject or inject) and cfg.egress == "open":
         raise ContainerError("--egress-inject needs a gateway to do it: --egress log or allowlist.")
+    if read_only is not None and cfg.egress == "open":
+        raise ContainerError("Read-only needs a gateway to enforce it: egress log or allowlist.")
     if cfg.egress != "open":
         network, proxy, network_args = start_egress(cfg, binary=binary, name=name, slug=slug,
-                                                    allow=allow, inject=inject)
+                                                    allow=allow, inject=inject, read_only=read_only)
     env = env or {}
     proc = subprocess.run(
         run_argv(cfg, binary=binary, name=name, slug=slug,
@@ -379,7 +390,7 @@ def acquire(
                 f"{cfg.image} is missing required commands: {', '.join(missing)}. "
                 "See images/sandbox/Containerfile for the contract."
             )
-        if proxy and (cfg.egress_inject or inject):
+        if proxy and (cfg.egress_inject or inject or read_only is not None):
             trust_gateway(binary, proxy=proxy, name=name)
     except Exception:
         target.release()

@@ -467,6 +467,23 @@ Headless Claude Code runs only the tools it is allowed (`claude_args =
 `manual`) is read by the scheduler (to come), not by `run`; `mode = "act"` is
 refused until approvals exist. See ROADMAP.md, phase 8.
 
+`mode = "report"` is enforced by the gateway, not by the prompt. It terminates
+all of the sandbox's TLS and lets through only requests that read (GET, HEAD,
+OPTIONS); anything else gets a 403 (`"error": "read_only"`), however the
+sandbox connects. A job that reads a hostile issue or email still cannot
+merge, post or delete. The exceptions are what the run needs -- git's fetch,
+and the model endpoint for claude-code and opencode, which call it from the
+sandbox -- plus any a job lists:
+
+```toml
+[job]
+# APIs that read with a POST. GraphQL's mutations are POSTs too, so list one
+# only for a token that cannot write.
+writes = [{host = "api.github.com", method = "POST", path = "/graphql"}]
+```
+
+`harness job check` shows what is allowed.
+
 ## Engines
 
 `--engine` picks the agent loop; everything around it — target, clone, branch,

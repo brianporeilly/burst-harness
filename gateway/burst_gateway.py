@@ -31,6 +31,11 @@ the harness.
                      {"host": "api.anthropic.com",
                       "swap": [{"header": "x-api-key", "placeholder": "...", "value": "..."}]}]
     EGRESS_CA_DIR   where the CA for that is made (default /run/burst-gateway)
+    EGRESS_READONLY "1": requests may only read -- GET, HEAD, OPTIONS -- except
+                    those EGRESS_WRITES lets through (default off)
+    EGRESS_WRITES   JSON list of requests that may write anyway (default none):
+                    [{"host": "api.anthropic.com", "method": "POST", "path": "/v1/messages*"}]
+                    `host` and `path` are shell-style patterns; no `path` matches all
 
 Software that uses the proxy never resolves a name itself, so a DNS query here
 is software that ignored the proxy. What happens to it depends on whether this
@@ -62,7 +67,17 @@ Either way the sandbox can use a credential it cannot read. A path
 with dot segments or encoded separators matches no rule. A request
 whose Host header names some other host is refused, so a credential cannot be
 steered to a different site behind the same front end. Every other host is
-tunnelled untouched, as before. Each request is one connection, HTTP/1.1.
+tunnelled untouched (unless EGRESS_READONLY), as before. Each request is one
+connection, HTTP/1.1.
+
+Read-only (EGRESS_READONLY). For a job that should only read, whatever text it
+reads tells it to do. A method is only visible inside TLS, so every TLS
+connection is terminated here, as for credentials (certificates are made per
+host on first use), and each request is put to the rule: GET, HEAD and OPTIONS
+pass, and anything else must match an EGRESS_WRITES entry or is refused with a
+403 the agent can read. Plain HTTP is checked the same way. A connection that
+does not speak TLS and HTTP gets nowhere: what cannot be seen cannot be read
+as read-only. Approvals do not lift this; they say where, not what.
 
 Approvals (EGRESS_APPROVALS). A refusal is immediate and final for that
 request: nothing is held open waiting for an answer. Its event and its 403 carry
@@ -284,15 +299,63 @@ def with_credentials(headers: list[bytes], rule: Inject | None) -> tuple[list[by
     return out, changed + [name for name, _ in rule.headers]
 
 
+READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+@dataclass(frozen=True)
+class Write:
+    """A request that may write in read-only mode."""
+
+    host: str
+    method: str
+    path: str = "*"
+
+    @classmethod
+    def parse(cls, raw: str) -> tuple["Write", ...]:
+        rules = []
+        for item in json.loads(raw) if raw.strip() else []:
+            host, method = str(item.get("host") or "").lower().rstrip("."), str(item.get("method") or "").upper()
+            if not host or not method or not method.isalpha():
+                raise SystemExit(f"burst-gateway: an EGRESS_WRITES entry needs a host and a method (got {item!r}).")
+            rules.append(cls(host=host, method=method, path=str(item.get("path") or "*")))
+        return tuple(rules)
+
+
+def may_send(host: str, method: str, path: str) -> bool:
+    """Whether read-only mode lets this request through."""
+    method = method.upper()
+    if not READONLY or method in READ_METHODS:
+        return True
+    path = path.split("?", 1)[0]
+    lowered = path.lower()
+    # As for credentials: a path that might be read differently upstream matches no exception.
+    if any(part in (".", "..") for part in path.split("/")) or any(c in lowered for c in ("%2e", "%2f", "%5c", "\\", "//")):
+        return False
+    return any(w.method == method and fnmatch.fnmatchcase(host, w.host) and fnmatch.fnmatchcase(path, w.path)
+               for w in WRITES)
+
+
+READONLY_MESSAGE = ("This sandbox may only read: {method} is refused here, and approving the host will not "
+                    "change that. Use a read-only way to get what you need, or say in your result that the job "
+                    "needed to write.")
+
+
+def intercepts(host: str, port: int) -> bool:
+    """Whether TLS to host:port is terminated here: credentials to add (443 only), or read-only mode."""
+    return bool(INTERCEPT) and (READONLY or (port == 443 and any(r.host == host for r in INJECT)))
+
+
 POLICY = Policy()
 APPROVALS = Approvals("")
 WEBHOOK = ""
 INJECT: tuple[Inject, ...] = ()
+READONLY = False
+WRITES: tuple[Write, ...] = ()
 SANDBOX = ""
 REDIRECT = 0
 # Where TLS for intercepted hosts is terminated: a listener on loopback that
 # connections are relayed into, whichever way they arrived. 0 when there are
-# no rules.
+# no rules and not read-only.
 INTERCEPT = 0
 # What is known about a connection relayed there (who, which host, how it
 # arrived), by the local port it was relayed from.
@@ -414,18 +477,18 @@ async def refuse(writer: asyncio.StreamWriter, status: str, body: dict[str, obje
     writer.close()
 
 
-async def deny(writer: asyncio.StreamWriter, kind: str, detail: str = "", **fields: object) -> None:
+async def deny(writer: asyncio.StreamWriter, kind: str, detail: str = "", *, message: str = "", **fields: object) -> None:
     """Refuse at once -- never hold a connection open -- and say why in a body an agent can read."""
     request_id = next_id()
     emit(kind, "deny", id=request_id, detail=detail, **fields)
-    if kind not in ("connect", "http"):
+    if kind not in ("connect", "http", "request"):
         return writer.close()  # not speaking HTTP: there is no way to say why
     await refuse(writer, "403 Forbidden", {
-        "error": "egress_denied",
+        "error": "read_only" if message else "egress_denied",
         "request_id": request_id,
         "host": fields.get("host"),
         "port": fields.get("port"),
-        "message": "Blocked by this sandbox's egress policy, and recorded for whoever runs it to approve "
+        "message": message or "Blocked by this sandbox's egress policy, and recorded for whoever runs it to approve "
                    f"(`harness egress approve {request_id}`). Retrying will not help until they do: carry on "
                    "with what does not need this host, or say that you are waiting on it.",
     })
@@ -442,7 +505,7 @@ async def relay(
     """
     request_id, started = next_id(), time.monotonic()
     host, port = str(fields["host"]), int(str(fields["port"]))
-    intercept = bool(INTERCEPT) and kind in ("connect", "tls") and port == 443 and any(r.host == host for r in INJECT)
+    intercept = kind in ("connect", "tls") and intercepts(host, port)
     if intercept:
         fields["intercepted"] = True
     try:
@@ -457,7 +520,8 @@ async def relay(
     emit(kind, "allow", id=request_id, **fields)
     local_port = up_writer.get_extra_info("sockname")[1]
     if intercept:
-        _RELAYED[local_port] = dict(host=host, peer=fields.get("peer"), via=fields.get("via"), connection=request_id)
+        _RELAYED[local_port] = dict(host=host, port=port, peer=fields.get("peer"), via=fields.get("via"),
+                                    connection=request_id)
     up_writer.write(to_upstream)
     writer.write(to_client)
     await writer.drain()
@@ -490,6 +554,8 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         fields = dict(peer=peer, host=host, port=port, method=method, path=path.split("?", 1)[0])
         if not permitted(host, port):
             return await deny(writer, "http", **fields)
+        if not may_send(host, method, path):
+            return await deny(writer, "http", "read-only", message=READONLY_MESSAGE.format(method=method), **fields)
         await relay("http", reader, writer, to_upstream=origin_request(method, path, version, head[1:]), **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
@@ -524,43 +590,66 @@ def inbound_handler(address: str, port: int):
 # --- terminated TLS: credentials ---
 
 
-def make_certificates(directory: Path, hosts: list[str]) -> ssl.SSLContext:
-    """A CA in `directory` and a certificate under it for each host; the context that serves them."""
-    directory.mkdir(parents=True, exist_ok=True)
+class Certificates:
+    """A CA in `directory`, and a certificate under it for each host, made when first asked for."""
 
-    def openssl(*args: str, stdin: bytes | None = None) -> bytes:
+    def __init__(self, directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        self.directory = directory
+        self.contexts: dict[str, ssl.SSLContext] = {}
+        self.ca_key, self.ca_crt = directory / "ca.key", directory / "ca.crt"
+        self._openssl("req", "-x509", *self.KEY_ARGS, "-keyout", str(self.ca_key), "-out", str(self.ca_crt),
+                      "-days", "30", "-subj", f"/CN=burst-gateway {SANDBOX or 'sandbox'}",
+                      "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+                      "-addext", "keyUsage=critical,keyCertSign")
+        self.ca_key.chmod(0o600)
+
+    KEY_ARGS = ("-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes")
+
+    @staticmethod
+    def _openssl(*args: str, stdin: bytes | None = None) -> bytes:
         proc = subprocess.run(["openssl", *args], input=stdin, capture_output=True)
         if proc.returncode != 0:
             raise SystemExit(f"burst-gateway: openssl {args[0]} failed: {proc.stderr.decode(errors='replace').strip()}")
         return proc.stdout
 
-    key_args = ("-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes")
-    ca_key, ca_crt = directory / "ca.key", directory / "ca.crt"
-    openssl("req", "-x509", *key_args, "-keyout", str(ca_key), "-out", str(ca_crt), "-days", "30",
-            "-subj", f"/CN=burst-gateway {SANDBOX or 'sandbox'}",
-            "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0", "-addext", "keyUsage=critical,keyCertSign")
-    ca_key.chmod(0o600)
-    contexts: dict[str, ssl.SSLContext] = {}
-    for host in hosts:
-        key, crt, ext = directory / f"{host}.key", directory / f"{host}.crt", directory / f"{host}.ext"
+    def context(self, host: str) -> ssl.SSLContext:
+        if (found := self.contexts.get(host)) is not None:
+            return found
+        if not host or len(host) > 253 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-." for c in host):
+            raise ValueError(f"not a host name: {host!r}")
+        key, crt, ext = (self.directory / f"{host}.{suffix}" for suffix in ("key", "crt", "ext"))
         ext.write_text(f"subjectAltName=DNS:{host}\nextendedKeyUsage=serverAuth\n")
-        request = openssl("req", "-new", *key_args, "-keyout", str(key), "-subj", f"/CN={host}")
-        openssl("x509", "-req", "-CA", str(ca_crt), "-CAkey", str(ca_key), "-days", "30",
-                "-extfile", str(ext), "-out", str(crt), stdin=request)
+        request = self._openssl("req", "-new", *self.KEY_ARGS, "-keyout", str(key), "-subj", f"/CN={host}")
+        self._openssl("x509", "-req", "-CA", str(self.ca_crt), "-CAkey", str(self.ca_key), "-days", "30",
+                      "-extfile", str(ext), "-out", str(crt), stdin=request)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(crt), str(key))
         # One request per connection, parsed as HTTP/1.1: do not offer h2.
         context.set_alpn_protocols(["http/1.1"])
-        contexts[host] = context
+        self.contexts[host] = context
+        return context
 
-    def choose(sslobj: ssl.SSLObject, name: str | None, _context: ssl.SSLContext) -> None:
-        if name and (chosen := contexts.get(name.lower().rstrip("."))):
-            sslobj.context = chosen
+    def server_context(self) -> ssl.SSLContext:
+        """The context the intercept listener serves, choosing each host's certificate by SNI.
 
-    # Served when the client names no host we hold a certificate for: the handshake then fails on its side.
-    default = next(iter(contexts.values()))
-    default.sni_callback = choose
-    return default
+        A certificate is only made for a name this gateway's own relay is
+        carrying (the policy has already allowed it); any other name gets the
+        default, and the handshake fails on the client's side.
+        """
+        default = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        default.set_alpn_protocols(["http/1.1"])
+
+        def choose(sslobj: ssl.SSLObject, name: str | None, _context: ssl.SSLContext) -> None:
+            host = (name or "").lower().rstrip(".")
+            if host and any(known.get("host") == host for known in _RELAYED.values()):
+                try:
+                    sslobj.context = self.context(host)
+                except (ValueError, SystemExit, OSError) as err:
+                    print(f"burst-gateway: no certificate for {host}: {err}", file=sys.stderr, flush=True)
+
+        default.sni_callback = choose
+        return default
 
 
 async def pipe_response(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> tuple[int, int]:
@@ -588,9 +677,9 @@ async def handle_intercepted(reader: asyncio.StreamReader, writer: asyncio.Strea
     known = _RELAYED.get((writer.get_extra_info("peername") or ("", 0))[1])
     if known is None:  # only this gateway's own relays may speak here
         return writer.close()
-    host = str(known["host"])
+    host, port = str(known["host"]), int(str(known.get("port") or 443))
     request_id, started = next_id(), time.monotonic()
-    fields: dict[str, object] = dict(id=request_id, peer=known["peer"], host=host, port=443, via=known["via"],
+    fields: dict[str, object] = dict(id=request_id, peer=known["peer"], host=host, port=port, via=known["via"],
                                      connection=known["connection"])
     try:
         head = await read_head(reader)
@@ -602,10 +691,13 @@ async def handle_intercepted(reader: asyncio.StreamReader, writer: asyncio.Strea
         if named != host:
             emit("request", "deny", detail=f"Host header names {named or 'nothing'}", **fields)
             return await refuse(writer, "421 Misdirected Request")
-        rule = inject_for(host, target)
+        if not may_send(host, method, target):
+            fields.pop("id")
+            return await deny(writer, "request", "read-only", message=READONLY_MESSAGE.format(method=method), **fields)
+        rule = inject_for(host, target) if port == 443 else None
         try:
             up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection(host, 443, ssl=ssl.create_default_context(), server_hostname=host), 15
+                asyncio.open_connection(host, port, ssl=ssl.create_default_context(), server_hostname=host), 15
             )
         except (OSError, asyncio.TimeoutError) as err:
             emit("request", "fail", detail=str(err) or type(err).__name__, **fields)
@@ -709,6 +801,10 @@ async def handle_redirected(reader: asyncio.StreamReader, writer: asyncio.Stream
             return await deny(writer, kind, "no server name to identify the destination", host="-", **fields)
         if not permitted(host, port):
             return await deny(writer, kind, host=host, **fields)
+        if kind == "http" and not may_send(host, str(fields["method"]), str(fields["path"])):
+            return await deny(writer, kind, "read-only", host=host, **fields)
+        if kind == "tcp" and READONLY:
+            return await deny(writer, kind, "read-only: neither TLS nor HTTP", host=host, **fields)
         await relay(kind, reader, writer, to_upstream=opening, host=host, **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
@@ -800,12 +896,14 @@ async def watch(idle: int, lifetime: int) -> None:
 
 
 async def main() -> None:
-    global POLICY, APPROVALS, WEBHOOK, INJECT, SANDBOX, REDIRECT, INTERCEPT
+    global POLICY, APPROVALS, WEBHOOK, INJECT, SANDBOX, REDIRECT, INTERCEPT, READONLY, WRITES
     POLICY = Policy.from_env()
     SANDBOX = os.environ.get("EGRESS_SANDBOX", "")
     APPROVALS = Approvals(os.environ.get("EGRESS_APPROVALS", "/run/burst-gateway/approvals.json"))
     WEBHOOK = os.environ.get("EGRESS_WEBHOOK", "")
     INJECT = Inject.parse(os.environ.get("EGRESS_INJECT", ""))
+    READONLY = os.environ.get("EGRESS_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
+    WRITES = Write.parse(os.environ.get("EGRESS_WRITES", ""))
     listen = int(os.environ.get("EGRESS_LISTEN", "3128"))
     dns_port = int(os.environ.get("EGRESS_DNS", "53"))
     REDIRECT = int(os.environ.get("EGRESS_REDIRECT", "0"))
@@ -819,12 +917,18 @@ async def main() -> None:
     for port, (address, target_port) in parse_inbound(os.environ.get("EGRESS_INBOUND", "")).items():
         await asyncio.start_server(inbound_handler(address, target_port), "0.0.0.0", port)
         print(f"burst-gateway: inbound :{port} -> {address}:{target_port}", file=sys.stderr, flush=True)
-    if INJECT:
+    if INJECT or READONLY:
+        certificates = Certificates(Path(os.environ.get("EGRESS_CA_DIR", "/run/burst-gateway")))
         hosts = sorted({rule.host for rule in INJECT})
-        context = make_certificates(Path(os.environ.get("EGRESS_CA_DIR", "/run/burst-gateway")), hosts)
-        terminator = await asyncio.start_server(handle_intercepted, "127.0.0.1", 0, ssl=context)
+        for host in hosts:  # made now, so a bad host name fails at start-up
+            certificates.context(host)
+        terminator = await asyncio.start_server(handle_intercepted, "127.0.0.1", 0, ssl=certificates.server_context())
         INTERCEPT = terminator.sockets[0].getsockname()[1]
-        print(f"burst-gateway: adding credentials for {', '.join(hosts)}", file=sys.stderr, flush=True)
+        if hosts:
+            print(f"burst-gateway: adding credentials for {', '.join(hosts)}", file=sys.stderr, flush=True)
+        if READONLY:
+            writes = ", ".join(f"{w.method} {w.host}{w.path}" for w in WRITES) or "none"
+            print(f"burst-gateway: read-only; writes allowed: {writes}", file=sys.stderr, flush=True)
     server = await asyncio.start_server(handle, "0.0.0.0", listen)
     what = "everything (log only)" if POLICY.mode == "log" else \
         f"ports {sorted(POLICY.ports)}; allow {', '.join(h + (f':{p}' if p else '') for h, p in POLICY.allow) or '(nothing)'}"

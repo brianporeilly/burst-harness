@@ -186,12 +186,10 @@ def test_swap_only_touches_the_header_carrying_its_placeholder():
     assert gw.with_credentials([b"x-api-key: something-else\r\n"], rule) == ([b"x-api-key: something-else\r\n"], [])
 
 
-@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
-def test_certificates_chain_to_the_gateways_ca(tmp_path):
-    served = gw.make_certificates(tmp_path, ["github.com"])
-    client = ssl.create_default_context(cafile=str(tmp_path / "ca.crt"))
+def _handshake(served, host, cafile):
+    client = ssl.create_default_context(cafile=cafile)
     c_in, c_out, s_in, s_out = ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO()
-    c = client.wrap_bio(c_in, c_out, server_hostname="github.com")
+    c = client.wrap_bio(c_in, c_out, server_hostname=host)
     srv = served.wrap_bio(s_in, s_out, server_side=True)
     for _ in range(10):  # pump the handshake between the two ends
         for side in (c, srv):
@@ -201,9 +199,69 @@ def test_certificates_chain_to_the_gateways_ca(tmp_path):
                 pass
         s_in.write(c_out.read())
         c_in.write(s_out.read())
-    assert c.getpeercert()["subjectAltName"] == (("DNS", "github.com"),)
+    return c
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
+def test_certificates_chain_to_the_gateways_ca_and_are_made_on_demand(tmp_path, monkeypatch):
+    monkeypatch.setattr(gw, "_RELAYED", {1: {"host": "api.github.com"}})
+    certificates = gw.Certificates(tmp_path)
+    served = certificates.server_context()
+    c = _handshake(served, "api.github.com", str(tmp_path / "ca.crt"))
+    assert c.getpeercert()["subjectAltName"] == (("DNS", "api.github.com"),)
     assert c.selected_alpn_protocol() is None  # the client offered none; the server only speaks http/1.1
     assert (tmp_path / "ca.key").stat().st_mode & 0o077 == 0
+    assert set(certificates.contexts) == {"api.github.com"}
+    # A name no relay of ours is carrying gets no certificate, and no handshake.
+    with pytest.raises(ssl.SSLError):
+        _handshake(served, "elsewhere.com", str(tmp_path / "ca.crt")).getpeercert()
+    assert "elsewhere.com" not in certificates.contexts
+    with pytest.raises(ValueError):
+        certificates.context("bad/name")
+
+
+def test_read_only_lets_reads_and_listed_writes_through(monkeypatch):
+    monkeypatch.setattr(gw, "READONLY", True)
+    monkeypatch.setattr(gw, "WRITES", gw.Write.parse(json.dumps([
+        {"host": "api.anthropic.com", "method": "post", "path": "/v1/messages*"},
+        {"host": "*", "method": "POST", "path": "*/git-upload-pack"},
+    ])))
+    assert gw.may_send("api.github.com", "GET", "/repos/o/r/pulls")
+    assert gw.may_send("api.github.com", "head", "/")
+    assert not gw.may_send("api.github.com", "POST", "/repos/o/r/issues")
+    assert not gw.may_send("api.github.com", "PUT", "/repos/o/r/pulls/1/merge")
+    assert not gw.may_send("api.github.com", "DELETE", "/repos/o/r")
+    assert gw.may_send("api.anthropic.com", "POST", "/v1/messages?beta=true")
+    assert gw.may_send("api.anthropic.com", "POST", "/v1/messages/count_tokens")
+    assert not gw.may_send("api.anthropic.com", "POST", "/v1/files")
+    assert not gw.may_send("api.anthropic.com", "PUT", "/v1/messages")
+    assert gw.may_send("github.com", "POST", "/o/r.git/git-upload-pack")
+    assert not gw.may_send("github.com", "POST", "/o/r.git/git-receive-pack")
+    # A path that could be read differently upstream matches no exception.
+    assert not gw.may_send("api.anthropic.com", "POST", "/v1/messages/../files")
+    assert not gw.may_send("api.anthropic.com", "POST", "/v1/messages%2f..%2ffiles")
+    monkeypatch.setattr(gw, "READONLY", False)
+    assert gw.may_send("api.github.com", "DELETE", "/repos/o/r")
+
+
+def test_write_rules_need_a_host_and_a_method():
+    with pytest.raises(SystemExit, match="host and a method"):
+        gw.Write.parse('[{"host": "a.com"}]')
+    with pytest.raises(SystemExit, match="host and a method"):
+        gw.Write.parse('[{"method": "POST"}]')
+    assert gw.Write.parse("") == ()
+
+
+def test_read_only_intercepts_every_tls_host_on_any_port(monkeypatch):
+    monkeypatch.setattr(gw, "INTERCEPT", 1234)
+    monkeypatch.setattr(gw, "INJECT", gw.Inject.parse('[{"host": "github.com", "headers": {"A": "b"}}]'))
+    monkeypatch.setattr(gw, "READONLY", False)
+    assert gw.intercepts("github.com", 443) and not gw.intercepts("github.com", 8443)
+    assert not gw.intercepts("example.com", 443)
+    monkeypatch.setattr(gw, "READONLY", True)
+    assert gw.intercepts("example.com", 443) and gw.intercepts("kube.lan", 6443)
+    monkeypatch.setattr(gw, "INTERCEPT", 0)
+    assert not gw.intercepts("example.com", 443)
 
 
 def test_expired_on_idle_or_lifetime():

@@ -264,12 +264,19 @@ loses nothing, because nothing is waiting.
    or passed in; a failure notice when there is no report. Example:
    `examples/jobs/repo-digest` (the Renovate part only). Verified on podman
    with a stand-in llama.cpp server; not yet run with a real model.
-2. `harness job render <dir> --to systemd|cronjob`. Both outputs schedule the
-   same driver command, so the renderer stays small. The CronJob runs the
-   driver image, as home-ops #1083 does, and it starts the sandbox through
+2. Scheduling. Deferred (2026-10-20): not systemd. Most likely a cron in the
+   orchestrator, launchd on macOS, or CronJobs in the cluster. A CronJob runs
+   the driver image, as home-ops #1083 does, and starts the sandbox through
    agent-sandbox. Until phase 6's gateway exists, a cluster job's credentials
    are passed into the sandbox, so only read-only tokens are acceptable there.
-3. State volumes, report mode enforced at the gateway, and the run log.
+   A real Slack bot (not just a webhook) also waits; it belongs with the
+   control plane's triggers.
+3. Report mode enforced at the gateway: done (2026-10-20). The gateway
+   terminates all of a report job's TLS and refuses every request that writes
+   (403 `read_only`), except git's fetch, the model endpoint for engines that
+   call it from the sandbox, and a job's own `writes`. State volumes and the
+   run log are still to come; the run log goes with the orchestrator's jobs
+   view (below).
 4. Gmail: report-only triage and an action-needed digest first. Then cleanup
    as a dry run with approvals, then with actions enabled. Every action gets a
    label (`bot/archived`, `bot/trashed`), and nothing is ever sent or drafted.

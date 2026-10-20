@@ -376,3 +376,37 @@ def test_opencode_needs_a_model_it_can_use(tmp_path, capsys):
     spec = job.load(_write_job(tmp_path, 'engine = "opencode"\nprovider = "bedrock"\n[job]\noutput = ["stdout"]\n'))
     assert job.run(spec, job.config(spec), acquire=_local(tmp_path)) == 1
     assert "engine=opencode needs" in capsys.readouterr().out
+
+
+def test_report_mode_is_read_only_at_the_gateway_with_what_the_run_needs(tmp_path):
+    from harness import job
+    from harness.config import HarnessConfig
+
+    directory = tmp_path / "digest"
+    directory.mkdir()
+    (directory / "prompt.md").write_text("do it")
+    (directory / "job.toml").write_text(
+        '[job]\nwrites = [{host = "api.github.com", method = "post", path = "/graphql"}]\n')
+    spec = job.load(directory)
+    assert spec.writes == ({"host": "api.github.com", "method": "POST", "path": "/graphql"},)
+    strands = job.write_rules(spec, HarnessConfig(engine="strands"))
+    assert strands == (*job.RUN_WRITES, *spec.writes)  # the model is called from the driver
+    claude = job.write_rules(spec, HarnessConfig(engine="claude-code"))
+    assert job.ANTHROPIC_WRITES[0] in claude
+    opencode = job.write_rules(spec, HarnessConfig(engine="opencode", provider="llamacpp",
+                                                   base_url="http://llm.lan:8080", model_id="m"))
+    assert {"host": "llm.lan", "method": "POST", "path": "*"} in opencode
+    assert "the gateway refuses writes" in job.describe(spec, HarnessConfig(engine="strands"))
+
+
+def test_writes_entries_are_checked(tmp_path):
+    from harness import job
+
+    directory = tmp_path / "digest"
+    directory.mkdir()
+    (directory / "prompt.md").write_text("do it")
+    for bad in ('writes = [{host = "a.com"}]', 'writes = [{host = "a.com", method = "PO ST"}]',
+                'writes = "a.com"', 'writes = [{host = "a.com", method = "POST", body = "x"}]'):
+        (directory / "job.toml").write_text(f"[job]\n{bad}\n")
+        with pytest.raises(job.JobError, match="writes"):
+            job.load(directory)
