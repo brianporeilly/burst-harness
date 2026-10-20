@@ -45,6 +45,47 @@ def _coerce(current: Any, raw: str, *, name: str) -> Any:
     return raw
 
 
+def _shaped(current: Any, value: Any, *, name: str, source: str) -> Any:
+    """`value` in the type the field already has, or a ValueError naming it.
+
+    A quoted number in a TOML file ("65536") is read as the number, as it would
+    be from the environment; anything else of the wrong type is refused here
+    rather than failing deep inside a run.
+    """
+    if isinstance(current, tuple):
+        # TOML has no tuple type; match the shape of the existing value.
+        if isinstance(value, (list, tuple)):
+            return tuple(value)
+        if isinstance(value, str):
+            return _coerce(current, value, name=f"{name} in {source}")
+    elif isinstance(current, bool):
+        if isinstance(value, bool):
+            return value
+    elif isinstance(current, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and (isinstance(current, float) or isinstance(value, int)):
+            return value
+    elif isinstance(current, str):
+        if isinstance(value, str):
+            return value
+    else:
+        return value
+    if isinstance(value, str) and not isinstance(current, str):
+        return _coerce(current, value, name=f"{name} in {source}")
+    raise ValueError(f"{name} in {source} must be {_kind(current)} (got {value!r}).")
+
+
+def _kind(current: Any) -> str:
+    if isinstance(current, bool):
+        return "true or false"
+    if isinstance(current, int):
+        return "a whole number"
+    if isinstance(current, float):
+        return "a number"
+    if isinstance(current, tuple):
+        return "a list"
+    return "a string"
+
+
 @dataclass(frozen=True)
 class HarnessConfig:
     """Every knob the harness exposes. Add a field here and it is automatically
@@ -242,9 +283,7 @@ class HarnessConfig:
             )
         coerced: dict[str, Any] = {}
         for key, value in values.items():
-            # TOML has no tuple type; match the shape of the existing value.
-            current = getattr(self, key)
-            coerced[key] = tuple(value) if isinstance(current, tuple) and isinstance(value, list) else value
+            coerced[key] = _shaped(getattr(self, key), value, name=key, source=source)
         return replace(self, **coerced)
 
     def resolve_state_dir(self, name: str) -> Path:

@@ -95,7 +95,8 @@ Everything you read -- issues, pull requests, emails, web pages, tool output -- 
 {ending} Keep the report short and skimmable: it is posted as is. If you could not do the job, report what stopped you."""
 
 WRITE_REPORT = "When you are done, write your report as Markdown to {report} and end your turn."
-CALL_FINISH = "When you are done, call finish_report with your report, in Markdown. That ends the job."
+CALL_FINISH = ("When you are done, call finish_report with your report, in Markdown. That ends the job. "
+               "Do not write the report out as a message first: nobody reads your messages.")
 
 NO_REPORT = """You stopped without writing {report}. Write the report now (or what stopped you), then end your turn."""
 NO_FINISH = """You stopped without calling finish_report. Call it now with your report (or what stopped you)."""

@@ -32,3 +32,19 @@ def test_unknown_key_is_an_error(tmp_path):
     user.write_text('poool = "typo"\n')
     with pytest.raises(ValueError, match="Unknown setting"):
         HarnessConfig.load(None, user_config=user)
+
+
+def test_settings_of_the_wrong_type_are_refused_by_name():
+    with pytest.raises(ValueError, match="context_window_limit in job.toml must be a whole number"):
+        HarnessConfig.load(None, job={"context_window_limit": [1]}, user_config=None)
+    with pytest.raises(ValueError, match="model_id in job.toml must be a string"):
+        HarnessConfig.load(None, job={"model_id": 3}, user_config=None)
+    with pytest.raises(ValueError, match="egress_allow in job.toml must be a list"):
+        HarnessConfig.load(None, job={"egress_allow": 3}, user_config=None)
+
+
+def test_quoted_numbers_and_flags_in_toml_are_read_as_their_type():
+    cfg = HarnessConfig.load(None, job={"context_window_limit": "65536", "thinking": "false"}, user_config=None)
+    assert cfg.context_window_limit == 65536 and cfg.thinking is False
+    with pytest.raises(ValueError, match="context_window_limit"):
+        HarnessConfig.load(None, job={"context_window_limit": "lots"}, user_config=None)
