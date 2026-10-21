@@ -174,6 +174,12 @@ class HarnessConfig:
     # Hard deadline on a claim: the controller deletes it after this even if the
     # driver died mid-burst. Longer than any burst, shorter than forgotten.
     claim_ttl: int = 4 * 3600
+    # The cluster's shared egress gateway: the URL of its control API, which
+    # every claimed sandbox is registered with (harness/gateway_control.py).
+    # Its token comes from HARNESS_GATEWAY_TOKEN, or this file. Unset: claimed
+    # sandboxes have no gateway, and egress settings do not apply to them.
+    gateway_control: str = ""
+    gateway_token_file: str = ""
     # Keep the claim or started container after a terminal state (to inspect it).
     keep_claim: bool = False
 

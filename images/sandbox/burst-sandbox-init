@@ -18,7 +18,26 @@
 #   4. $CLAUDE_JSON, $CLAUDE_SETTINGS_JSON  inline JSON from the environment
 #   5. --claude-json FILE, --settings FILE  what the harness uploads
 # Every layer is optional; each one present must be a JSON object.
+#
+# A gateway CA mounted into the pod ($BURST_GATEWAY_CA, a file) is trusted too:
+# a cluster's shared gateway terminates TLS for the hosts it adds credentials
+# at, or for every host when the sandbox is held to reads. The system's CAs
+# and it are written to $BURST_CA_BUNDLE (default /tmp/burst-harness/
+# ca-bundle.crt), where the pod's SSL_CERT_FILE and friends point -- the same
+# job burst-sandbox-trust does under podman, without needing root.
 set -eu
+
+if [ -n "${BURST_GATEWAY_CA:-}" ]; then
+  if grep -q "BEGIN CERTIFICATE" "$BURST_GATEWAY_CA" 2>/dev/null; then
+    bundle=${BURST_CA_BUNDLE:-/tmp/burst-harness/ca-bundle.crt}
+    mkdir -p "$(dirname "$bundle")"
+    cat /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem "$BURST_GATEWAY_CA" > "$bundle.new"
+    chmod 644 "$bundle.new"
+    mv "$bundle.new" "$bundle"
+  else
+    echo "burst-sandbox-init: BURST_GATEWAY_CA=$BURST_GATEWAY_CA is not a PEM certificate; not trusted." >&2
+  fi
+fi
 
 defaults=/etc/burst-harness/claude
 user_dir=${BURST_CLAUDE_CONFIG_DIR:-/config/claude}

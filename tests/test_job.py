@@ -125,6 +125,9 @@ def test_job_settings_sit_between_user_config_and_env(tmp_path, monkeypatch):
     ('engine = "aider"', "one of strands"),
     ('egress_inject = ["model"]', "drop"),
     ('target = "local"', "fresh podman or docker"),
+    ('target = "agent-sandbox"', "needs pool"),
+    ('target = "agent-sandbox"\npool = "p"', "gateway_control"),
+    ('claim_name = "c"', "not for jobs"),
     ('egress = "open"', "gateway"),
     ('repo_url = "https://github.com/a/b"', "without a repo"),
     ("nonsense = 1", "Unknown setting"),
@@ -481,3 +484,45 @@ def test_egress_summary_counts_requests_per_host_and_lists_refusals(tmp_path):
     assert summary["requests"] == {"api.github.com": 2, "pypi.org": 1}
     assert summary["refused_count"] == 2 and summary["refused"][0]["detail"] == "read-only"
     assert job.egress_summary("")["requests"] == {}
+
+
+def test_a_job_on_agent_sandbox_cannot_pass_secrets_into_the_sandbox(tmp_path, monkeypatch):
+    toml = 'target = "agent-sandbox"\npool = "p"\ngateway_control = "http://gw:8081"\n' + BASIC + """
+[job.secrets.gh]
+env = "GH_TOKEN"
+sandbox_env = "GH_TOKEN"
+"""
+    spec = job.load(_write_job(tmp_path, toml))
+    with pytest.raises(job.JobError, match="cannot pass secrets into the sandbox"):
+        job.config(spec)
+
+
+def test_a_job_on_agent_sandbox_claims_through_the_gateway(tmp_path, monkeypatch):
+    toml = 'target = "agent-sandbox"\npool = "p"\ngateway_control = "http://gw:8081"\n' + BASIC.replace(
+        "[job]", '[job]\nmode = "report"') + """
+[job.secrets.kube]
+env = "KUBE_TOKEN"
+host = "10.0.0.5:6443"
+"""
+    spec = job.load(_write_job(tmp_path, toml))
+    cfg = job.config(spec)
+    assert "pool=p" in job.describe(spec, cfg)
+    seen = {}
+    monkeypatch.setattr(job.agent_sandbox, "acquire", lambda cfg, **kwargs: seen.update(kwargs) or "target")
+    monkeypatch.setenv("KUBE_TOKEN", "t")
+    assert job._acquire(cfg, spec) == "target"
+    assert seen["repo"] == job.WORKDIR and seen["slug"] == "job-digest"
+    assert seen["inject"][0]["host"] == "10.0.0.5" and seen["read_only"][0]["path"] == "*/git-upload-pack"
+
+
+def test_scripts_mounted_from_a_configmap_are_copied_as_files(tmp_path):
+    """A ConfigMap volume is symlinks into ..data/: the files behind them are what is copied."""
+    mounted = tmp_path / "job"
+    (mounted / "..data" / "scripts").mkdir(parents=True)
+    (mounted / "..data" / "scripts" / "fetch.py").write_text("print('hi')\n")
+    (mounted / "scripts").symlink_to("..data/scripts")
+    work = tmp_path / "work"
+    work.mkdir()
+    job._copy_scripts(LocalTarget(repo=str(work)), mounted / "scripts")
+    copied = work / "scripts" / "fetch.py"
+    assert copied.read_text() == "print('hi')\n" and not copied.is_symlink()

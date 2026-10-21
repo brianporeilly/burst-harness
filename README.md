@@ -315,6 +315,22 @@ it, plus Python, Node, and a C toolchain for tasks. No credentials, no `gh`.
 `--egress-inject` additionally needs `burst-sandbox-trust` (see that script for
 what an image of your own has to provide).
 
+**Through the cluster's gateway.** With `gateway_control` set (the URL of a
+shared gateway's control API, `EGRESS_CONTROL`; its token in
+`HARNESS_GATEWAY_TOKEN` or `gateway_token_file`), each claimed sandbox is
+registered with the gateway before anything runs in it: the pod's IP, with what
+a podman gateway would be given -- the allowlist (`--egress allowlist`; `open`
+and `log` are both recorded), `--egress-inject` credentials, read-only for a
+report job, upstream CAs -- and a ttl ending at the claim's deadline. Release
+unregisters it and saves its events to `$HARNESS_STATE_DIR/egress/<claim>.jsonl`.
+The gateway refuses any address not registered, so Calico must let sandbox pods
+reach only its proxy port (and no DNS). The pod template sets `HTTPS_PROXY` and
+`HTTP_PROXY` to the gateway, mounts its CA and points `BURST_GATEWAY_CA` at it,
+and points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE` and
+`GIT_SSL_CAINFO` at `/tmp/burst-harness/ca-bundle.crt` (`NODE_EXTRA_CA_CERTS` at
+the CA itself), which `burst-sandbox-init` writes at start-up from the system's
+CAs and that one. Nothing per claim, so the warm pool still serves claims.
+
 ## Sessions
 
 A task runs and ends; a session stays. `harness session` starts a sandbox behind
@@ -442,7 +458,11 @@ GITHUB_TOKEN=... ANTHROPIC_API_KEY=... harness job run examples/jobs/repo-digest
 ```
 
 A run is a fresh podman (or docker) container behind a gateway, with no repo,
-and an agent working in `/workspace` from the prompt. `engine` picks it:
+and an agent working in `/workspace` from the prompt. In a cluster it is a
+claimed agent-sandbox instead (`target = "agent-sandbox"`, `pool`, and
+`gateway_control`; see above), with the same gateway settings registered for
+it. A claim from a warm pool cannot be given environment variables, so there
+every secret needs a `host` for the gateway to add it at. `engine` picks it:
 
 - `strands` (the default): the harness's own loop on the driver, its shell and
   file tools running in the sandbox, ending when the model calls

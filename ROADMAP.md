@@ -188,9 +188,14 @@ Steps:
    (cert-manager's), so sandboxes can trust it from their template and a
    restart breaks nothing but registrations, which drivers make again.
    Single-sandbox gateways on podman are unchanged.
-2. The driver: after `agent_sandbox.acquire`, register the pod's IP, and
-   unregister on release; `harness job run --target agent-sandbox`; the run
-   log's egress summary from the control API.
+2. The driver: done (2026-10-21). With `gateway_control` set, a claimed
+   sandbox's pod IP is registered with the settings a podman gateway would
+   get (and a ttl ending at the claim's deadline), before anything runs in
+   it; release unregisters it and saves its events where the run log reads
+   them. Jobs run with `target = "agent-sandbox"` (`HARNESS_TARGET` turns a
+   podman job into a cluster one), but cannot pass secrets into the sandbox:
+   a warm-pool claim takes no environment. The sandbox image trusts a CA
+   mounted into the pod (`BURST_GATEWAY_CA`), building its bundle at start.
 3. home-ops: the gateway (Deployment, Service, CA Certificate, control token)
    in `agent-sandbox-system`; Calico letting sandbox pods reach only the
    gateway's proxy port (no DNS), the gateway reach the internet and the hosts

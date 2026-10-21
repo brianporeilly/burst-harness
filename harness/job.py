@@ -83,7 +83,7 @@ from urllib.parse import urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import containers
+from . import agent_sandbox, containers
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -338,10 +338,19 @@ def config(spec: JobSpec, overrides: dict[str, Any] | None = None) -> HarnessCon
     if cfg.engine == "strands" and "model" in cfg.egress_inject:
         raise JobError("engine=strands calls the model from the driver, so its key never enters the sandbox: "
                        "drop \"model\" from egress_inject.")
-    if cfg.target not in ("podman", "docker"):
-        raise JobError(f"Jobs run in a fresh podman or docker container for now (target is {cfg.target!r}).")
-    if cfg.docker_container:
-        raise JobError("A job runs in a fresh container; docker_container is not for jobs.")
+    if cfg.target not in ("podman", "docker", "agent-sandbox"):
+        raise JobError(f"Jobs run in a fresh podman or docker container, or a claimed agent-sandbox "
+                       f"(target is {cfg.target!r}).")
+    if cfg.docker_container or cfg.claim_name:
+        raise JobError("A job runs in a fresh sandbox; docker_container and claim_name are not for jobs.")
+    if cfg.target == "agent-sandbox":
+        if not cfg.pool or not cfg.gateway_control:
+            raise JobError("A job on agent-sandbox needs pool (the warm pool to claim from) and gateway_control "
+                           "(the cluster's gateway, which records it and holds report mode).")
+        if passed := [s.name for s in spec.secrets if s.sandbox_env]:
+            # A claim from a warm pool cannot be given environment variables.
+            raise JobError(f"A job on agent-sandbox cannot pass secrets into the sandbox ({', '.join(passed)}); "
+                           "give each a host, for the gateway to add it there.")
     if cfg.egress not in ("log", "allowlist"):
         raise JobError("A job's network goes through a gateway, so it is recorded: egress = \"log\" or \"allowlist\".")
     if cfg.repo_url:
@@ -370,7 +379,9 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
             + ", ".join(f"{w['method']} {w['host']}{w['path']}" for w in writes) + ")"
             if (writes := write_rules(spec, cfg)) is not None else ""),
         f"  output   {', '.join(spec.outputs)}",
-        f"  runs     engine={cfg.engine} target={cfg.target} image={cfg.image}",
+        f"  runs     engine={cfg.engine} target={cfg.target} "
+        + (f"pool={cfg.pool} namespace={cfg.namespace or '(current)'}" if cfg.target == "agent-sandbox"
+           else f"image={cfg.image}"),
         f"  model    {cfg.provider} {cfg.model_id}" + (f" at {cfg.base_url}" if cfg.base_url else "")
         + (" (called from the driver)" if cfg.engine == "strands" else " (called from the sandbox)"),
         f"  egress   {cfg.egress}" + (f": {', '.join(containers.allowlist(cfg, _hosts(spec)))}" if cfg.egress == "allowlist" else ""),
@@ -550,7 +561,8 @@ ENGINE_RUNS = {"strands": _strands, "claude-code": _claude_code, "opencode": _op
 def _copy_scripts(target: SubprocessTarget, source: Path) -> None:
     """Copy the job's scripts into the sandbox, as the sandbox's own user, through stdin."""
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w") as tar:
+    # Links followed: a job mounted from a ConfigMap is all symlinks into ..data/.
+    with tarfile.open(fileobj=buffer, mode="w", dereference=True) as tar:
         tar.add(source, arcname=".")
     dest = shlex.quote(f"{target.repo}/{SCRIPTS_DIR}")
     target.run_shell(f"mkdir -p {dest} && base64 -d | tar -xf - -C {dest}",
@@ -558,6 +570,13 @@ def _copy_scripts(target: SubprocessTarget, source: Path) -> None:
 
 
 def _acquire(cfg: HarnessConfig, spec: JobSpec) -> SubprocessTarget:
+    if cfg.target == "agent-sandbox":
+        return agent_sandbox.acquire(
+            cfg, repo=WORKDIR, slug=f"job-{spec.name}", branch="",
+            allow=_hosts(spec), inject=tuple(s.rule() for s in spec.secrets if s.host),
+            read_only=write_rules(spec, cfg),
+            upstream_ca=tuple(ca for s in spec.secrets if (ca := s.upstream_ca())),
+        )
     return containers.acquire(
         cfg, binary=cfg.target, repo=WORKDIR, slug=f"job-{spec.name}",
         allow=_hosts(spec), inject=tuple(s.rule() for s in spec.secrets if s.host),

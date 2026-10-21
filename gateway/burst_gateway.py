@@ -567,9 +567,10 @@ def lapse(name: str, now: float) -> None:
 async def intercept_port(host: str) -> int:
     """The loopback port where TLS for `host` is terminated, started if need be."""
     async with _LISTENER_LOCK:
+        assert CERTIFICATES is not None
+        context = CERTIFICATES.context(host)  # renews a certificate that is due, in place
         if host not in _LISTENERS:
-            assert CERTIFICATES is not None
-            server = await asyncio.start_server(handle_intercepted, "127.0.0.1", 0, ssl=CERTIFICATES.context(host))
+            server = await asyncio.start_server(handle_intercepted, "127.0.0.1", 0, ssl=context)
             _LISTENERS[host] = server.sockets[0].getsockname()[1]
         return _LISTENERS[host]
 
@@ -845,6 +846,7 @@ class Certificates:
         directory.mkdir(parents=True, exist_ok=True)
         self.directory = directory
         self.contexts: dict[str, ssl.SSLContext] = {}
+        self.made: dict[str, float] = {}
         if ca is not None:
             self.ca_crt, self.ca_key = ca
             return
@@ -856,6 +858,9 @@ class Certificates:
         self.ca_key.chmod(0o600)
 
     KEY_ARGS = ("-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes")
+    # A host's certificate is signed for 30 days and made again after 20: a
+    # shared gateway runs for longer than that.
+    RENEW_AFTER = 20 * 86400
 
     @staticmethod
     def _openssl(*args: str, stdin: bytes | None = None) -> bytes:
@@ -865,7 +870,10 @@ class Certificates:
         return proc.stdout
 
     def context(self, host: str) -> ssl.SSLContext:
-        if (found := self.contexts.get(host)) is not None:
+        """The server context for `host`. Once its certificate is due, the same
+        context takes a new one, so a listener already serving it need not change."""
+        found = self.contexts.get(host)
+        if found is not None and time.time() - self.made[host] < self.RENEW_AFTER:
             return found
         if not host or len(host) > 253 or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-." for c in host):
             raise ValueError(f"not a host name: {host!r}")
@@ -878,11 +886,11 @@ class Certificates:
         request = self._openssl("req", "-new", *self.KEY_ARGS, "-keyout", str(key), "-subj", f"/CN={host}")
         self._openssl("x509", "-req", "-CA", str(self.ca_crt), "-CAkey", str(self.ca_key), "-days", "30",
                       "-extfile", str(ext), "-out", str(crt), stdin=request)
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context = found or ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(crt), str(key))
         # One request per connection, parsed as HTTP/1.1: do not offer h2.
         context.set_alpn_protocols(["http/1.1"])
-        self.contexts[host] = context
+        self.contexts[host], self.made[host] = context, time.time()
         return context
 
 

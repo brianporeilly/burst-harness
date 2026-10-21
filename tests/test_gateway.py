@@ -344,3 +344,17 @@ def test_webhook_is_told_of_a_destination_once_in_a_while(monkeypatch):
     assert gw.should_notify({**event, "host": "other.com"}, 1100)
     assert gw.should_notify(event, 1000 + gw.NOTIFY_EVERY)
     assert not gw.should_notify({"verdict": "allow", "id": "a-2", "host": "x.com"}, 5000)
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
+def test_a_certificate_that_is_due_is_renewed_in_the_same_context(tmp_path, monkeypatch):
+    certificates = gw.Certificates(tmp_path)
+    context = certificates.context("api.github.com")
+    first = (tmp_path / "api.github.com.crt").read_text()
+    assert certificates.context("api.github.com") is context and (tmp_path / "api.github.com.crt").read_text() == first
+    clock = gw.time.time() + certificates.RENEW_AFTER + 1
+    monkeypatch.setattr(gw.time, "time", lambda: clock)
+    assert certificates.context("api.github.com") is context  # a listener holding it serves the new one
+    assert (tmp_path / "api.github.com.crt").read_text() != first
+    c = _handshake(context, "api.github.com", str(tmp_path / "ca.crt"))
+    assert c.getpeercert()["subjectAltName"] == (("DNS", "api.github.com"),)

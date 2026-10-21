@@ -2,25 +2,23 @@
 # (no secrets, no configmaps, no exec). Apply it (or put it in your GitOps
 # repo), then use its token as KUBE_TOKEN:
 #
-#   kubectl -n burst-jobs get secret cluster-watcher-token -o jsonpath='{.data.token}' | base64 -d
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: burst-jobs
+#   kubectl -n agent-runner get secret cluster-watcher-token -o jsonpath='{.data.token}' | base64 -d
+#
+# agent-runner is where the harness's driver runs in a cluster; any namespace
+# will do.
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: cluster-watcher
-  namespace: burst-jobs
+  namespace: agent-runner
 ---
 # A long-lived token, revoked by deleting this Secret.
 apiVersion: v1
 kind: Secret
 metadata:
   name: cluster-watcher-token
-  namespace: burst-jobs
+  namespace: agent-runner
   annotations:
     kubernetes.io/service-account.name: cluster-watcher
 type: kubernetes.io/service-account-token
@@ -60,4 +58,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: cluster-watcher
-    namespace: burst-jobs
+    namespace: agent-runner

@@ -26,12 +26,13 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import HarnessConfig
 from .exec_target import KubectlTarget
+from .gateway_control import Gateway, GatewayError, registration, save_events
 from .git import redact_url
 
 API_VERSION = "extensions.agents.x-k8s.io/v1beta1"
@@ -110,6 +111,23 @@ def wait_ready(cfg: HarnessConfig, claim: str, *, timeout: int = 300) -> str:
     return pod
 
 
+def pod_address(cfg: HarnessConfig, pod: str) -> str:
+    """The pod's IP, which is how the gateway knows it."""
+    address = _kubectl(cfg, "get", "pod", pod, "-o", "jsonpath={.status.podIP}")
+    if not address:
+        raise AgentSandboxError(f"Pod {pod} has no IP address yet.")
+    return address
+
+
+def seconds_left(cfg: HarnessConfig, claim: str, now: datetime | None = None) -> int:
+    """How long until the claim's deadline (its lifecycle.shutdownTime), at least a minute."""
+    raw = _kubectl(cfg, "get", "sandboxclaim", claim, "-o", "jsonpath={.spec.lifecycle.shutdownTime}")
+    if not raw:
+        return cfg.claim_ttl
+    deadline = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return max(60, int((deadline - (now or datetime.now(timezone.utc))).total_seconds()))
+
+
 def delete_claim(cfg: HarnessConfig, claim: str) -> None:
     _kubectl(cfg, "delete", "sandboxclaim", claim, "--wait=false", "--ignore-not-found")
 
@@ -135,25 +153,53 @@ class AgentSandboxTarget(KubectlTarget):
     claim: str = ""
     # True when this run created the claim, and so may delete it.
     owned: bool = False
+    # The shared gateway it is registered with, and where its events are saved on release.
+    gateway: Gateway | None = None
+    events: str = ""
 
     def describe(self) -> str:
-        return f"agent-sandbox {self.claim} (pod {self.pod}) at {self.repo}"
+        egress = f" (egress via {self.gateway.url})" if self.gateway else ""
+        return f"agent-sandbox {self.claim} (pod {self.pod}) at {self.repo}{egress}"
 
     def release(self) -> str:
         if not self.owned:
             return ""
+        saved = ""
+        if self.gateway is not None:
+            try:
+                events = self.gateway.unregister(self.claim)
+                saved = save_events(self.events, events) if self.events else ""
+            except GatewayError as err:
+                # Its registration lapses with the claim's deadline in any case.
+                saved = f" Could not unregister it from the gateway ({err}); it lapses at the claim's deadline."
         subprocess.run(
             [*self.kubectl_base(), "delete", "sandboxclaim", self.claim, "--wait=false", "--ignore-not-found"],
             capture_output=True,
         )
-        return f"Released {self.claim}."
+        return f"Released {self.claim}.{saved}"
 
     def attach_hint(self) -> str:
         return f"--target agent-sandbox --claim {self.claim}"
 
 
-def acquire(cfg: HarnessConfig, *, repo: str, slug: str, branch: str) -> AgentSandboxTarget:
-    """Attach to `cfg.claim_name`, or claim a fresh sandbox from `cfg.pool`."""
+def acquire(
+    cfg: HarnessConfig, *, repo: str, slug: str, branch: str,
+    allow: tuple[str, ...] = (), inject: tuple[dict[str, object], ...] = (),
+    read_only: tuple[dict[str, object], ...] | None = None, upstream_ca: tuple[dict[str, str], ...] = (),
+) -> AgentSandboxTarget:
+    """Attach to `cfg.claim_name`, or claim a fresh sandbox from `cfg.pool`.
+
+    With a shared gateway (`gateway_control`), the sandbox is registered with
+    it before anything runs there: `allow`, `inject`, `read_only` and
+    `upstream_ca` are as for a podman gateway (containers.start_egress).
+    """
+    gateway = Gateway.from_config(cfg)
+    if gateway is None and (cfg.egress_inject or inject or read_only is not None or upstream_ca):
+        raise AgentSandboxError("Adding credentials, or holding a sandbox to reads, needs the cluster's gateway: "
+                                "set gateway_control.")
+    # Worked out before claiming, so a setting that cannot be used claims nothing.
+    body, summary = registration(cfg, address="", ttl=0, allow=allow, inject=inject, read_only=read_only,
+                                 upstream_ca=upstream_ca) if gateway is not None else ({}, "")
     owned = not cfg.claim_name
     if owned:
         if not cfg.pool:
@@ -162,6 +208,7 @@ def acquire(cfg: HarnessConfig, *, repo: str, slug: str, branch: str) -> AgentSa
         print(f"Claimed {claim} from pool {cfg.pool} (deleted by {cfg.claim_ttl}s from now at the latest).")
     else:
         claim = cfg.claim_name
+    target: AgentSandboxTarget | None = None
     try:
         pod = wait_ready(cfg, claim)
         target = AgentSandboxTarget(
@@ -174,6 +221,15 @@ def acquire(cfg: HarnessConfig, *, repo: str, slug: str, branch: str) -> AgentSa
             claim=claim,
             owned=owned,
         )
+        if gateway is not None:
+            from .containers import events_path  # containers imports this module
+
+            # An attached claim is registered again too: the gateway may have
+            # restarted since, and forgotten it. Its registration ends with the claim.
+            body.update(address=pod_address(cfg, pod), ttl=cfg.claim_ttl if owned else seconds_left(cfg, claim))
+            gateway.register(claim, body)
+            target = replace(target, gateway=gateway, events=events_path(cfg, claim))
+            print(f"Egress via {gateway.url} ({summary}).")
         if missing := target.missing_commands(REQUIRED_COMMANDS):
             raise AgentSandboxError(
                 f"Sandbox image is missing required commands: {', '.join(missing)}. "
@@ -181,6 +237,7 @@ def acquire(cfg: HarnessConfig, *, repo: str, slug: str, branch: str) -> AgentSa
             )
     except Exception:
         if owned:
-            delete_claim(cfg, claim)
+            # Unregisters it as well, once it is registered.
+            target.release() if target is not None else delete_claim(cfg, claim)
         raise
     return target
