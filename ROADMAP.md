@@ -177,10 +177,32 @@ agent-sandbox stays the substrate. Open: whether a claimed sandbox's volume can
 outlive a stop, which sessions need. home-ops #1083 (in-cluster task runs,
 without a gateway) comes first.
 
-- Gateway alongside each claimed sandbox; default-deny egress NetworkPolicy
-  allowing only it (home-ops).
-- HTTPRoute per session.
-- Verify user-namespace pods before allowing root there.
+Steps:
+
+1. The gateway's shared mode: done (2026-10-21). With `EGRESS_CONTROL` set,
+   one gateway serves many sandboxes, known by source address. A driver
+   registers each claimed sandbox (allowlist, credentials, read-only and its
+   exceptions, upstream CAs, approvals, a ttl) over a token-protected control
+   API, reads its events back, and unregisters it. An unregistered or lapsed
+   address is refused everything. TLS is terminated with a CA from files
+   (cert-manager's), so sandboxes can trust it from their template and a
+   restart breaks nothing but registrations, which drivers make again.
+   Single-sandbox gateways on podman are unchanged.
+2. The driver: after `agent_sandbox.acquire`, register the pod's IP, and
+   unregister on release; `harness job run --target agent-sandbox`; the run
+   log's egress summary from the control API.
+3. home-ops: the gateway (Deployment, Service, CA Certificate, control token)
+   in `agent-sandbox-system`; Calico letting sandbox pods reach only the
+   gateway's proxy port (no DNS), the gateway reach the internet and the hosts
+   jobs name, and only the driver reach its control port; the proxy and CA in
+   the SandboxTemplate; a cluster-watcher CronJob.
+4. HTTPRoute per session. Verify user-namespace pods before allowing root
+   there.
+
+Open: the control API is plain HTTP inside the cluster, and a registration
+carries credentials, so it relies on Calico keeping everyone but the driver
+off that port. TLS for it (the gateway already has a CA) if the pod network
+is not trusted.
 
 ### 7. Control plane (orchestrator)
 

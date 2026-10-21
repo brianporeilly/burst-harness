@@ -633,7 +633,7 @@ Three images, all published to GHCR by `.github/workflows/images.yml`:
 |---|---|---|
 | `burst-harness` | `Dockerfile` | The driver: harness, `git`, `gh`, `kubectl`. |
 | `burst-harness-sandbox` | `images/sandbox/Containerfile` | What a SandboxTemplate runs. |
-| `burst-harness-gateway` | `gateway/Containerfile` | The egress gateway sidecar. Standalone: nothing from the harness. |
+| `burst-harness-gateway` | `gateway/Containerfile` | The egress gateway: a sidecar per sandbox on podman, or one shared by a namespace's sandboxes in a cluster (`EGRESS_CONTROL`; see the top of `gateway/burst_gateway.py`). Standalone: nothing from the harness. |
 
 Locally with podman, the simplest mode makes the container itself the sandbox
 (target `local` inside it; your key is in the container, which is fine on your own

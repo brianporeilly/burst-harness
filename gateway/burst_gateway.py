@@ -123,11 +123,43 @@ passed in to the sandbox. A `request` is one HTTP
 request inside a terminated TLS connection, with `method`, `path`, `status`,
 and `injected` (the names of the headers added, never their values); the
 connection carrying it has `intercepted: true`.
+
+Shared (EGRESS_CONTROL set). One gateway for every sandbox in a namespace, as
+in a cluster, where each sandbox is a pod and Calico lets sandbox pods reach
+nothing but this gateway. A sandbox is known by the address its connections
+come from. Nothing about any sandbox comes from the environment: the policy
+settings above (EGRESS_ALLOW through EGRESS_UPSTREAM_CA) are ignored, and a
+driver registers each sandbox once it has claimed it, over a control API on
+port EGRESS_CONTROL that wants `Authorization: Bearer` EGRESS_CONTROL_TOKEN
+(or the contents of EGRESS_CONTROL_TOKEN_FILE):
+
+    PUT    /sandboxes/NAME   {"address": "10.42.1.7", "ttl": 3600,
+                              "allow": ["github.com", "llm.lan:8080"], "ports": [443],
+                              "mode": "allowlist", "inject": [...], "readonly": true,
+                              "writes": [...], "upstream_ca": [...], "approvals": [...]}
+    GET    /sandboxes/NAME/events?after=N
+    DELETE /sandboxes/NAME   (answers with the events not yet read, as GET does)
+    GET    /sandboxes        (names, addresses and expiry; never credentials)
+    GET    /healthz          (no token)
+
+`inject`, `writes` and `upstream_ca` take what EGRESS_INJECT, EGRESS_WRITES and
+EGRESS_UPSTREAM_CA do, and `approvals` the entries of an approvals file. A PUT
+replaces that sandbox's registration, and any other holding the same address.
+An address nobody registered is refused everything; so is one whose `ttl` has
+run out, which is how a driver that died without unregistering is cleaned up
+after. Registrations live only in memory: after a restart every sandbox is
+refused until its driver registers it again.
+
+Its TLS is terminated with the CA in EGRESS_CA_CERT and EGRESS_CA_KEY (files),
+so the CA outlives a restart and sandboxes can be told to trust it before any
+one is claimed. Events still go to stdout, and each sandbox's are also kept
+(the last EGRESS_EVENTS_KEPT, default 5000) for its driver to read.
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
 import fnmatch
 import ipaddress
 import itertools
@@ -142,13 +174,17 @@ import sys
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 MODES = ("allowlist", "log")
 MAX_HEAD = 65536
 QTYPES = {1: "A", 2: "NS", 5: "CNAME", 12: "PTR", 15: "MX", 16: "TXT", 28: "AAAA", 33: "SRV", 65: "HTTPS"}
+
+
+class ConfigError(ValueError):
+    """A setting that cannot be used: fatal at start-up, a 400 from the control API."""
 
 
 @dataclass(frozen=True)
@@ -160,14 +196,24 @@ class Policy:
 
     @classmethod
     def from_env(cls, env: dict[str, str] | os._Environ[str] = os.environ) -> "Policy":
-        mode = env.get("EGRESS_MODE", "allowlist").strip().lower()
-        if mode not in MODES:
-            raise SystemExit(f"burst-gateway: EGRESS_MODE must be one of {', '.join(MODES)} (got {mode!r}).")
-        return cls(
-            mode=mode,
-            allow=tuple(allow_entry(h) for h in env.get("EGRESS_ALLOW", "").split(",") if h.strip()),
-            ports=frozenset(int(p) for p in env.get("EGRESS_PORTS", "443").split(",") if p.strip()),
+        return cls.build(
+            env.get("EGRESS_MODE", "allowlist"),
+            [h for h in env.get("EGRESS_ALLOW", "").split(",") if h.strip()],
+            [p for p in env.get("EGRESS_PORTS", "443").split(",") if p.strip()],
         )
+
+    @classmethod
+    def build(cls, mode: object, allow: object, ports: object) -> "Policy":
+        mode = str(mode).strip().lower()
+        if mode not in MODES:
+            raise ConfigError(f"EGRESS_MODE must be one of {', '.join(MODES)} (got {mode!r}).")
+        if not isinstance(allow, list) or not isinstance(ports, list):
+            raise ConfigError("allow and ports must be lists.")
+        try:
+            numbers = frozenset(int(str(p).strip()) for p in ports)
+        except ValueError as err:
+            raise ConfigError(f"ports must be numbers (got {ports!r}).") from err
+        return cls(mode=mode, allow=tuple(allow_entry(str(h)) for h in allow), ports=numbers)
 
     def host_allowed(self, host: str) -> bool:
         """True if the host is allowed on some port."""
@@ -181,15 +227,26 @@ class Policy:
 
 
 class Approvals:
-    """Allowances added while running, from a file re-read whenever it changes."""
+    """Allowances added while running: from a file re-read whenever it changes,
+    or (no path) the entries a shared gateway's sandbox was registered with."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, entries: object = ()) -> None:
         self.path = path
         self.stamp: tuple[int, int] | None = None
-        self.entries: list[dict[str, object]] = []
+        self.entries: list[dict[str, object]] = self.parse(entries) if entries else []
         self.spent: set[str] = set()
 
+    @staticmethod
+    def parse(raw: object) -> list[dict[str, object]]:
+        try:
+            return [{**item, "match": allow_entry(str(item["allow"])), "key": str(item.get("id") or item["allow"])}
+                    for item in raw]  # type: ignore[union-attr]
+        except (KeyError, AttributeError, TypeError) as err:
+            raise ConfigError(f"approvals must be a list of {{\"allow\": ...}} (got {raw!r}).") from err
+
     def load(self) -> None:
+        if not self.path:
+            return
         try:
             info = os.stat(self.path)
         except OSError:
@@ -201,12 +258,8 @@ class Approvals:
         self.stamp = stamp
         try:
             with open(self.path) as handle:
-                raw = json.load(handle).get("approvals", [])
-            self.entries = [
-                {**item, "match": allow_entry(str(item["allow"])), "key": str(item.get("id") or item["allow"])}
-                for item in raw
-            ]
-        except (OSError, ValueError, KeyError, AttributeError, TypeError) as err:
+                self.entries = self.parse(json.load(handle).get("approvals", []))
+        except (OSError, ValueError, AttributeError) as err:
             # A file that is half-written or wrong approves nothing new; what was read before stands.
             print(f"burst-gateway: ignoring {self.path}: {err}", file=sys.stderr, flush=True)
 
@@ -223,22 +276,6 @@ class Approvals:
             if fnmatch.fnmatchcase(host, pattern) and (port is None or (port == only if only else port in ports)):
                 return entry
         return None
-
-
-def permitted(host: str, port: int) -> bool:
-    """The policy's answer for a connection: the allowlist, or an approval (a `once` is spent by this)."""
-    if POLICY.allowed(host, port):
-        return True
-    if entry := APPROVALS.find(host, port, POLICY.ports):
-        if entry.get("once"):
-            APPROVALS.spent.add(str(entry["key"]))
-        return True
-    return False
-
-
-def resolvable(host: str) -> bool:
-    """Whether a name may resolve at all: allowed, or approved, on some port. Spends nothing."""
-    return POLICY.host_allowed(host) or APPROVALS.find(host, None, POLICY.ports) is not None
 
 
 def allow_entry(text: str) -> tuple[str, int]:
@@ -263,34 +300,38 @@ class Inject:
 
     @classmethod
     def parse(cls, raw: str) -> tuple["Inject", ...]:
+        return cls.from_items(_json_list(raw, "EGRESS_INJECT"))
+
+    @classmethod
+    def from_items(cls, items: list) -> tuple["Inject", ...]:
         rules = []
-        for item in json.loads(raw) if raw.strip() else []:
-            host = str(item["host"]).lower().rstrip(".")
-            if not host or any(c in host for c in "*?[/"):
-                raise SystemExit(f"burst-gateway: EGRESS_INJECT host must be one exact host name (got {host!r}).")
-            headers = tuple((str(k), str(v)) for k, v in (item.get("headers") or {}).items())
-            swap = tuple((str(w["header"]), str(w["placeholder"]), str(w["value"])) for w in item.get("swap") or [])
-            if any(c in text for parts in (*headers, *swap) for text in parts for c in "\r\n"):
-                raise SystemExit("burst-gateway: EGRESS_INJECT headers must be single lines.")
-            if any(not placeholder for _, placeholder, _ in swap):
-                raise SystemExit("burst-gateway: an EGRESS_INJECT swap needs a placeholder.")
-            port = item.get("port") or 443
-            if not isinstance(port, int) or not 0 < port < 65536:
-                raise SystemExit(f"burst-gateway: EGRESS_INJECT port must be a port number (got {port!r}).")
-            rules.append(cls(host=host, headers=headers, path=str(item.get("path") or "*"), swap=swap, port=port))
+        try:
+            for item in items:
+                host = str(item["host"]).lower().rstrip(".")
+                if not host or any(c in host for c in "*?[/"):
+                    raise ConfigError(f"EGRESS_INJECT host must be one exact host name (got {host!r}).")
+                headers = tuple((str(k), str(v)) for k, v in (item.get("headers") or {}).items())
+                swap = tuple((str(w["header"]), str(w["placeholder"]), str(w["value"])) for w in item.get("swap") or [])
+                if any(c in text for parts in (*headers, *swap) for text in parts for c in "\r\n"):
+                    raise ConfigError("EGRESS_INJECT headers must be single lines.")
+                if any(not placeholder for _, placeholder, _ in swap):
+                    raise ConfigError("an EGRESS_INJECT swap needs a placeholder.")
+                port = item.get("port") or 443
+                if not isinstance(port, int) or not 0 < port < 65536:
+                    raise ConfigError(f"EGRESS_INJECT port must be a port number (got {port!r}).")
+                rules.append(cls(host=host, headers=headers, path=str(item.get("path") or "*"), swap=swap, port=port))
+        except (KeyError, AttributeError, TypeError) as err:
+            raise ConfigError(f"an EGRESS_INJECT rule is malformed: {err!r}") from err
         return tuple(rules)
 
 
-def inject_for(host: str, path: str, port: int = 443) -> Inject | None:
-    """The first rule for this host whose path pattern matches (the query string is not part of it)."""
-    path = path.split("?", 1)[0]
-    # A path the server might read differently from how it is spelled here
-    # (dot segments, encoded dots and slashes) gets no credential: it could
-    # match a rule's pattern and still name something outside it.
+def unclear_path(path: str) -> bool:
+    """A path the server might read differently from how it is spelled here
+    (dot segments, encoded dots and slashes): it could match a pattern and
+    still name something outside it, so it matches no rule."""
     lowered = path.lower()
-    if any(part in (".", "..") for part in path.split("/")) or any(c in lowered for c in ("%2e", "%2f", "%5c", "\\", "//")):
-        return None
-    return next((r for r in INJECT if r.host == host and r.port == port and fnmatch.fnmatchcase(path, r.path)), None)
+    return any(part in (".", "..") for part in path.split("/")) or \
+        any(c in lowered for c in ("%2e", "%2f", "%5c", "\\", "//"))
 
 
 def with_credentials(headers: list[bytes], rule: Inject | None) -> tuple[list[bytes], list[str]]:
@@ -325,27 +366,19 @@ class Write:
 
     @classmethod
     def parse(cls, raw: str) -> tuple["Write", ...]:
+        return cls.from_items(_json_list(raw, "EGRESS_WRITES"))
+
+    @classmethod
+    def from_items(cls, items: list) -> tuple["Write", ...]:
         rules = []
-        for item in json.loads(raw) if raw.strip() else []:
+        for item in items:
+            if not isinstance(item, dict):
+                raise ConfigError(f"an EGRESS_WRITES entry needs a host and a method (got {item!r}).")
             host, method = str(item.get("host") or "").lower().rstrip("."), str(item.get("method") or "").upper()
             if not host or not method or not method.isalpha():
-                raise SystemExit(f"burst-gateway: an EGRESS_WRITES entry needs a host and a method (got {item!r}).")
+                raise ConfigError(f"an EGRESS_WRITES entry needs a host and a method (got {item!r}).")
             rules.append(cls(host=host, method=method, path=str(item.get("path") or "*")))
         return tuple(rules)
-
-
-def may_send(host: str, method: str, path: str) -> bool:
-    """Whether read-only mode lets this request through."""
-    method = method.upper()
-    if not READONLY or method in READ_METHODS:
-        return True
-    path = path.split("?", 1)[0]
-    lowered = path.lower()
-    # As for credentials: a path that might be read differently upstream matches no exception.
-    if any(part in (".", "..") for part in path.split("/")) or any(c in lowered for c in ("%2e", "%2f", "%5c", "\\", "//")):
-        return False
-    return any(w.method == method and fnmatch.fnmatchcase(host, w.host) and fnmatch.fnmatchcase(path, w.path)
-               for w in WRITES)
 
 
 READONLY_MESSAGE = ("This sandbox may only read: {method} is refused here, and approving the host will not "
@@ -355,16 +388,180 @@ READONLY_MESSAGE = ("This sandbox may only read: {method} is refused here, and a
 
 def upstream_cas(raw: str) -> dict[str, ssl.SSLContext]:
     """EGRESS_UPSTREAM_CA as {host: a context that verifies against that CA}."""
+    return upstream_cas_from(_json_list(raw, "EGRESS_UPSTREAM_CA"))
+
+
+def upstream_cas_from(items: list) -> dict[str, ssl.SSLContext]:
     found = {}
-    for item in json.loads(raw) if raw.strip() else []:
+    for item in items:
+        if not isinstance(item, dict):
+            raise ConfigError(f"an EGRESS_UPSTREAM_CA entry needs a host and a PEM ca (got {item!r}).")
         host, pem = str(item.get("host") or "").lower().rstrip("."), str(item.get("ca") or "")
         if not host or "BEGIN CERTIFICATE" not in pem:
-            raise SystemExit(f"burst-gateway: an EGRESS_UPSTREAM_CA entry needs a host and a PEM ca (got host {host!r}).")
+            raise ConfigError(f"an EGRESS_UPSTREAM_CA entry needs a host and a PEM ca (got host {host!r}).")
         try:
             found[host] = ssl.create_default_context(cadata=pem)
         except ssl.SSLError as err:
-            raise SystemExit(f"burst-gateway: EGRESS_UPSTREAM_CA for {host}: {err}") from err
+            raise ConfigError(f"EGRESS_UPSTREAM_CA for {host}: {err}") from err
     return found
+
+
+def _json_list(raw: str, name: str) -> list:
+    """An environment setting holding a JSON list ("" is an empty one)."""
+    try:
+        value = json.loads(raw) if raw.strip() else []
+    except ValueError as err:
+        raise ConfigError(f"{name} is not JSON: {err}") from err
+    if not isinstance(value, list):
+        raise ConfigError(f"{name} must be a JSON list.")
+    return value
+
+
+EVENTS_KEPT = 5000
+
+
+@dataclass(eq=False)
+class Sandbox:
+    """One sandbox: what its traffic is held to, and (shared) what it has done."""
+
+    name: str = ""
+    policy: Policy = field(default_factory=Policy)
+    approvals: Approvals = field(default_factory=lambda: Approvals(""))
+    inject: tuple[Inject, ...] = ()
+    readonly: bool = False
+    writes: tuple[Write, ...] = ()
+    # host -> the context that verifies its certificate, for hosts with their own CA.
+    upstream_ca: dict[str, ssl.SSLContext] = field(default_factory=dict)
+    # Shared: the address its connections come from, and when its registration lapses.
+    address: str = ""
+    expires: float = 0.0
+    # Shared: (sequence number, event), the newest EVENTS_KEPT; `recorded` counts them all.
+    events: collections.deque = field(default_factory=lambda: collections.deque(maxlen=EVENTS_KEPT))
+    recorded: int = 0
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | os._Environ[str] = os.environ) -> "Sandbox":
+        return cls(
+            name=env.get("EGRESS_SANDBOX", ""),
+            policy=Policy.from_env(env),
+            approvals=Approvals(env.get("EGRESS_APPROVALS", "/run/burst-gateway/approvals.json")),
+            inject=Inject.parse(env.get("EGRESS_INJECT", "")),
+            readonly=env.get("EGRESS_READONLY", "").strip().lower() in ("1", "true", "yes", "on"),
+            writes=Write.parse(env.get("EGRESS_WRITES", "")),
+            upstream_ca=upstream_cas(env.get("EGRESS_UPSTREAM_CA", "")),
+        )
+
+    @classmethod
+    def register(cls, name: str, body: object, now: float) -> "Sandbox":
+        """A sandbox as a shared gateway's control API is given it."""
+        if not isinstance(body, dict):
+            raise ConfigError("a registration is a JSON object.")
+        if unknown := sorted(set(body) - REGISTRATION_KEYS):
+            raise ConfigError(f"unknown registration keys: {', '.join(unknown)}.")
+        try:
+            address = str(ipaddress.ip_address(str(body.get("address") or "")))
+        except ValueError as err:
+            raise ConfigError(f"address must be the sandbox's IP address (got {body.get('address')!r}).") from err
+        ttl = body.get("ttl", 0)
+        if not isinstance(ttl, int) or ttl < 0:
+            raise ConfigError(f"ttl must be a number of seconds (got {ttl!r}).")
+
+        def items(key: str) -> list:
+            value = body.get(key) or []
+            if not isinstance(value, list):
+                raise ConfigError(f"{key} must be a list.")
+            return value
+
+        return cls(
+            name=name,
+            policy=Policy.build(body.get("mode", "allowlist"), items("allow"), body.get("ports") or [443]),
+            approvals=Approvals("", items("approvals")),
+            inject=Inject.from_items(items("inject")),
+            readonly=body.get("readonly") is True,
+            writes=Write.from_items(items("writes")),
+            upstream_ca=upstream_cas_from(items("upstream_ca")),
+            address=address,
+            expires=now + ttl if ttl else 0.0,
+        )
+
+    def permitted(self, host: str, port: int) -> bool:
+        """The policy's answer for a connection: the allowlist, or an approval (a `once` is spent by this)."""
+        if self.policy.allowed(host, port):
+            return True
+        if entry := self.approvals.find(host, port, self.policy.ports):
+            if entry.get("once"):
+                self.approvals.spent.add(str(entry["key"]))
+            return True
+        return False
+
+    def resolvable(self, host: str) -> bool:
+        """Whether a name may resolve at all: allowed, or approved, on some port. Spends nothing."""
+        return self.policy.host_allowed(host) or self.approvals.find(host, None, self.policy.ports) is not None
+
+    def inject_for(self, host: str, path: str, port: int = 443) -> Inject | None:
+        """The first rule for this host whose path pattern matches (the query string is not part of it)."""
+        path = path.split("?", 1)[0]
+        if unclear_path(path):
+            return None
+        return next((r for r in self.inject if r.host == host and r.port == port and fnmatch.fnmatchcase(path, r.path)),
+                    None)
+
+    def may_send(self, host: str, method: str, path: str) -> bool:
+        """Whether read-only mode lets this request through."""
+        method = method.upper()
+        if not self.readonly or method in READ_METHODS:
+            return True
+        path = path.split("?", 1)[0]
+        # As for credentials: a path that might be read differently upstream matches no exception.
+        if unclear_path(path):
+            return False
+        return any(w.method == method and fnmatch.fnmatchcase(host, w.host) and fnmatch.fnmatchcase(path, w.path)
+                   for w in self.writes)
+
+    def intercepts(self, host: str, port: int) -> bool:
+        """Whether TLS to host:port is terminated here: credentials to add there, or read-only mode."""
+        return CERTIFICATES is not None and (self.readonly or any(r.host == host and r.port == port for r in self.inject))
+
+    def record(self, event: dict[str, object]) -> None:
+        self.recorded += 1
+        self.events.append((self.recorded, event))
+
+    def events_after(self, after: int) -> dict[str, object]:
+        """Events newer than `after`, and whether some were dropped before they could be read."""
+        kept = [event for seq, event in self.events if seq > after]
+        oldest = self.events[0][0] if self.events else self.recorded + 1
+        return {"events": kept, "next": self.recorded, "dropped": max(0, oldest - after - 1)}
+
+
+REGISTRATION_KEYS = frozenset({"address", "ttl", "mode", "allow", "ports", "inject", "readonly", "writes",
+                               "upstream_ca", "approvals"})
+NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-.")
+
+# The one sandbox a gateway serves, when it is not shared.
+SINGLE: Sandbox | None = None
+# Shared: every registered sandbox, by name.
+SANDBOXES: dict[str, Sandbox] = {}
+
+
+def sandbox_for(peer: str) -> Sandbox | None:
+    """Whose a connection from `peer` is: the one sandbox, or (shared) the live registration for that address."""
+    if SINGLE is not None:
+        return SINGLE
+    now = time.time()
+    for name, sandbox in list(SANDBOXES.items()):
+        if sandbox.address == peer:
+            if sandbox.expires and sandbox.expires <= now:
+                lapse(name, now)
+                return None
+            return sandbox
+    return None
+
+
+def lapse(name: str, now: float) -> None:
+    """Forget a registration whose ttl has run out (and its credentials with it)."""
+    if (sandbox := SANDBOXES.get(name)) is not None and sandbox.expires and sandbox.expires <= now:
+        del SANDBOXES[name]
+        emit("sandbox", "expire", name=name, address=sandbox.address)
 
 
 async def intercept_port(host: str) -> int:
@@ -377,31 +574,17 @@ async def intercept_port(host: str) -> int:
         return _LISTENERS[host]
 
 
-def intercepts(host: str, port: int) -> bool:
-    """Whether TLS to host:port is terminated here: credentials to add there, or read-only mode."""
-    return bool(INTERCEPT) and (READONLY or any(r.host == host and r.port == port for r in INJECT))
-
-
-POLICY = Policy()
-APPROVALS = Approvals("")
 WEBHOOK = ""
-INJECT: tuple[Inject, ...] = ()
-READONLY = False
-WRITES: tuple[Write, ...] = ()
 CERTIFICATES: "Certificates | None" = None
-# host -> the context that verifies its certificate, for hosts with their own CA.
-UPSTREAM_CA: dict[str, ssl.SSLContext] = {}
-SANDBOX = ""
 REDIRECT = 0
-# Whether TLS is terminated here at all: credentials to add, or read-only.
-INTERCEPT = 0
-# Where it is terminated for each host: a listener on loopback, serving that
+# Where TLS is terminated for each host: a listener on loopback, serving that
 # host's certificate, that connections are relayed into whichever way they
 # arrived. One per host, made on first use, so the certificate never depends on
-# what the client names (no SNI is sent for an IP address).
+# what the client names (no SNI is sent for an IP address). Shared by every
+# sandbox: which one a relayed connection belongs to travels in _RELAYED.
 _LISTENERS: dict[str, int] = {}
 _LISTENER_LOCK = asyncio.Lock()
-# What is known about a connection relayed there (who, which host, how it
+# What is known about a connection relayed there (whose, which host, how it
 # arrived), by the local port it was relayed from.
 _RELAYED: dict[int, dict[str, object]] = {}
 _RUN = secrets.token_hex(3)
@@ -445,14 +628,17 @@ def notify(event: dict[str, object]) -> None:
     threading.Thread(target=post, daemon=True).start()
 
 
-def emit(kind: str, verdict: str, **fields: object) -> None:
+def emit(kind: str, verdict: str, *, sandbox: Sandbox | None = None, **fields: object) -> None:
+    """Record an event: on stdout, and (shared) with the sandbox it belongs to."""
     global _ACTIVE
     if verdict != "close":
         _ACTIVE = time.monotonic()
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    event = {"ts": stamp, "sandbox": SANDBOX, "kind": kind, "verdict": verdict, **fields}
+    event = {"ts": stamp, "sandbox": sandbox.name if sandbox else "", "kind": kind, "verdict": verdict, **fields}
     event = {k: v for k, v in event.items() if v not in ("", None)}
     print(json.dumps(event), flush=True)
+    if sandbox is not None and sandbox is not SINGLE:
+        sandbox.record(event)
     if WEBHOOK and should_notify(event, time.monotonic()):
         notify(event)
 
@@ -521,14 +707,19 @@ async def refuse(writer: asyncio.StreamWriter, status: str, body: dict[str, obje
     writer.close()
 
 
-async def deny(writer: asyncio.StreamWriter, kind: str, detail: str = "", *, message: str = "", **fields: object) -> None:
+UNREGISTERED_MESSAGE = ("This address is not a sandbox this gateway knows (or its registration has run out), so "
+                        "nothing is let through for it.")
+
+
+async def deny(writer: asyncio.StreamWriter, kind: str, detail: str = "", *, message: str = "", error: str = "",
+               sandbox: Sandbox | None = None, **fields: object) -> None:
     """Refuse at once -- never hold a connection open -- and say why in a body an agent can read."""
     request_id = next_id()
-    emit(kind, "deny", id=request_id, detail=detail, **fields)
+    emit(kind, "deny", sandbox=sandbox, id=request_id, detail=detail, **fields)
     if kind not in ("connect", "http", "request"):
         return writer.close()  # not speaking HTTP: there is no way to say why
     await refuse(writer, "403 Forbidden", {
-        "error": "read_only" if message else "egress_denied",
+        "error": error or ("read_only" if message else "egress_denied"),
         "request_id": request_id,
         "host": fields.get("host"),
         "port": fields.get("port"),
@@ -539,7 +730,7 @@ async def deny(writer: asyncio.StreamWriter, kind: str, detail: str = "", *, mes
 
 
 async def relay(
-    kind: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *,
+    kind: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, *, sandbox: Sandbox | None,
     to_upstream: bytes = b"", to_client: bytes = b"", **fields: object,
 ) -> None:
     """Connect to host:port and pipe both ways, recording the allow and the close.
@@ -549,7 +740,7 @@ async def relay(
     """
     request_id, started = next_id(), time.monotonic()
     host, port = str(fields["host"]), int(str(fields["port"]))
-    intercept = kind in ("connect", "tls") and intercepts(host, port)
+    intercept = kind in ("connect", "tls") and sandbox is not None and sandbox.intercepts(host, port)
     if intercept:
         fields["intercepted"] = True
     try:
@@ -558,15 +749,15 @@ async def relay(
             else asyncio.open_connection(host, port), 15
         )
     except (OSError, asyncio.TimeoutError, ValueError, SystemExit) as err:
-        emit(kind, "fail", id=request_id, detail=str(err) or type(err).__name__, **fields)
+        emit(kind, "fail", sandbox=sandbox, id=request_id, detail=str(err) or type(err).__name__, **fields)
         if kind not in ("connect", "http"):
             return writer.close()
         return await refuse(writer, "502 Bad Gateway")
-    emit(kind, "allow", id=request_id, **fields)
+    emit(kind, "allow", sandbox=sandbox, id=request_id, **fields)
     local_port = up_writer.get_extra_info("sockname")[1]
     if intercept:
         _RELAYED[local_port] = dict(host=host, port=port, peer=fields.get("peer"), via=fields.get("via"),
-                                    connection=request_id)
+                                    connection=request_id, sandbox=sandbox)
     up_writer.write(to_upstream)
     writer.write(to_client)
     await writer.drain()
@@ -574,7 +765,7 @@ async def relay(
         sent, received = await asyncio.gather(pipe(reader, up_writer), pipe(up_reader, writer))
     finally:
         _RELAYED.pop(local_port, None)
-    emit(kind, "close", id=request_id, bytes_up=sent + len(to_upstream), bytes_down=received,
+    emit(kind, "close", sandbox=sandbox, id=request_id, bytes_up=sent + len(to_upstream), bytes_down=received,
          ms=int((time.monotonic() - started) * 1000), **fields)
 
 
@@ -585,23 +776,33 @@ async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> 
         if not head:
             return writer.close()
         method, target, version = (head[0].decode("latin-1").strip().split(" ", 2) + ["", ""])[:3]
+        sandbox = sandbox_for(peer)
         if method.upper() == "CONNECT":
             host, port = parse_connect(target)
-            if not permitted(host, port):
-                return await deny(writer, "connect", peer=peer, host=host, port=port)
-            return await relay("connect", reader, writer, peer=peer, host=host, port=port,
+            if sandbox is None:
+                return await deny(writer, "connect", "unregistered", message=UNREGISTERED_MESSAGE,
+                                  error="unregistered", peer=peer, host=host, port=port)
+            if not sandbox.permitted(host, port):
+                return await deny(writer, "connect", sandbox=sandbox, peer=peer, host=host, port=port)
+            return await relay("connect", reader, writer, sandbox=sandbox, peer=peer, host=host, port=port,
                                to_client=b"HTTP/1.1 200 Connection established\r\n\r\n")
         parsed = parse_http(target)
         if parsed is None:
-            return await deny(writer, "http", "not a proxy request", peer=peer, method=method or "-", host=target or "-")
+            return await deny(writer, "http", "not a proxy request", sandbox=sandbox, peer=peer, method=method or "-",
+                              host=target or "-")
         host, port, path = parsed
         # The query string is not recorded: it is where tokens end up.
         fields = dict(peer=peer, host=host, port=port, method=method, path=path.split("?", 1)[0])
-        if not permitted(host, port):
-            return await deny(writer, "http", **fields)
-        if not may_send(host, method, path):
-            return await deny(writer, "http", "read-only", message=READONLY_MESSAGE.format(method=method), **fields)
-        await relay("http", reader, writer, to_upstream=origin_request(method, path, version, head[1:]), **fields)
+        if sandbox is None:
+            return await deny(writer, "http", "unregistered", message=UNREGISTERED_MESSAGE, error="unregistered",
+                              **fields)
+        if not sandbox.permitted(host, port):
+            return await deny(writer, "http", sandbox=sandbox, **fields)
+        if not sandbox.may_send(host, method, path):
+            return await deny(writer, "http", "read-only", message=READONLY_MESSAGE.format(method=method),
+                              sandbox=sandbox, **fields)
+        await relay("http", reader, writer, sandbox=sandbox,
+                    to_upstream=origin_request(method, path, version, head[1:]), **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
 
@@ -625,7 +826,7 @@ def inbound_handler(address: str, port: int):
     async def handle_inbound(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = str((writer.get_extra_info("peername") or ("?",))[0])
         try:
-            await relay("inbound", reader, writer, peer=peer, host=address, port=port)
+            await relay("inbound", reader, writer, sandbox=SINGLE, peer=peer, host=address, port=port)
         except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
             writer.close()
 
@@ -636,15 +837,20 @@ def inbound_handler(address: str, port: int):
 
 
 class Certificates:
-    """A CA in `directory`, and a certificate under it for each host, made when first asked for."""
+    """A CA, and a certificate under it for each host (kept in `directory`),
+    made when first asked for. The CA is made in `directory` too, unless one
+    is given (`ca`: certificate and key files), as a shared gateway's is."""
 
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, name: str = "", ca: tuple[Path, Path] | None = None) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         self.directory = directory
         self.contexts: dict[str, ssl.SSLContext] = {}
+        if ca is not None:
+            self.ca_crt, self.ca_key = ca
+            return
         self.ca_key, self.ca_crt = directory / "ca.key", directory / "ca.crt"
         self._openssl("req", "-x509", *self.KEY_ARGS, "-keyout", str(self.ca_key), "-out", str(self.ca_crt),
-                      "-days", "30", "-subj", f"/CN=burst-gateway {SANDBOX or 'sandbox'}",
+                      "-days", "30", "-subj", f"/CN=burst-gateway {name or 'sandbox'}",
                       "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
                       "-addext", "keyUsage=critical,keyCertSign")
         self.ca_key.chmod(0o600)
@@ -706,6 +912,7 @@ async def handle_intercepted(reader: asyncio.StreamReader, writer: asyncio.Strea
     if known is None:  # only this gateway's own relays may speak here
         return writer.close()
     host, port = str(known["host"]), int(str(known.get("port") or 443))
+    sandbox: Sandbox = known["sandbox"]  # type: ignore[assignment]
     request_id, started = next_id(), time.monotonic()
     fields: dict[str, object] = dict(id=request_id, peer=known["peer"], host=host, port=port, via=known["via"],
                                      connection=known["connection"])
@@ -717,24 +924,25 @@ async def handle_intercepted(reader: asyncio.StreamReader, writer: asyncio.Strea
         fields.update(method=method, path=target.split("?", 1)[0])
         named = http_host(b"".join(head))
         if named != host:
-            emit("request", "deny", detail=f"Host header names {named or 'nothing'}", **fields)
+            emit("request", "deny", sandbox=sandbox, detail=f"Host header names {named or 'nothing'}", **fields)
             return await refuse(writer, "421 Misdirected Request")
-        if not may_send(host, method, target):
+        if not sandbox.may_send(host, method, target):
             fields.pop("id")
-            return await deny(writer, "request", "read-only", message=READONLY_MESSAGE.format(method=method), **fields)
-        rule = inject_for(host, target, port)
+            return await deny(writer, "request", "read-only", message=READONLY_MESSAGE.format(method=method),
+                              sandbox=sandbox, **fields)
+        rule = sandbox.inject_for(host, target, port)
         try:
             up_reader, up_writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port, ssl=UPSTREAM_CA.get(host) or ssl.create_default_context(),
+                asyncio.open_connection(host, port, ssl=sandbox.upstream_ca.get(host) or ssl.create_default_context(),
                                         server_hostname=host), 15
             )
         except (OSError, asyncio.TimeoutError) as err:
-            emit("request", "fail", detail=str(err) or type(err).__name__, **fields)
+            emit("request", "fail", sandbox=sandbox, detail=str(err) or type(err).__name__, **fields)
             return await refuse(writer, "502 Bad Gateway")
         headers, injected = with_credentials(head[1:], rule)
         up_writer.write(origin_request(method, target, version, headers))
         sent, (status, received) = await asyncio.gather(pipe(reader, up_writer), pipe_response(up_reader, writer))
-        emit("request", "allow", status=status or None, injected=injected or None,
+        emit("request", "allow", sandbox=sandbox, status=status or None, injected=injected or None,
              bytes_up=sent, bytes_down=received, ms=int((time.monotonic() - started) * 1000), **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
@@ -826,15 +1034,20 @@ async def handle_redirected(reader: asyncio.StreamReader, writer: asyncio.Stream
         # A name the client gave is what gets checked and connected to; the
         # address it dialled is only believed when there is no name.
         host = name or (dialled if dialled != here else "")
+        sandbox = sandbox_for(peer)
+        if sandbox is None:
+            return await deny(writer, kind, "unregistered", message=UNREGISTERED_MESSAGE, error="unregistered",
+                              host=host or "-", **fields)
         if not host:
-            return await deny(writer, kind, "no server name to identify the destination", host="-", **fields)
-        if not permitted(host, port):
-            return await deny(writer, kind, host=host, **fields)
-        if kind == "http" and not may_send(host, str(fields["method"]), str(fields["path"])):
-            return await deny(writer, kind, "read-only", host=host, **fields)
-        if kind == "tcp" and READONLY:
-            return await deny(writer, kind, "read-only: neither TLS nor HTTP", host=host, **fields)
-        await relay(kind, reader, writer, to_upstream=opening, host=host, **fields)
+            return await deny(writer, kind, "no server name to identify the destination", sandbox=sandbox, host="-",
+                              **fields)
+        if not sandbox.permitted(host, port):
+            return await deny(writer, kind, sandbox=sandbox, host=host, **fields)
+        if kind == "http" and not sandbox.may_send(host, str(fields["method"]), str(fields["path"])):
+            return await deny(writer, kind, "read-only", sandbox=sandbox, host=host, **fields)
+        if kind == "tcp" and sandbox.readonly:
+            return await deny(writer, kind, "read-only: neither TLS nor HTTP", sandbox=sandbox, host=host, **fields)
+        await relay(kind, reader, writer, sandbox=sandbox, to_upstream=opening, host=host, **fields)
     except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
         writer.close()
 
@@ -870,7 +1083,7 @@ def dns_reply(packet: bytes, end: int, *, rcode: int = 0, address: str = "") -> 
     return packet[:2] + struct.pack("!HHHHH", reply_flags, 1, 1 if answer else 0, 0, 0) + packet[12:end] + answer
 
 
-def dns_answer(packet: bytes, here: str) -> tuple[bytes, dict[str, object]]:
+def dns_answer(packet: bytes, here: str, sandbox: Sandbox | None) -> tuple[bytes, dict[str, object]]:
     """The reply to a query and the event recording it. `here` is this gateway's
     address as the asker sees it, or "" when connections are not redirected."""
     name, qtype, end = dns_question(packet)
@@ -878,7 +1091,9 @@ def dns_answer(packet: bytes, here: str) -> tuple[bytes, dict[str, object]]:
     if not here:
         return dns_reply(packet, end, rcode=3), dict(
             fields, verdict="deny", detail="no DNS in the sandbox; this lookup did not go through the proxy")
-    if not resolvable(name):
+    if sandbox is None:
+        return dns_reply(packet, end, rcode=3), dict(fields, verdict="deny", detail="unregistered")
+    if not sandbox.resolvable(name):
         return dns_reply(packet, end, rcode=3), dict(fields, verdict="deny")
     if qtype == 1:
         return dns_reply(packet, end, address=here), dict(fields, verdict="allow", detail="answered with the gateway")
@@ -899,11 +1114,129 @@ class Resolver(asyncio.DatagramProtocol):
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         try:
-            reply, event = dns_answer(data, address_facing(addr[0]) if REDIRECT else "")
+            sandbox = sandbox_for(addr[0])
+            reply, event = dns_answer(data, address_facing(addr[0]) if REDIRECT else "", sandbox)
         except (ValueError, IndexError, struct.error, OSError):
             return
-        emit("dns", str(event.pop("verdict")), id=next_id(), peer=addr[0], **event)
+        emit("dns", str(event.pop("verdict")), sandbox=sandbox, id=next_id(), peer=addr[0], **event)
         self.transport.sendto(reply, addr)  # type: ignore[attr-defined]
+
+
+# --- control (shared) ---
+
+CONTROL_TOKEN = ""
+MAX_BODY = 1 << 20
+
+
+async def respond(writer: asyncio.StreamWriter, status: str, body: object) -> None:
+    payload = json.dumps(body).encode()
+    writer.write(f"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {len(payload)}\r\n"
+                 "Connection: close\r\n\r\n".encode() + payload)
+    await writer.drain()
+    writer.close()
+
+
+def authorized(head: list[bytes]) -> bool:
+    for line in head[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"authorization":
+            scheme, _, token = value.strip().partition(b" ")
+            return scheme.lower() == b"bearer" and secrets.compare_digest(token.strip(), CONTROL_TOKEN.encode())
+    return False
+
+
+def content_length(head: list[bytes]) -> int:
+    for line in head[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            return int(value.strip())
+    return 0
+
+
+def control(method: str, path: str, query: dict[str, list[str]], body: object, now: float) -> tuple[str, object]:
+    """A control API request's status and answer. Not async: nothing here waits."""
+    parts = [part for part in path.split("/") if part]
+    if parts == ["sandboxes"] and method == "GET":
+        for name in list(SANDBOXES):
+            lapse(name, now)
+        return "200 OK", {"sandboxes": [{"name": s.name, "address": s.address, "expires": s.expires or None,
+                                         "events": s.recorded} for s in SANDBOXES.values()]}
+    if len(parts) not in (2, 3) or parts[0] != "sandboxes":
+        return "404 Not Found", {"error": "not_found"}
+    name = parts[1]
+    if not name or len(name) > 253 or set(name) - NAME_CHARS:
+        return "400 Bad Request", {"error": "bad_name", "message": "a name is lowercase letters, digits, '-' and '.'"}
+    try:
+        after = int((query.get("after") or ["0"])[0])
+    except ValueError:
+        return "400 Bad Request", {"error": "bad_after"}
+    if len(parts) == 3:
+        if parts[2] != "events" or method != "GET":
+            return "404 Not Found", {"error": "not_found"}
+        if (sandbox := SANDBOXES.get(name)) is None:
+            return "404 Not Found", {"error": "not_registered"}
+        return "200 OK", sandbox.events_after(after)
+    if method == "PUT":
+        try:
+            sandbox = Sandbox.register(name, body, now)
+        except ConfigError as err:
+            return "400 Bad Request", {"error": "bad_registration", "message": str(err)}
+        for other in [n for n, s in SANDBOXES.items() if s.address == sandbox.address and n != name]:
+            del SANDBOXES[other]
+            emit("sandbox", "replace", name=other, address=sandbox.address, detail=f"address now {name}'s")
+        SANDBOXES[name] = sandbox
+        emit("sandbox", "register", sandbox=sandbox, address=sandbox.address,
+             expires=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sandbox.expires)) if sandbox.expires else None)
+        return "200 OK", {"name": name, "address": sandbox.address, "expires": sandbox.expires or None}
+    if method == "DELETE":
+        if (sandbox := SANDBOXES.pop(name, None)) is None:
+            return "404 Not Found", {"error": "not_registered"}
+        emit("sandbox", "unregister", name=name, address=sandbox.address)
+        return "200 OK", sandbox.events_after(after)
+    return "405 Method Not Allowed", {"error": "method_not_allowed"}
+
+
+async def handle_control(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        head = await read_head(reader)
+        if not head:
+            return writer.close()
+        method, target = (head[0].decode("latin-1").strip().split(" ") + [""])[:2]
+        parts = urlsplit(target)
+        if parts.path == "/healthz":
+            return await respond(writer, "200 OK", {"ok": True, "sandboxes": len(SANDBOXES)})
+        if not authorized(head):
+            return await respond(writer, "401 Unauthorized", {"error": "unauthorized"})
+        length = content_length(head)
+        if not 0 <= length <= MAX_BODY:
+            return await respond(writer, "413 Content Too Large", {"error": "too_large"})
+        raw = await asyncio.wait_for(reader.readexactly(length), 30) if length else b""
+        try:
+            body = json.loads(raw) if raw else None
+        except ValueError:
+            return await respond(writer, "400 Bad Request", {"error": "bad_json"})
+        status, answer = control(method.upper(), parts.path, parse_qs(parts.query), body, time.time())
+        await respond(writer, status, answer)
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionError, OSError, ValueError):
+        writer.close()
+
+
+async def prune() -> None:
+    """Forget lapsed registrations even when nothing comes from their addresses."""
+    while True:
+        await asyncio.sleep(30)
+        now = time.time()
+        for name in list(SANDBOXES):
+            lapse(name, now)
+
+
+def read_token(env: dict[str, str] | os._Environ[str]) -> str:
+    if path := env.get("EGRESS_CONTROL_TOKEN_FILE", ""):
+        try:
+            return Path(path).read_text().strip()
+        except OSError as err:
+            raise ConfigError(f"EGRESS_CONTROL_TOKEN_FILE: {err}") from err
+    return env.get("EGRESS_CONTROL_TOKEN", "").strip()
 
 
 def expired(now: float, started: float, active: float, idle: int, lifetime: int) -> str:
@@ -925,48 +1258,74 @@ async def watch(idle: int, lifetime: int) -> None:
 
 
 async def main() -> None:
-    global POLICY, APPROVALS, WEBHOOK, INJECT, SANDBOX, REDIRECT, INTERCEPT, READONLY, WRITES, CERTIFICATES, UPSTREAM_CA
-    POLICY = Policy.from_env()
-    SANDBOX = os.environ.get("EGRESS_SANDBOX", "")
-    APPROVALS = Approvals(os.environ.get("EGRESS_APPROVALS", "/run/burst-gateway/approvals.json"))
-    WEBHOOK = os.environ.get("EGRESS_WEBHOOK", "")
-    INJECT = Inject.parse(os.environ.get("EGRESS_INJECT", ""))
-    READONLY = os.environ.get("EGRESS_READONLY", "").strip().lower() in ("1", "true", "yes", "on")
-    WRITES = Write.parse(os.environ.get("EGRESS_WRITES", ""))
-    UPSTREAM_CA = upstream_cas(os.environ.get("EGRESS_UPSTREAM_CA", ""))
-    listen = int(os.environ.get("EGRESS_LISTEN", "3128"))
-    dns_port = int(os.environ.get("EGRESS_DNS", "53"))
-    REDIRECT = int(os.environ.get("EGRESS_REDIRECT", "0"))
-    if POLICY.mode == "allowlist" and not POLICY.allow:
-        print("burst-gateway: EGRESS_ALLOW is empty; everything will be refused.", file=sys.stderr)
+    global SINGLE, WEBHOOK, REDIRECT, CERTIFICATES, CONTROL_TOKEN, EVENTS_KEPT
+    env = os.environ
+    control_port = int(env.get("EGRESS_CONTROL", "0") or 0)
+    WEBHOOK = env.get("EGRESS_WEBHOOK", "")
+    listen = int(env.get("EGRESS_LISTEN", "3128"))
+    dns_port = int(env.get("EGRESS_DNS", "53"))
+    REDIRECT = int(env.get("EGRESS_REDIRECT", "0"))
+    ca_dir = Path(env.get("EGRESS_CA_DIR", "/run/burst-gateway"))
+    try:
+        if control_port:
+            CONTROL_TOKEN = read_token(env)
+            if len(CONTROL_TOKEN) < 16:
+                raise ConfigError("a shared gateway (EGRESS_CONTROL) needs EGRESS_CONTROL_TOKEN or "
+                                  "EGRESS_CONTROL_TOKEN_FILE, of 16 characters or more.")
+            ca_cert, ca_key = env.get("EGRESS_CA_CERT", ""), env.get("EGRESS_CA_KEY", "")
+            if not (ca_cert and ca_key):
+                raise ConfigError("a shared gateway needs EGRESS_CA_CERT and EGRESS_CA_KEY, the CA its sandboxes trust.")
+            EVENTS_KEPT = int(env.get("EGRESS_EVENTS_KEPT", str(EVENTS_KEPT)))
+            CERTIFICATES = Certificates(ca_dir, ca=(Path(ca_cert), Path(ca_key)))
+            CERTIFICATES.context("burst-gateway.invalid")  # a CA that cannot sign fails here, not on first use
+            ignored = [k for k in ("EGRESS_ALLOW", "EGRESS_INJECT", "EGRESS_READONLY", "EGRESS_WRITES",
+                                   "EGRESS_UPSTREAM_CA", "EGRESS_INBOUND") if env.get(k)]
+            if ignored:
+                print(f"burst-gateway: shared: ignoring {', '.join(ignored)}; sandboxes are registered",
+                      file=sys.stderr, flush=True)
+        else:
+            SINGLE = Sandbox.from_env(env)
+    except ConfigError as err:
+        raise SystemExit(f"burst-gateway: {err}") from err
     loop = asyncio.get_running_loop()
     if dns_port:
         await loop.create_datagram_endpoint(Resolver, local_addr=("0.0.0.0", dns_port))
     if REDIRECT:
         await asyncio.start_server(handle_redirected, "0.0.0.0", REDIRECT)
-    for port, (address, target_port) in parse_inbound(os.environ.get("EGRESS_INBOUND", "")).items():
-        await asyncio.start_server(inbound_handler(address, target_port), "0.0.0.0", port)
-        print(f"burst-gateway: inbound :{port} -> {address}:{target_port}", file=sys.stderr, flush=True)
-    if INJECT or READONLY:
-        CERTIFICATES = Certificates(Path(os.environ.get("EGRESS_CA_DIR", "/run/burst-gateway")))
-        hosts = sorted({rule.host for rule in INJECT})
-        for host in hosts:  # made now, so a bad host name fails at start-up
-            CERTIFICATES.context(host)
-        INTERCEPT = 1
-        if hosts:
-            print(f"burst-gateway: adding credentials for {', '.join(hosts)}", file=sys.stderr, flush=True)
-        if READONLY:
-            writes = ", ".join(f"{w.method} {w.host}{w.path}" for w in WRITES) or "none"
-            print(f"burst-gateway: read-only; writes allowed: {writes}", file=sys.stderr, flush=True)
+    tasks = []
+    if SINGLE is not None:
+        if SINGLE.policy.mode == "allowlist" and not SINGLE.policy.allow:
+            print("burst-gateway: EGRESS_ALLOW is empty; everything will be refused.", file=sys.stderr)
+        for port, (address, target_port) in parse_inbound(env.get("EGRESS_INBOUND", "")).items():
+            await asyncio.start_server(inbound_handler(address, target_port), "0.0.0.0", port)
+            print(f"burst-gateway: inbound :{port} -> {address}:{target_port}", file=sys.stderr, flush=True)
+        if SINGLE.inject or SINGLE.readonly:
+            try:
+                CERTIFICATES = Certificates(ca_dir, name=SINGLE.name)
+                hosts = sorted({rule.host for rule in SINGLE.inject})
+                for host in hosts:  # made now, so a bad host name fails at start-up
+                    CERTIFICATES.context(host)
+            except ValueError as err:
+                raise SystemExit(f"burst-gateway: {err}") from err
+            if hosts:
+                print(f"burst-gateway: adding credentials for {', '.join(hosts)}", file=sys.stderr, flush=True)
+            if SINGLE.readonly:
+                writes = ", ".join(f"{w.method} {w.host}{w.path}" for w in SINGLE.writes) or "none"
+                print(f"burst-gateway: read-only; writes allowed: {writes}", file=sys.stderr, flush=True)
+        policy = SINGLE.policy
+        what = "everything (log only)" if policy.mode == "log" else \
+            f"ports {sorted(policy.ports)}; allow {', '.join(h + (f':{p}' if p else '') for h, p in policy.allow) or '(nothing)'}"
+    else:
+        await asyncio.start_server(handle_control, "0.0.0.0", control_port)
+        tasks.append(asyncio.create_task(prune()))
+        what = f"shared: sandboxes registered on control :{control_port}"
     server = await asyncio.start_server(handle, "0.0.0.0", listen)
-    what = "everything (log only)" if POLICY.mode == "log" else \
-        f"ports {sorted(POLICY.ports)}; allow {', '.join(h + (f':{p}' if p else '') for h, p in POLICY.allow) or '(nothing)'}"
     print(f"burst-gateway: proxy :{listen}, dns :{dns_port or 'off'}, redirected :{REDIRECT or 'off'}; {what}",
           file=sys.stderr, flush=True)
-    idle, lifetime = int(os.environ.get("EGRESS_IDLE", "0")), int(os.environ.get("EGRESS_LIFETIME", "0"))
-    # Held here so the task is not collected while the server runs.
-    watcher = asyncio.create_task(watch(idle, lifetime)) if idle or lifetime else None  # noqa: F841
-    async with server:
+    idle, lifetime = int(env.get("EGRESS_IDLE", "0")), int(env.get("EGRESS_LIFETIME", "0"))
+    if idle or lifetime:
+        tasks.append(asyncio.create_task(watch(idle, lifetime)))
+    async with server:  # `tasks` is held here so they are not collected while the server runs
         await server.serve_forever()
 
 

@@ -46,7 +46,7 @@ def test_log_mode_allows_everything():
 
 
 def test_unknown_mode_is_refused():
-    with pytest.raises(SystemExit, match="EGRESS_MODE"):
+    with pytest.raises(gw.ConfigError, match="EGRESS_MODE"):
         gw.Policy.from_env({"EGRESS_MODE": "open"})
 
 
@@ -80,7 +80,7 @@ def test_dns_without_redirect_refuses_and_records():
     packet = _query("Direct.Example.com", 28)
     name, qtype, end = gw.dns_question(packet)
     assert (name, qtype, end) == ("direct.example.com", 28, len(packet))
-    reply, event = gw.dns_answer(packet, "")
+    reply, event = gw.dns_answer(packet, "", gw.Sandbox())
     ident, flags, questions, answers = struct.unpack("!HHHH", reply[:8])
     assert ident == 0xBEEF and questions == 1 and answers == 0
     assert flags & 0x8000 and flags & 0x0100 and flags & 0x000F == 3  # a response, RD echoed, NXDOMAIN
@@ -88,19 +88,22 @@ def test_dns_without_redirect_refuses_and_records():
     assert event["verdict"] == "deny" and event["host"] == "direct.example.com" and event["qtype"] == "AAAA"
 
 
-def test_dns_with_redirect_answers_allowed_names_with_the_gateway(monkeypatch):
-    monkeypatch.setattr(gw, "POLICY", gw.Policy(allow=(("github.com", 0),)))
+def test_dns_with_redirect_answers_allowed_names_with_the_gateway():
+    sandbox = gw.Sandbox(policy=gw.Policy(allow=(("github.com", 0),)))
     packet = _query("github.com")
-    reply, event = gw.dns_answer(packet, "10.89.1.254")
+    reply, event = gw.dns_answer(packet, "10.89.1.254", sandbox)
     flags, _, answers = struct.unpack("!HHH", reply[2:8])
     assert flags & 0x000F == 0 and answers == 1 and reply.endswith(bytes([10, 89, 1, 254]))
     assert event["verdict"] == "allow"
     # No IPv6 route: the name exists, with no AAAA.
-    reply, _ = gw.dns_answer(_query("github.com", 28), "10.89.1.254")
+    reply, _ = gw.dns_answer(_query("github.com", 28), "10.89.1.254", sandbox)
     assert struct.unpack("!HHH", reply[2:8])[0] & 0x000F == 0 and struct.unpack("!HHH", reply[2:8])[2] == 0
     # A name the policy would refuse does not resolve at all.
-    reply, event = gw.dns_answer(_query("evil.com"), "10.89.1.254")
+    reply, event = gw.dns_answer(_query("evil.com"), "10.89.1.254", sandbox)
     assert struct.unpack("!H", reply[2:4])[0] & 0x000F == 3 and event["verdict"] == "deny"
+    # An address no sandbox is registered at resolves nothing.
+    reply, event = gw.dns_answer(packet, "10.89.1.254", None)
+    assert struct.unpack("!H", reply[2:4])[0] & 0x000F == 3 and event["detail"] == "unregistered"
 
 
 def _client_hello(server_name: str | None) -> bytes:
@@ -129,38 +132,41 @@ def test_dns_question_rejects_garbage():
         gw.dns_question(b"\x00" * 5)
 
 
-def test_events_are_json_lines_without_empty_fields(capsys, monkeypatch):
-    monkeypatch.setattr(gw, "SANDBOX", "burst-t")
-    gw.emit("connect", "deny", id="x-1", host="evil.com", port=443, detail="")
+def test_events_are_json_lines_without_empty_fields(capsys):
+    gw.emit("connect", "deny", sandbox=gw.Sandbox(name="burst-t"), id="x-1", host="evil.com", port=443, detail="")
     event = json.loads(capsys.readouterr().out)
     assert event["sandbox"] == "burst-t" and event["verdict"] == "deny" and event["port"] == 443
     assert "detail" not in event
 
 
-def test_inject_rules_match_host_and_path(monkeypatch):
+def test_inject_rules_match_host_and_path():
     rules = gw.Inject.parse(
         '[{"host": "GitHub.com", "path": "/o/r.git/*", "headers": {"Authorization": "Basic abc"}}]'
     )
-    monkeypatch.setattr(gw, "INJECT", rules)
-    assert gw.inject_for("github.com", "/o/r.git/info/refs?service=git-upload-pack") is rules[0]
-    assert gw.inject_for("github.com", "/o/r-other.git/info/refs") is None
-    assert gw.inject_for("api.github.com", "/o/r.git/info/refs") is None
+    sandbox = gw.Sandbox(inject=rules)
+    assert sandbox.inject_for("github.com", "/o/r.git/info/refs?service=git-upload-pack") is rules[0]
+    assert sandbox.inject_for("github.com", "/o/r-other.git/info/refs") is None
+    assert sandbox.inject_for("api.github.com", "/o/r.git/info/refs") is None
 
 
 @pytest.mark.parametrize("path", [
     "/o/r.git/../other.git/info/refs", "/o/r.git/%2e%2e/other.git/info/refs",
     "/o/r.git/..%2Fother.git/info/refs", "/o/r.git//info/refs", "/o/r.git/./info/refs",
 ])
-def test_inject_skips_paths_that_could_mean_something_else(monkeypatch, path):
-    monkeypatch.setattr(gw, "INJECT", gw.Inject.parse('[{"host": "github.com", "path": "/o/r.git/*", "headers": {"A": "b"}}]'))
-    assert gw.inject_for("github.com", path) is None
+def test_inject_skips_paths_that_could_mean_something_else(path):
+    sandbox = gw.Sandbox(inject=gw.Inject.parse('[{"host": "github.com", "path": "/o/r.git/*", "headers": {"A": "b"}}]'))
+    assert sandbox.inject_for("github.com", path) is None
 
 
 def test_inject_rules_are_validated():
-    with pytest.raises(SystemExit, match="exact host"):
+    with pytest.raises(gw.ConfigError, match="exact host"):
         gw.Inject.parse('[{"host": "*.github.com", "headers": {}}]')
-    with pytest.raises(SystemExit, match="single lines"):
+    with pytest.raises(gw.ConfigError, match="single lines"):
         gw.Inject.parse('[{"host": "github.com", "headers": {"A": "b\\r\\nX: y"}}]')
+    with pytest.raises(gw.ConfigError, match="malformed"):
+        gw.Inject.from_items([{"headers": {}}])
+    with pytest.raises(gw.ConfigError, match="JSON list"):
+        gw.Inject.parse('{"host": "github.com"}')
     assert gw.Inject.parse("") == ()
 
 
@@ -220,13 +226,12 @@ def test_certificates_chain_to_the_gateways_ca_and_are_made_on_demand(tmp_path):
 
 def test_credentials_can_be_for_another_port(monkeypatch):
     rules = gw.Inject.parse('[{"host": "10.0.0.5", "port": 6443, "headers": {"Authorization": "Bearer t"}}]')
-    monkeypatch.setattr(gw, "INJECT", rules)
-    monkeypatch.setattr(gw, "INTERCEPT", 1)
-    monkeypatch.setattr(gw, "READONLY", False)
-    assert gw.inject_for("10.0.0.5", "/api", 6443) is rules[0]
-    assert gw.inject_for("10.0.0.5", "/api", 443) is None and gw.inject_for("10.0.0.5", "/api") is None
-    assert gw.intercepts("10.0.0.5", 6443) and not gw.intercepts("10.0.0.5", 443)
-    with pytest.raises(SystemExit, match="port"):
+    sandbox = gw.Sandbox(inject=rules)
+    monkeypatch.setattr(gw, "CERTIFICATES", object())
+    assert sandbox.inject_for("10.0.0.5", "/api", 6443) is rules[0]
+    assert sandbox.inject_for("10.0.0.5", "/api", 443) is None and sandbox.inject_for("10.0.0.5", "/api") is None
+    assert sandbox.intercepts("10.0.0.5", 6443) and not sandbox.intercepts("10.0.0.5", 443)
+    with pytest.raises(gw.ConfigError, match="port"):
         gw.Inject.parse('[{"host": "a.com", "port": "x", "headers": {"A": "b"}}]')
 
 
@@ -236,52 +241,52 @@ def test_upstream_ca_is_a_context_per_host(tmp_path):
     found = gw.upstream_cas(json.dumps([{"host": "10.0.0.5", "ca": (tmp_path / "ca.crt").read_text()}]))
     assert set(found) == {"10.0.0.5"} and found["10.0.0.5"].verify_mode == ssl.CERT_REQUIRED
     assert gw.upstream_cas("") == {}
-    with pytest.raises(SystemExit, match="PEM"):
+    with pytest.raises(gw.ConfigError, match="PEM"):
         gw.upstream_cas('[{"host": "a.com", "ca": "nope"}]')
 
 
-def test_read_only_lets_reads_and_listed_writes_through(monkeypatch):
-    monkeypatch.setattr(gw, "READONLY", True)
-    monkeypatch.setattr(gw, "WRITES", gw.Write.parse(json.dumps([
+def test_read_only_lets_reads_and_listed_writes_through():
+    sandbox = gw.Sandbox(readonly=True, writes=gw.Write.parse(json.dumps([
         {"host": "api.anthropic.com", "method": "post", "path": "/v1/messages*"},
         {"host": "*", "method": "POST", "path": "*/git-upload-pack"},
     ])))
-    assert gw.may_send("api.github.com", "GET", "/repos/o/r/pulls")
-    assert gw.may_send("api.github.com", "head", "/")
-    assert not gw.may_send("api.github.com", "POST", "/repos/o/r/issues")
-    assert not gw.may_send("api.github.com", "PUT", "/repos/o/r/pulls/1/merge")
-    assert not gw.may_send("api.github.com", "DELETE", "/repos/o/r")
-    assert gw.may_send("api.anthropic.com", "POST", "/v1/messages?beta=true")
-    assert gw.may_send("api.anthropic.com", "POST", "/v1/messages/count_tokens")
-    assert not gw.may_send("api.anthropic.com", "POST", "/v1/files")
-    assert not gw.may_send("api.anthropic.com", "PUT", "/v1/messages")
-    assert gw.may_send("github.com", "POST", "/o/r.git/git-upload-pack")
-    assert not gw.may_send("github.com", "POST", "/o/r.git/git-receive-pack")
+    assert sandbox.may_send("api.github.com", "GET", "/repos/o/r/pulls")
+    assert sandbox.may_send("api.github.com", "head", "/")
+    assert not sandbox.may_send("api.github.com", "POST", "/repos/o/r/issues")
+    assert not sandbox.may_send("api.github.com", "PUT", "/repos/o/r/pulls/1/merge")
+    assert not sandbox.may_send("api.github.com", "DELETE", "/repos/o/r")
+    assert sandbox.may_send("api.anthropic.com", "POST", "/v1/messages?beta=true")
+    assert sandbox.may_send("api.anthropic.com", "POST", "/v1/messages/count_tokens")
+    assert not sandbox.may_send("api.anthropic.com", "POST", "/v1/files")
+    assert not sandbox.may_send("api.anthropic.com", "PUT", "/v1/messages")
+    assert sandbox.may_send("github.com", "POST", "/o/r.git/git-upload-pack")
+    assert not sandbox.may_send("github.com", "POST", "/o/r.git/git-receive-pack")
     # A path that could be read differently upstream matches no exception.
-    assert not gw.may_send("api.anthropic.com", "POST", "/v1/messages/../files")
-    assert not gw.may_send("api.anthropic.com", "POST", "/v1/messages%2f..%2ffiles")
-    monkeypatch.setattr(gw, "READONLY", False)
-    assert gw.may_send("api.github.com", "DELETE", "/repos/o/r")
+    assert not sandbox.may_send("api.anthropic.com", "POST", "/v1/messages/../files")
+    assert not sandbox.may_send("api.anthropic.com", "POST", "/v1/messages%2f..%2ffiles")
+    sandbox.readonly = False
+    assert sandbox.may_send("api.github.com", "DELETE", "/repos/o/r")
 
 
 def test_write_rules_need_a_host_and_a_method():
-    with pytest.raises(SystemExit, match="host and a method"):
+    with pytest.raises(gw.ConfigError, match="host and a method"):
         gw.Write.parse('[{"host": "a.com"}]')
-    with pytest.raises(SystemExit, match="host and a method"):
+    with pytest.raises(gw.ConfigError, match="host and a method"):
         gw.Write.parse('[{"method": "POST"}]')
+    with pytest.raises(gw.ConfigError, match="host and a method"):
+        gw.Write.from_items(["POST"])
     assert gw.Write.parse("") == ()
 
 
 def test_read_only_intercepts_every_tls_host_on_any_port(monkeypatch):
-    monkeypatch.setattr(gw, "INTERCEPT", 1234)
-    monkeypatch.setattr(gw, "INJECT", gw.Inject.parse('[{"host": "github.com", "headers": {"A": "b"}}]'))
-    monkeypatch.setattr(gw, "READONLY", False)
-    assert gw.intercepts("github.com", 443) and not gw.intercepts("github.com", 8443)
-    assert not gw.intercepts("example.com", 443)
-    monkeypatch.setattr(gw, "READONLY", True)
-    assert gw.intercepts("example.com", 443) and gw.intercepts("kube.lan", 6443)
-    monkeypatch.setattr(gw, "INTERCEPT", 0)
-    assert not gw.intercepts("example.com", 443)
+    monkeypatch.setattr(gw, "CERTIFICATES", object())
+    sandbox = gw.Sandbox(inject=gw.Inject.parse('[{"host": "github.com", "headers": {"A": "b"}}]'))
+    assert sandbox.intercepts("github.com", 443) and not sandbox.intercepts("github.com", 8443)
+    assert not sandbox.intercepts("example.com", 443)
+    sandbox.readonly = True
+    assert sandbox.intercepts("example.com", 443) and sandbox.intercepts("kube.lan", 6443)
+    monkeypatch.setattr(gw, "CERTIFICATES", None)
+    assert not sandbox.intercepts("example.com", 443)
 
 
 def test_expired_on_idle_or_lifetime():
@@ -299,38 +304,35 @@ def test_closing_a_connection_is_not_activity(capsys):
     capsys.readouterr()
 
 
-def test_approvals_add_to_the_allowlist_and_are_reread(tmp_path, monkeypatch):
+def test_approvals_add_to_the_allowlist_and_are_reread(tmp_path):
     path = tmp_path / "approvals.json"
-    monkeypatch.setattr(gw, "POLICY", gw.Policy(allow=(("github.com", 0),)))
-    monkeypatch.setattr(gw, "APPROVALS", gw.Approvals(str(path)))
-    assert gw.permitted("github.com", 443) and not gw.permitted("example.com", 443)
-    assert not gw.resolvable("example.com")
+    sandbox = gw.Sandbox(policy=gw.Policy(allow=(("github.com", 0),)), approvals=gw.Approvals(str(path)))
+    assert sandbox.permitted("github.com", 443) and not sandbox.permitted("example.com", 443)
+    assert not sandbox.resolvable("example.com")
     path.write_text(json.dumps({"approvals": [{"allow": "example.com", "id": "a-1"}, {"allow": "llm.lan:8080"}]}))
-    assert gw.permitted("example.com", 443) and gw.resolvable("example.com")
-    assert not gw.permitted("example.com", 8443)
-    assert gw.permitted("llm.lan", 8080) and not gw.permitted("llm.lan", 443) and gw.resolvable("llm.lan")
+    assert sandbox.permitted("example.com", 443) and sandbox.resolvable("example.com")
+    assert not sandbox.permitted("example.com", 8443)
+    assert sandbox.permitted("llm.lan", 8080) and not sandbox.permitted("llm.lan", 443) and sandbox.resolvable("llm.lan")
     path.write_text(json.dumps({"approvals": []}) + " ")
-    assert not gw.permitted("example.com", 443)
+    assert not sandbox.permitted("example.com", 443)
 
 
-def test_a_once_approval_is_spent_by_one_connection_but_not_by_a_lookup(tmp_path, monkeypatch):
+def test_a_once_approval_is_spent_by_one_connection_but_not_by_a_lookup(tmp_path):
     path = tmp_path / "approvals.json"
     path.write_text(json.dumps({"approvals": [{"allow": "example.com", "once": True, "id": "a-1"}]}))
-    monkeypatch.setattr(gw, "POLICY", gw.Policy())
-    monkeypatch.setattr(gw, "APPROVALS", gw.Approvals(str(path)))
-    assert gw.resolvable("example.com") and gw.resolvable("example.com")
-    assert gw.permitted("example.com", 443)
-    assert not gw.permitted("example.com", 443) and not gw.resolvable("example.com")
+    sandbox = gw.Sandbox(approvals=gw.Approvals(str(path)))
+    assert sandbox.resolvable("example.com") and sandbox.resolvable("example.com")
+    assert sandbox.permitted("example.com", 443)
+    assert not sandbox.permitted("example.com", 443) and not sandbox.resolvable("example.com")
 
 
-def test_expired_and_malformed_approvals_allow_nothing(tmp_path, monkeypatch, capsys):
+def test_expired_and_malformed_approvals_allow_nothing(tmp_path, capsys):
     path = tmp_path / "approvals.json"
     path.write_text(json.dumps({"approvals": [{"allow": "old.com", "expires": 1}, {"allow": "new.com", "expires": 4102444800}]}))
-    monkeypatch.setattr(gw, "POLICY", gw.Policy())
-    monkeypatch.setattr(gw, "APPROVALS", gw.Approvals(str(path)))
-    assert not gw.permitted("old.com", 443) and gw.permitted("new.com", 443)
+    sandbox = gw.Sandbox(approvals=gw.Approvals(str(path)))
+    assert not sandbox.permitted("old.com", 443) and sandbox.permitted("new.com", 443)
     path.write_text("{ not json")
-    assert gw.permitted("new.com", 443)  # what was read before stands
+    assert sandbox.permitted("new.com", 443)  # what was read before stands
     assert "ignoring" in capsys.readouterr().err
 
 
