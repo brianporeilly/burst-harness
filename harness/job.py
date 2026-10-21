@@ -453,7 +453,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
 
     from .agent import offload_storage
     from .cli import _report
-    from .models import build_model
+    from .models import build_model, retry_strategy
 
     cfg, target = ctx.cfg, ctx.target
     finished: dict[str, str] = {}
@@ -477,6 +477,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     sandbox = target.sandbox()
     agent = Agent(
         model=build_model(cfg),
+        retry_strategy=retry_strategy(cfg),
         storage=LocalFileStorage(str(state_dir)),
         sandbox=sandbox,
         system_prompt=_rules(target, has_scripts=has_scripts, ending=CALL_FINISH),

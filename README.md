@@ -587,6 +587,18 @@ model_timeout = 900                   # seconds; LlamaCppModel's own default is 
                                       #   far shorter than a long prefill
 ```
 
+`model_timeout` is the longest wait for the *next* byte, not for the whole
+response: a reply that keeps streaming is never cut, and one that goes silent
+that long (a huge prefill, or reasoning the server does not stream) is. A
+timed-out call is tried again `model_retries` times (default 2; 0 gives up at
+once). Each retry is logged, as is every retry of a busy server (503) or rate
+limit, which Strands backs off and retries on its own.
+
+Every key in `model_params` reaches llama-server, including those Strands does
+not know (it forwards only its own list): `chat_template_kwargs`
+(`{"enable_thinking": false}`), `n_predict`, `reasoning_format`, `dry_multiplier`
+and the rest. Those are named once in the log when first sent.
+
 The server must run with `--jinja` for tool calls, and the model has to be able to
 close a multi-step tool loop — small instruct models often cannot.
 

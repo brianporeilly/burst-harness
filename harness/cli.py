@@ -522,6 +522,10 @@ def cmd_release(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Progress should reach whatever is reading as it happens, even through a pipe.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(
         prog="harness",
         description=__doc__,

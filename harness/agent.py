@@ -17,7 +17,7 @@ from strands.vended_tools import file_editor, handoff_to_user, shell
 
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
-from .models import build_model
+from .models import build_model, retry_strategy
 from .tools import HarnessContext, make_tools
 
 # Fixed so a resumed run addresses the same snapshot; the session id is the slug.
@@ -91,6 +91,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
     doc_rel = f"{cfg.docs_dir}/{ctx.slug}.md"
     agent = Agent(
         model=model,
+        retry_strategy=retry_strategy(cfg),
         agent_id=AGENT_ID,
         session_manager=session,
         storage=storage,

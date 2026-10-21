@@ -24,3 +24,84 @@ def test_anthropic_params_merge_over_native():
     model = build_model(HarnessConfig(model_params='{"temperature": 1.0}'))
     assert model.config["params"]["temperature"] == 1.0
     assert model.config["params"]["output_config"] == {"effort": "high"}
+
+
+def _llamacpp(params: str):
+    return build_model(HarnessConfig(provider="llamacpp", base_url="http://llm.example:8080", model_params=params))
+
+
+def test_llamacpp_sends_params_strands_does_not_know(caplog):
+    model = _llamacpp('{"temperature": 0.2, "chat_template_kwargs": {"enable_thinking": false}, "n_predict": 64}')
+    with caplog.at_level("WARNING"):
+        request = model._format_request([{"role": "user", "content": [{"text": "hi"}]}])
+        model._format_request([{"role": "user", "content": [{"text": "again"}]}])
+    assert request["temperature"] == 0.2
+    assert request["chat_template_kwargs"] == {"enable_thinking": False} and request["n_predict"] == 64
+    announced = [r.getMessage() for r in caplog.records if "Passing to llama.cpp" in r.getMessage()]
+    assert announced == ["Passing to llama.cpp as given (Strands does not know them): chat_template_kwargs, n_predict"]
+
+
+def test_llamacpp_params_never_replace_what_strands_builds():
+    request = _llamacpp('{"messages": [], "stream": false}')._format_request(
+        [{"role": "user", "content": [{"text": "hi"}]}])
+    assert request["stream"] is True and request["messages"]
+
+
+def test_max_tokens_in_model_params_is_not_warned_about(caplog):
+    with caplog.at_level("WARNING"):
+        _llamacpp('{"max_tokens": 8192}')
+    assert not [r for r in caplog.records if "max_tokens" in r.getMessage()]
+    with caplog.at_level("WARNING"):
+        _llamacpp("")
+    assert [r for r in caplog.records if "has no max_tokens setting" in r.getMessage()]
+
+
+def _after(exception):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(retry=False, stop_response=None, exception=exception)
+
+
+def test_timeouts_are_retried_model_retries_times_and_logged(caplog, monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from harness.models import retry_strategy
+
+    strategy = retry_strategy(HarnessConfig(model_retries=2, model_timeout=900))
+    monkeypatch.setattr(strategy, "_calculate_delay", lambda attempt: 0)
+    events = [_after(httpx.ReadTimeout("timed out")) for _ in range(3)]
+    with caplog.at_level("WARNING"):
+        for event in events:
+            asyncio.run(strategy._handle_after_model_call(event))
+    assert [e.retry for e in events] == [True, True, False]
+    messages = [r.getMessage() for r in caplog.records]
+    assert "retry 1 of 2" in messages[0] and "retry 2 of 2" in messages[1]
+    assert "no retries left (model_retries=2)" in messages[2]
+
+    # A success resets the count.
+    asyncio.run(strategy._handle_after_model_call(_after(None)))
+    event = _after(httpx.ReadTimeout("timed out"))
+    asyncio.run(strategy._handle_after_model_call(event))
+    assert event.retry
+
+
+def test_no_timeout_retries_and_throttling_still_retried(caplog, monkeypatch):
+    import asyncio
+
+    import httpx
+    from strands.types.exceptions import ModelThrottledException
+
+    from harness.models import retry_strategy
+
+    strategy = retry_strategy(HarnessConfig(model_retries=0))
+    monkeypatch.setattr(strategy, "_calculate_delay", lambda attempt: 0)
+    timeout = _after(httpx.ReadTimeout("timed out"))
+    throttled = _after(ModelThrottledException("llama.cpp server is busy or overloaded"))
+    other = _after(ValueError("bad request"))
+    with caplog.at_level("WARNING"):
+        for event in (timeout, throttled, other):
+            asyncio.run(strategy._handle_after_model_call(event))
+    assert (timeout.retry, throttled.retry, other.retry) == (False, True, False)
+    assert any("throttled" in r.getMessage() and "retry 1 of 5" in r.getMessage() for r in caplog.records)

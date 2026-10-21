@@ -107,6 +107,10 @@ class HarnessConfig:
     # LlamaCppModel defaults to 30s, and prompt prefill on a modest GPU can take
     # minutes. The other providers' SDKs already default to ~10 minutes.
     model_timeout: int = 600
+    # How often a model request that timed out is tried again (0: give up at
+    # the first). Throttling (429, 503) is retried by Strands' own backoff.
+    # Every retry of either kind is logged.
+    model_retries: int = 2
     model_id: str = "claude-opus-5-5"
     max_tokens: int = 32000
     effort: str = "high"
