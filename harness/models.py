@@ -264,13 +264,31 @@ def _timed_out(err: BaseException | None) -> bool:
     return False
 
 
+# A connection that was refused, reset or cut mid-reply: what a server that is
+# restarting looks like (httpx's names, and the SDKs' wrapping of them).
+_UNREACHABLE = {"RemoteProtocolError", "ConnectError", "ReadError", "WriteError", "APIConnectionError"}
+
+
+def _unreachable(err: BaseException | None) -> bool:
+    """Whether a model call failed because the server could not be reached or went away mid-reply."""
+    seen = 0
+    while err is not None and seen < 10:
+        if isinstance(err, ConnectionError) or type(err).__name__ in _UNREACHABLE:
+            return True
+        err, seen = err.__cause__ or err.__context__, seen + 1
+    return False
+
+
 def retry_strategy(cfg: HarnessConfig) -> Any:
-    """Strands' retries, plus `model_retries` on timeouts, with every retry logged.
+    """Strands' retries, plus `model_retries` on timeouts and backoff on a server
+    that went away, with every retry logged.
 
     Strands retries throttling (429, 503) with backoff and says so only at debug
-    level, and does not retry a timeout at all. A model that stalls should be
-    visible: each retry, and each giving up, gets a warning with how long the
-    call had been running.
+    level, and does not retry a timeout or a dropped connection at all. A server
+    that is restarting drops the call, then refuses connections, then answers
+    503 while it loads the model; all three are backed off and retried, for up
+    to about eight minutes. A model that stalls should be visible: each retry,
+    and each giving up, gets a warning with how long the call had been running.
     """
     from strands.event_loop._retry import ModelRetryStrategy
     from strands.hooks.events import BeforeModelCallEvent
@@ -278,7 +296,7 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
 
     class LoggedRetries(ModelRetryStrategy):
         def __init__(self) -> None:
-            super().__init__(max_attempts=max(6, cfg.model_retries + 1))
+            super().__init__(max_attempts=max(8, cfg.model_retries + 1))
             self._timeouts = 0
             self._started = 0.0
 
@@ -296,12 +314,15 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
         def is_retryable(self, exception: Exception) -> bool:
             took = time.monotonic() - self._started if self._started else 0.0
             what = f"{type(exception).__name__}: {exception}".rstrip(": ")
-            if isinstance(exception, ModelThrottledException):
+            if _timed_out(exception):
+                pass  # below; an httpx timeout is not a dropped connection
+            elif isinstance(exception, ModelThrottledException) or _unreachable(exception):
+                why = "throttled" if isinstance(exception, ModelThrottledException) else "lost the server"
                 if self._current_attempt + 1 >= self._max_attempts:
-                    logger.warning("Model call throttled after %.0fs (%s); giving up after %d attempts.",
-                                   took, what, self._max_attempts)
+                    logger.warning("Model call %s after %.0fs (%s); giving up after %d attempts.",
+                                   why, took, what, self._max_attempts)
                 else:
-                    logger.warning("Model call throttled after %.0fs (%s); retry %d of %d in %ds.", took, what,
+                    logger.warning("Model call %s after %.0fs (%s); retry %d of %d in %ds.", why, took, what,
                                    self._current_attempt + 1, self._max_attempts - 1,
                                    self._calculate_delay(self._current_attempt))
                 return True

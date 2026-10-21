@@ -104,4 +104,43 @@ def test_no_timeout_retries_and_throttling_still_retried(caplog, monkeypatch):
         for event in (timeout, throttled, other):
             asyncio.run(strategy._handle_after_model_call(event))
     assert (timeout.retry, throttled.retry, other.retry) == (False, True, False)
-    assert any("throttled" in r.getMessage() and "retry 1 of 5" in r.getMessage() for r in caplog.records)
+    assert any("throttled" in r.getMessage() and "retry 1 of 7" in r.getMessage() for r in caplog.records)
+
+
+def test_a_server_that_went_away_is_backed_off_and_retried(caplog, monkeypatch):
+    """A restarting llama-server: the reply is cut, then connections are refused, then it loads (503)."""
+    import asyncio
+
+    import httpx
+    from strands.types.exceptions import ModelThrottledException
+
+    from harness.models import retry_strategy
+
+    strategy = retry_strategy(HarnessConfig(model_retries=0))
+    delays = []
+    monkeypatch.setattr(strategy, "_calculate_delay", lambda attempt: delays.append(attempt) or 0)
+    cut = httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+    wrapped = RuntimeError("stream failed")
+    wrapped.__cause__ = cut
+    events = [_after(e) for e in (wrapped, httpx.ConnectError("refused"), ConnectionResetError("reset"),
+                                  ModelThrottledException("llama.cpp server is busy or overloaded"))]
+    with caplog.at_level("WARNING"):
+        for event in events:
+            asyncio.run(strategy._handle_after_model_call(event))
+    assert all(e.retry for e in events)
+    messages = [r.getMessage() for r in caplog.records]
+    assert "lost the server" in messages[0] and "RemoteProtocolError" not in messages[0]  # the wrapper is named
+    assert "retry 1 of 7" in messages[0] and "retry 3 of 7" in messages[2] and "throttled" in messages[3]
+
+    # Eight attempts in all, then it gives up.
+    for _ in range(3):
+        asyncio.run(strategy._handle_after_model_call(_after(httpx.ConnectError("refused"))))
+    last = _after(httpx.ConnectError("refused"))
+    with caplog.at_level("WARNING"):
+        asyncio.run(strategy._handle_after_model_call(last))
+    assert not last.retry and "giving up after 8 attempts" in caplog.records[-1].getMessage()
+
+    # A timeout is still a timeout, not a lost server (model_retries=0: not retried).
+    timeout = _after(httpx.ConnectTimeout("timed out"))
+    asyncio.run(strategy._handle_after_model_call(timeout))
+    assert not timeout.retry

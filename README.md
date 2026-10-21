@@ -611,8 +611,10 @@ model_timeout = 900                   # seconds; LlamaCppModel's own default is 
 response: a reply that keeps streaming is never cut, and one that goes silent
 that long (a huge prefill, or reasoning the server does not stream) is. A
 timed-out call is tried again `model_retries` times (default 2; 0 gives up at
-once). Each retry is logged, as is every retry of a busy server (503) or rate
-limit, which Strands backs off and retries on its own.
+once). A server that goes away -- the reply cut off, connections refused, then
+503 while it loads the model again, which is what a crashed llama-server under
+`--restart=always` looks like -- is backed off and retried for up to about eight
+minutes (4s, 8s, 16s ... 240s), as are rate limits. Each retry is logged.
 
 Every key in `model_params` reaches llama-server, including those Strands does
 not know (it forwards only its own list): `chat_template_kwargs`
