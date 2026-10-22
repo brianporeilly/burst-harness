@@ -54,6 +54,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -320,6 +321,11 @@ def start_terminal(box: str, workdir: str, *, env: dict[str, str] | None = None,
         names = [arg for key in env for arg in ("-e", key)]
         return _podman("exec", *(["--detach"] if detach else []), "--workdir", workdir, *names, box, *argv, env=env)
 
+    return terminal_in(run, claude=claude)
+
+
+def terminal_in(run: Callable[..., subprocess.CompletedProcess[str]], *, claude: bool = False) -> str:
+    """start_terminal's work, given `run(*argv, detach=False)`, which runs a command in the sandbox."""
     # zellij will not start its web server without a config file. One you have
     # edited (it is in the home volume) is left alone.
     setup = ('mkdir -p "$HOME/.config/zellij" && { [ -f "$HOME/.config/zellij/config.kdl" ] || '
@@ -540,7 +546,8 @@ def remove(cfg: HarnessConfig, name: str) -> str:
 
 def list_sessions(cfg: HarnessConfig) -> list[dict[str, str]]:
     """Every session with a record or a volume, and whether it is running."""
-    names = {path.stem for path in (Path(cfg.state_dir).expanduser() / "sessions").glob("*.json")}
+    names = {path.stem for path in (Path(cfg.state_dir).expanduser() / "sessions").glob("*.json")
+             if load_record(cfg, path.stem).get("target") != "agent-sandbox"}  # a cluster's: cluster_session
     proc = _podman("volume", "ls", "--format", "{{.Name}}")
     for volume in proc.stdout.split() if proc.returncode == 0 else []:
         if match := re.fullmatch(r"burst-session-(.+)-work", volume):

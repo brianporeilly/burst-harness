@@ -56,7 +56,8 @@ control plane needs to store specs).
   branch protection, not `git_policy.py`.
 - **Root filesystem.** Read-only root is an option, not the default. Root in the
   container (for `dnf install`) is an opt-in: on rootless podman now, in the
-  cluster only once user-namespace pods (`hostUsers: false`) are verified there.
+  cluster once there is a template with user-namespace pods (`hostUsers: false`),
+  which work there (checked 2026-10-21, phase 6 step 4).
   Agents are told to prefer non-root installs.
 - **Web terminal (zellij) is optional** per session, bound to localhost in the
   sandbox and reached through the gateway. Both UIs require authentication even
@@ -173,8 +174,7 @@ tell it from the agent: if the gateway can reach the internet, so can the agent
 pods to reach only it, needing no extra privileges. It tells sandboxes apart by
 pod IP; per-sandbox policy and credentials are pushed to it after a claim, the
 way approvals already reach a running gateway, which keeps warm pools usable.
-agent-sandbox stays the substrate. Open: whether a claimed sandbox's volume can
-outlive a stop, which sessions need. home-ops #1083 (in-cluster task runs,
+agent-sandbox stays the substrate. home-ops #1083 (in-cluster task runs,
 without a gateway) comes first.
 
 Steps:
@@ -196,13 +196,33 @@ Steps:
    podman job into a cluster one), but cannot pass secrets into the sandbox:
    a warm-pool claim takes no environment. The sandbox image trusts a CA
    mounted into the pod (`BURST_GATEWAY_CA`), building its bundle at start.
-3. home-ops: the gateway (Deployment, Service, CA Certificate, control token)
-   in `agent-sandbox-system`; Calico letting sandbox pods reach only the
-   gateway's proxy port (no DNS), the gateway reach the internet and the hosts
-   jobs name, and only the driver reach its control port; the proxy and CA in
-   the SandboxTemplate; a cluster-watcher CronJob.
-4. HTTPRoute per session. Verify user-namespace pods before allowing root
-   there.
+3. home-ops: done (2026-10-21, home-ops #1224-#1227). The gateway
+   (Deployment, Service, CA Certificate, control token) in
+   `agent-sandbox-system`; Calico letting sandbox pods reach only the gateway's
+   proxy port (no DNS), the gateway reach the internet and the hosts jobs name,
+   and only the driver reach its control port; the proxy and CA in the
+   SandboxTemplate, which also declares its own network policy (the
+   controller's default allows all public egress, and Calico counts that as an
+   allow); a cluster-watcher CronJob, whose state volume is ceph-block, as
+   CephFS mounts fail here.
+4. Sessions on the cluster, with an HTTPRoute per session: built (2026-10-21).
+   `harness session` with `target = "agent-sandbox"` claims `session-NAME`
+   from the pool (no deadline unless `--lifetime`), registers it with the
+   gateway including the Host names of its UI and terminal, starts the UI over
+   `kubectl exec`, and applies an HTTPRoute per name, owned by the claim, to
+   the gateway's new `EGRESS_INBOUND_HTTP` port, which passes each connection
+   to the sandbox holding that name. `stop` suspends the Sandbox
+   (`operatingMode: Suspended`: the pod goes, the workspace volume stays),
+   which answers the open question of whether a volume can outlive a stop;
+   `start` resumes and registers it again. The agent's home is kept on the
+   workspace. `gateway_control = "kubectl://NS/SERVICE:PORT"` reaches the
+   control API by port-forward, for a driver outside the cluster.
+   User-namespace pods checked (2026-10-21): Kubernetes 1.36, Flatcar's 6.12
+   kernel and containerd 2.2 run `hostUsers: false` pods, root inside mapping
+   to an unprivileged host uid, writing and chowning on an idmapped ceph-block
+   volume. Root sessions need a second template with that; not done.
+   Not yet: `--idle` on a cluster, and registrations surviving a gateway
+   restart (today `session start` re-registers).
 
 Open: the control API is plain HTTP inside the cluster, and a registration
 carries credentials, so it relies on Calico keeping everyone but the driver
@@ -347,5 +367,3 @@ gate. No PRs from forks until phase 6's gateway is in place.
 - zellij web's TLS and token requirements behind a proxy.
 - Signing in once, at the orchestrator, instead of to each session's opencode
   password and zellij token. Not before the orchestrator has a login of its own.
-- Cluster Kubernetes, runtime and kernel versions against what
-  `hostUsers: false` needs.

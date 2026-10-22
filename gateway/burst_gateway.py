@@ -16,6 +16,8 @@ the harness.
     EGRESS_INBOUND  comma-separated "PORT=ADDRESS:PORT": connections to this
                     gateway's PORT are passed to that address in the sandbox
                     (default none). The way in to a UI the sandbox serves.
+    EGRESS_INBOUND_HTTP shared only: port where sandboxes' UIs are reached, by
+                    Host name (default 0: off; see Shared, below)
     EGRESS_LISTEN   proxy port (default 3128)
     EGRESS_DNS      UDP port of the resolver (default 53; 0 turns it off)
     EGRESS_REDIRECT port that redirected connections arrive on (default 0: off)
@@ -149,6 +151,16 @@ An address nobody registered is refused everything; so is one whose `ttl` has
 run out, which is how a driver that died without unregistering is cleaned up
 after. Registrations live only in memory: after a restart every sandbox is
 refused until its driver registers it again.
+
+The way in to a UI a sandbox serves (a session's) is EGRESS_INBOUND_HTTP, a
+port where HTTP arrives from the cluster's ingress for every sandbox at once. A
+registration's `inbound`, {"NAME.example.com": 4096}, says which Host names are
+its and the port each goes to; a connection is passed to the sandbox whose name
+its first request's Host header carries, and recorded as an `inbound` event of
+that sandbox. Only one sandbox can hold a name: registering another for it is
+refused (409). A request that is not a WebSocket upgrade is sent on with
+`Connection: close`, so a connection never carries a second request, which
+might be for another sandbox; a name nobody holds gets a 404.
 
 Its TLS is terminated with the CA in EGRESS_CA_CERT and EGRESS_CA_KEY (files),
 so the CA outlives a restart and sandboxes can be told to trust it before any
@@ -435,6 +447,8 @@ class Sandbox:
     # Shared: the address its connections come from, and when its registration lapses.
     address: str = ""
     expires: float = 0.0
+    # Shared: Host name -> the port in the sandbox that EGRESS_INBOUND_HTTP passes it to.
+    inbound: dict[str, int] = field(default_factory=dict)
     # Shared: (sequence number, event), the newest EVENTS_KEPT; `recorded` counts them all.
     events: collections.deque = field(default_factory=lambda: collections.deque(maxlen=EVENTS_KEPT))
     recorded: int = 0
@@ -472,6 +486,15 @@ class Sandbox:
                 raise ConfigError(f"{key} must be a list.")
             return value
 
+        inbound = body.get("inbound", {})
+        if not isinstance(inbound, dict):
+            raise ConfigError("inbound is an object of Host name to port.")
+        for host, port in inbound.items():
+            if not host or len(host) > 253 or set(host) - NAME_CHARS or host.startswith((".", "-")):
+                raise ConfigError(f"inbound names are lowercase host names (got {host!r}).")
+            if not isinstance(port, int) or not 0 < port < 65536:
+                raise ConfigError(f"inbound ports are numbers (got {port!r} for {host}).")
+
         return cls(
             name=name,
             policy=Policy.build(body.get("mode", "allowlist"), items("allow"), body.get("ports") or [443]),
@@ -482,6 +505,7 @@ class Sandbox:
             upstream_ca=upstream_cas_from(items("upstream_ca")),
             address=address,
             expires=now + ttl if ttl else 0.0,
+            inbound=dict(inbound),
         )
 
     def permitted(self, host: str, port: int) -> bool:
@@ -534,7 +558,7 @@ class Sandbox:
 
 
 REGISTRATION_KEYS = frozenset({"address", "ttl", "mode", "allow", "ports", "inject", "readonly", "writes",
-                               "upstream_ca", "approvals"})
+                               "upstream_ca", "approvals", "inbound"})
 NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-.")
 
 # The one sandbox a gateway serves, when it is not shared.
@@ -832,6 +856,50 @@ def inbound_handler(address: str, port: int):
             writer.close()
 
     return handle_inbound
+
+
+def sandbox_serving(host: str) -> Sandbox | None:
+    """Shared: the live registration that holds this Host name."""
+    now = time.time()
+    for name, sandbox in list(SANDBOXES.items()):
+        if host in sandbox.inbound:
+            if sandbox.expires and sandbox.expires <= now:
+                lapse(name, now)
+                return None
+            return sandbox
+    return None
+
+
+def header(head: list[bytes], name: bytes) -> str:
+    """A header's value from a raw request head ("" when it is absent)."""
+    prefix = name.lower() + b":"
+    for line in head[1:]:
+        if line.lower().startswith(prefix):
+            return line[len(prefix):].strip().decode("latin-1")
+    return ""
+
+
+async def handle_inbound_http(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Shared: HTTP from the cluster's ingress, passed to the sandbox whose Host name it carries."""
+    peer = str((writer.get_extra_info("peername") or ("?",))[0])
+    try:
+        head = await read_head(reader)
+        if not head:
+            return writer.close()
+        host = header(head, b"host").partition(":")[0].lower().rstrip(".")  # names only: no IPv6 literal
+        sandbox = sandbox_serving(host) if host else None
+        if sandbox is None:
+            emit("inbound", "deny", id=next_id(), detail="no sandbox has this name", peer=peer, name=host or "-")
+            return await refuse(writer, "404 Not Found", {"error": "no_such_sandbox", "host": host})
+        if "upgrade" in header(head, b"connection").lower() and header(head, b"upgrade"):
+            request = b"".join(head) + b"\r\n"  # a WebSocket: the connection is the session's from here on
+        else:
+            kept = [line for line in head[1:] if not line.lower().startswith((b"connection:", b"keep-alive:"))]
+            request = head[0] + b"".join(kept) + b"Connection: close\r\n\r\n"
+        await relay("inbound", reader, writer, sandbox=sandbox, to_upstream=request, peer=peer,
+                    host=sandbox.address, port=sandbox.inbound[host], name=host)
+    except (asyncio.TimeoutError, ConnectionError, OSError, ValueError):
+        writer.close()
 
 
 # --- terminated TLS: credentials ---
@@ -1189,6 +1257,10 @@ def control(method: str, path: str, query: dict[str, list[str]], body: object, n
             sandbox = Sandbox.register(name, body, now)
         except ConfigError as err:
             return "400 Bad Request", {"error": "bad_registration", "message": str(err)}
+        held = {host: other for other, s in SANDBOXES.items() if other != name and s.address != sandbox.address
+                for host in s.inbound if host in sandbox.inbound}
+        if held:
+            return "409 Conflict", {"error": "name_taken", "message": ", ".join(f"{h} is {o}'s" for h, o in held.items())}
         for other in [n for n, s in SANDBOXES.items() if s.address == sandbox.address and n != name]:
             del SANDBOXES[other]
             emit("sandbox", "replace", name=other, address=sandbox.address, detail=f"address now {name}'s")
@@ -1327,6 +1399,9 @@ async def main() -> None:
         await asyncio.start_server(handle_control, "0.0.0.0", control_port)
         tasks.append(asyncio.create_task(prune()))
         what = f"shared: sandboxes registered on control :{control_port}"
+        if inbound_port := int(env.get("EGRESS_INBOUND_HTTP", "0") or 0):
+            await asyncio.start_server(handle_inbound_http, "0.0.0.0", inbound_port)
+            what += f", their UIs on :{inbound_port}"
     server = await asyncio.start_server(handle, "0.0.0.0", listen)
     print(f"burst-gateway: proxy :{listen}, dns :{dns_port or 'off'}, redirected :{REDIRECT or 'off'}; {what}",
           file=sys.stderr, flush=True)

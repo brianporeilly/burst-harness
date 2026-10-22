@@ -10,12 +10,22 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import agent_sandbox, containers, egress, git, job, session, state
+from . import (
+    agent_sandbox,
+    cluster_session,
+    containers,
+    egress,
+    git,
+    job,
+    session,
+    state,
+)
 from .agent import build_agent
 from .claude_code import ClaudeCodeEngine
 from .config import CONFIG_FILENAME, HarnessConfig
 from .context import HarnessContext
 from .exec_target import ExecError, ExecTarget, KubectlTarget, LocalTarget
+from .gateway_control import GatewayError
 
 ENGINES = ("strands", "claude-code")
 
@@ -425,11 +435,13 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_session(args: argparse.Namespace) -> int:
     """Long-lived interactive sandboxes: see session.py."""
     cfg = HarnessConfig.load(None, _overrides(args))
-    if cfg.target not in ("local", "podman"):
-        raise SystemExit(f"harness session runs on podman for now (target is {cfg.target}).")
+    if cfg.target not in ("local", "podman", "agent-sandbox"):
+        raise SystemExit(f"harness session runs on podman or agent-sandbox (target is {cfg.target}).")
+    # On a cluster: the same commands, on a claimed sandbox behind the shared gateway.
+    sessions: Any = cluster_session if cfg.target == "agent-sandbox" else session
     try:
         if args.action == "list":
-            rows = session.list_sessions(cfg)
+            rows = sessions.list_sessions(cfg)
             if not rows:
                 print("No sessions.")
             for row in rows:
@@ -438,16 +450,17 @@ def cmd_session(args: argparse.Namespace) -> int:
         if not args.name:
             raise SystemExit(f"harness session {args.action} needs a session name.")
         if args.action == "start":
-            print(session.start(cfg, args.name, port=args.port or 0, bind=args.bind or "", config_file=args.opencode_config or "",
+            print(sessions.start(cfg, args.name, port=args.port or 0, bind=args.bind or "", config_file=args.opencode_config or "",
                                 terminal=args.terminal, terminal_port=args.terminal_port or 0,
                                 idle=args.idle, lifetime=args.lifetime, agent=args.agent,
                                 allow=tuple(h.strip() for h in args.allow.split(",") if h.strip())
                                 if args.allow is not None else None))
         elif args.action == "stop":
-            print(session.stop(cfg, args.name))
+            print(sessions.stop(cfg, args.name))
         else:
-            print(session.remove(cfg, args.name))
-    except (session.SessionError, containers.ContainerError, git.GitError, ExecError) as err:
+            print(sessions.remove(cfg, args.name))
+    except (session.SessionError, containers.ContainerError, git.GitError, ExecError, agent_sandbox.AgentSandboxError,
+            GatewayError) as err:
         raise SystemExit(str(err)) from err
     return 0
 
@@ -624,7 +637,8 @@ def main(argv: list[str] | None = None) -> int:
     ls = sub.add_parser("list", help="Show containers, sandbox claims, and harness Jobs in flight.")
     ls.set_defaults(func=cmd_list)
 
-    sess = sub.add_parser("session", help="Long-lived interactive sandboxes with a web UI (podman).")
+    sess = sub.add_parser("session", help="Long-lived interactive sandboxes with a web UI (podman, or "
+                                          "agent-sandbox behind the cluster's gateway).")
     sess.add_argument("action", choices=["start", "stop", "rm", "list"],
                       help="start: start it, or show a running one. stop: remove the containers, keep the "
                            "workspace. rm: delete the workspace too. list: sessions and where they are.")

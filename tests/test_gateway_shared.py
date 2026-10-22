@@ -306,8 +306,9 @@ def test_a_shared_gateway_needs_a_token_and_a_ca(tmp_path):
 def test_a_shared_gateway_starts_and_registers(tmp_path):
     ca = gw.Certificates(tmp_path / "ca")
     (tmp_path / "token").write_text(TOKEN + "\n")
-    listen, control_port = _free_port(), _free_port()
+    listen, control_port, inbound_port = _free_port(), _free_port(), _free_port()
     proc = _start({"EGRESS_LISTEN": str(listen), "EGRESS_CONTROL": str(control_port),
+                   "EGRESS_INBOUND_HTTP": str(inbound_port),
                    "EGRESS_CONTROL_TOKEN_FILE": str(tmp_path / "token"), "EGRESS_ALLOW": "ignored.com",
                    "EGRESS_CA_CERT": str(ca.ca_crt), "EGRESS_CA_KEY": str(ca.ca_key),
                    "EGRESS_CA_DIR": str(tmp_path / "hosts")})
@@ -321,12 +322,14 @@ def test_a_shared_gateway_starts_and_registers(tmp_path):
             # This test's own address was never registered.
             status, body = await _http(listen, b"CONNECT ignored.com:443 HTTP/1.1\r\n\r\n")
             assert status == 403 and json.loads(body)["error"] == "unregistered"
+            status, body = await _http(inbound_port, b"GET / HTTP/1.1\r\nHost: nobody.test\r\n\r\n")
+            assert status == 404 and json.loads(body)["error"] == "no_such_sandbox"
 
         asyncio.run(scenario())
     finally:
         proc.terminate()
         _, err = proc.communicate(timeout=20)
-    assert "ignoring EGRESS_ALLOW" in err and "shared" in err
+    assert "ignoring EGRESS_ALLOW" in err and "shared" in err and f"their UIs on :{inbound_port}" in err
 
 
 def test_a_single_gateway_still_starts_from_its_environment(tmp_path):
@@ -338,3 +341,87 @@ def test_a_single_gateway_still_starts_from_its_environment(tmp_path):
         proc.terminate()
         _, err = proc.communicate(timeout=20)
     assert "allow github.com" in err
+
+
+# --- inbound: sandboxes' UIs, by Host name ---
+
+
+def test_inbound_names_are_checked_and_held_by_one_sandbox(shared):
+    sandbox = gw.Sandbox.register("s", {"address": "10.42.1.7", "inbound": {"ui.example.com": 4096}}, now=0)
+    assert sandbox.inbound == {"ui.example.com": 4096}
+    for inbound, match in [([], "object"), ({"UI.example.com": 1}, "lowercase"), ({"ui.example.com:80": 1}, "lowercase"),
+                           ({"ui.example.com": "4096"}, "numbers"), ({"ui.example.com": 0}, "numbers")]:
+        with pytest.raises(gw.ConfigError, match=match):
+            gw.Sandbox.register("s", {"address": "10.42.1.7", "inbound": inbound}, now=0)
+
+    assert gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7", "inbound": {"a.example.com": 1}}, 0)[0] \
+        == "200 OK"
+    status, answer = gw.control("PUT", "/sandboxes/b", {}, {"address": "10.42.1.8", "inbound": {"a.example.com": 1}}, 0)
+    assert status == "409 Conflict" and "a.example.com is a's" in answer["message"]
+    # Its own name again, from a new address (a resumed pod), is fine.
+    assert gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.9", "inbound": {"a.example.com": 1}}, 0)[0] \
+        == "200 OK"
+
+
+async def _ui(reader, writer):
+    """A sandbox's UI: answers with what reached it, or echoes once upgraded to a WebSocket."""
+    head = await gw.read_head(reader)
+    if gw.header(head, b"upgrade"):
+        writer.write(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+        await writer.drain()
+        writer.write(await reader.readexactly(5))
+        await writer.drain()
+        writer.close()
+        return
+    body = json.dumps({"path": head[0].decode().split(" ")[1], "host": gw.header(head, b"host"),
+                       "connection": gw.header(head, b"connection"),
+                       "server": writer.get_extra_info("sockname")[0]}).encode()
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n" % len(body) + body)
+    await writer.drain()
+    writer.close()
+
+
+@linux_only
+def test_inbound_reaches_the_sandbox_holding_the_name(shared):
+    async def scenario():
+        ui_a, port_a = await _serve(_ui, host="127.0.0.2")
+        ui_b, port_b = await _serve(_ui, host="127.0.0.3")
+        inbound, inbound_port = await _serve(gw.handle_inbound_http)
+        control, control_port = await _serve(gw.handle_control)
+        async with ui_a, ui_b, inbound, control:
+            for name, address, port in (("a", "127.0.0.2", port_a), ("b", "127.0.0.3", port_b)):
+                status, _ = await _control(control_port, "PUT", f"/sandboxes/{name}", {
+                    "address": address, "inbound": {f"{name}.sessions.test": port}})
+                assert status == 200
+
+            def get(host, extra=""):
+                return f"GET /app?x=1 HTTP/1.1\r\nHost: {host}\r\nConnection: keep-alive\r\n{extra}\r\n".encode()
+
+            status, body = await _http(inbound_port, get("a.sessions.test"))
+            seen = json.loads(body)
+            assert status == 200 and seen["server"] == "127.0.0.2" and seen["path"] == "/app?x=1"
+            assert seen["connection"] == "close"  # never a second request on this connection
+            status, body = await _http(inbound_port, get("B.Sessions.Test:443"))
+            assert status == 200 and json.loads(body)["server"] == "127.0.0.3"
+            status, body = await _http(inbound_port, get("c.sessions.test"))
+            assert status == 404 and json.loads(body)["error"] == "no_such_sandbox"
+
+            # A WebSocket keeps its upgrade, and then carries whatever either side sends.
+            reader, writer = await asyncio.open_connection("127.0.0.1", inbound_port)
+            writer.write(get("a.sessions.test", "Upgrade: websocket\r\n").replace(b"keep-alive", b"Upgrade"))
+            await writer.drain()
+            assert (await gw.read_head(reader))[0].startswith(b"HTTP/1.1 101")
+            writer.write(b"hello")
+            await writer.drain()
+            assert await asyncio.wait_for(reader.readexactly(5), 5) == b"hello"
+            writer.close()
+
+            await asyncio.sleep(0.2)
+            _, a = await _control(control_port, "GET", "/sandboxes/a/events")
+            kinds = [(e["kind"], e["verdict"], e.get("name")) for e in a["events"]]
+            assert kinds.count(("inbound", "allow", "a.sessions.test")) == 2
+            await _control(control_port, "DELETE", "/sandboxes/b")
+            status, _ = await _http(inbound_port, get("b.sessions.test"))
+            assert status == 404  # unregistered: its name goes with it
+
+    asyncio.run(scenario())

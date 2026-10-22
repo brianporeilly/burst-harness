@@ -180,6 +180,15 @@ class HarnessConfig:
     # sandboxes have no gateway, and egress settings do not apply to them.
     gateway_control: str = ""
     gateway_token_file: str = ""
+    # `harness session` on agent-sandbox: each session's UI (and terminal) gets
+    # a host name under session_domain, routed by an HTTPRoute attached to
+    # session_route_parent (NAMESPACE/GATEWAY/LISTENER) and sent to
+    # session_route_backend (SERVICE:PORT, the gateway's EGRESS_INBOUND_HTTP),
+    # which passes it to the sandbox. The domain needs a wildcard DNS record and
+    # certificate at that Gateway.
+    session_domain: str = ""
+    session_route_parent: str = ""
+    session_route_backend: str = "burst-gateway:8080"
     # Keep the claim or started container after a terminal state (to inspect it).
     keep_claim: bool = False
 

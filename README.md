@@ -348,7 +348,7 @@ python -m harness session rm my-box        # delete the workspace too
 
 `start` prints the UI's address and a password (user `opencode`), and prints them
 again if the session is already running. `--repo-url` is optional: without it the
-workspace starts empty. podman only, for now.
+workspace starts empty. On podman, or on a cluster (below).
 
 - **What persists** is two volumes: `/workspace` and the agent's home (opencode's
   conversations and settings). Stopping, or a crash, loses neither; `start`
@@ -401,7 +401,52 @@ workspace starts empty. podman only, for now.
 - An allowlist entry may name a port — `--egress-allow llm.lan:8080,...` — to
   allow a host on that port instead of 443.
 
-Not there yet: anything but podman.
+### On a cluster (`--target agent-sandbox`)
+
+The same commands, on a sandbox claimed from a warm pool and reached through the
+cluster's shared gateway. Settings (in your config file, or `HARNESS_*`):
+
+```toml
+target = "agent-sandbox"
+namespace = "agent-sandbox-system"
+pool = "coding-agent"
+# From outside the cluster: a port-forward to the control API, for as long as the
+# command runs. In a pod, its Service URL instead.
+gateway_control = "kubectl://agent-sandbox-system/burst-gateway:8081"
+session_domain = "internal.example.com"          # a wildcard DNS name and certificate
+session_route_parent = "network/envoy-internal/https"   # NAMESPACE/GATEWAY/LISTENER
+session_route_backend = "burst-gateway:8080"     # the gateway's EGRESS_INBOUND_HTTP (the default)
+```
+
+with the control token in `HARNESS_GATEWAY_TOKEN` (`kubectl get secret -n
+agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 -d`).
+
+- **A session is a SandboxClaim**, `session-NAME`, labelled
+  `burst-harness/session`. It has no deadline unless `--lifetime` gives one
+  when it is first claimed (then the controller deletes it).
+- **Stop suspends it**: the Sandbox's `operatingMode` becomes `Suspended`, so
+  the pod is deleted and the workspace volume kept. `start` sets it back to
+  `Running`, and a new pod mounts the same volume. The agent's home is kept at
+  `/workspace/.home`, because the pool's template mounts nothing else. `rm`
+  deletes the claim, and with it the workspace and the routes.
+- **How you reach it**: `https://session-NAME.<session_domain>/`, plus
+  `session-NAME-term.` for opencode's terminal. One HTTPRoute per name, owned
+  by the claim, sends it to the gateway, which passes each connection to the
+  sandbox whose registration holds that name. Every connection is an `inbound`
+  event, as on podman. A stopped session's names get a 404.
+- **Registered on every start**, running or not. The pod's address changes when
+  it resumes, and the gateway keeps registrations only in memory, so after a
+  gateway restart `start` is what gives a running session its network back.
+- **The model** has to be reachable from the gateway, which the cluster's
+  network policy decides, as well as allowed in the registration.
+- **Not yet:** `--idle`, `--root` (the pool's template runs as uid 1000;
+  user-namespace pods work on this cluster, so a root template is possible),
+  `--port`, `--bind` and `--terminal-port`, which mean nothing here.
+
+The driver needs `kubectl` with permission to create, get, list and patch
+`sandboxclaims` and `sandboxes`, to `create` `pods/exec`, to get `pods`, and to
+apply `httproutes`, all in the namespace. Port-forwarding to the gateway also
+needs `get` on `services` and `create` on `pods/portforward` there.
 
 ## Orchestrator
 

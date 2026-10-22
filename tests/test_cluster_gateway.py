@@ -241,3 +241,26 @@ def test_an_attached_claim_is_registered_until_its_deadline(tmp_path, kubectl, m
     assert registered["name"] == "pool-abc12" and registered["body"]["address"] == "127.0.0.2"
     assert registered["body"]["ttl"] > 10 * 365 * 86400  # the fake claim's deadline is in 2099
     assert target.release() == ""  # not ours to release, or to unregister
+
+
+def test_a_kubectl_url_reaches_the_gateway_by_port_forward(tmp_path, monkeypatch):
+    from harness import gateway_control
+
+    monkeypatch.setattr(gateway_control, "_FORWARDS", {})
+    log = tmp_path / "pf.log"
+    fake = tmp_path / "kubectl"
+    fake.write_text(f"#!{sys.executable}\nimport sys, time\nopen({str(log)!r}, 'w').write(' '.join(sys.argv[1:]))\n"
+                    "print('Forwarding from 127.0.0.1:41234 -> 8081', flush=True)\ntime.sleep(30)\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("HARNESS_GATEWAY_TOKEN", TOKEN)
+    cfg = HarnessConfig(kubectl=str(fake), kube_context="home",
+                        gateway_control="kubectl://agent-sandbox-system/burst-gateway:8081")
+    assert Gateway.from_config(cfg).url == "http://127.0.0.1:41234"
+    assert log.read_text() == "--context home -n agent-sandbox-system port-forward svc/burst-gateway :8081"
+    assert Gateway.from_config(cfg).url == "http://127.0.0.1:41234"  # the same forward, not a second one
+
+    with pytest.raises(GatewayError, match="kubectl://NAMESPACE/SERVICE:PORT"):
+        Gateway.from_config(HarnessConfig(gateway_control="kubectl://burst-gateway"))
+    fake.write_text(f"#!{sys.executable}\nimport sys\nsys.exit('error: services \"nope\" not found')\n")
+    with pytest.raises(GatewayError, match="not found"):
+        Gateway.from_config(HarnessConfig(kubectl=str(fake), gateway_control="kubectl://ns/nope:8081"))

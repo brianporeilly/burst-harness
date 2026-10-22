@@ -10,13 +10,19 @@ API.
 
 The settings are the driver's: `gateway_control` (the API's URL, say
 http://burst-gateway.agent-sandbox-system.svc:8081) and the token, from
-HARNESS_GATEWAY_TOKEN or the file `gateway_token_file`.
+HARNESS_GATEWAY_TOKEN or the file `gateway_token_file`. From outside the
+cluster, where only the driver's pods may reach that port,
+`gateway_control = "kubectl://agent-sandbox-system/burst-gateway:8081"` reaches
+it through `kubectl port-forward` instead, for as long as the harness runs.
 """
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import re
+import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -26,6 +32,9 @@ from typing import Any
 from .config import HarnessConfig
 
 TOKEN_ENV = "HARNESS_GATEWAY_TOKEN"
+FORWARD = re.compile(r"kubectl://(?P<namespace>[a-z0-9.-]+)/(?P<service>[a-z0-9.-]+):(?P<port>\d+)/?")
+# kubectl://... -> the local URL its port-forward listens on, for this process.
+_FORWARDS: dict[str, str] = {}
 
 
 class GatewayError(RuntimeError):
@@ -50,7 +59,10 @@ class Gateway:
                 raise GatewayError(f"gateway_token_file: {err}") from err
         if not token:
             raise GatewayError(f"gateway_control is set, but there is no token: set {TOKEN_ENV} or gateway_token_file.")
-        return cls(url=cfg.gateway_control.rstrip("/"), token=token)
+        url = cfg.gateway_control.rstrip("/")
+        if url.startswith("kubectl://"):
+            url = forwarded(cfg, url)
+        return cls(url=url, token=token)
 
     def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         request = urllib.request.Request(
@@ -80,10 +92,33 @@ class Gateway:
         return self._call("GET", f"/sandboxes/{name}/events?after={after}")
 
 
+def forwarded(cfg: HarnessConfig, spec: str) -> str:
+    """A local URL for `kubectl://NAMESPACE/SERVICE:PORT`, by a port-forward that ends with this process."""
+    if spec in _FORWARDS:
+        return _FORWARDS[spec]
+    if not (match := FORWARD.fullmatch(spec)):
+        raise GatewayError(f"gateway_control: {spec!r} is not kubectl://NAMESPACE/SERVICE:PORT.")
+    argv = [cfg.kubectl, *(("--context", cfg.kube_context) if cfg.kube_context else ()), "-n", match["namespace"],
+            "port-forward", f"svc/{match['service']}", f":{match['port']}"]
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except OSError as err:
+        raise GatewayError(f"gateway_control: could not run {cfg.kubectl}: {err}") from err
+    atexit.register(proc.terminate)
+    # "Forwarding from 127.0.0.1:43127 -> 8081", once it is listening.
+    line = proc.stdout.readline() if proc.stdout else ""
+    if not (found := re.search(r"127\.0\.0\.1:(\d+)", line)):
+        proc.terminate()
+        error = proc.stderr.read().strip() if proc.stderr else ""
+        raise GatewayError(f"gateway_control: kubectl port-forward to {spec} failed: {error or line.strip()}")
+    _FORWARDS[spec] = f"http://127.0.0.1:{found[1]}"
+    return _FORWARDS[spec]
+
+
 def registration(
     cfg: HarnessConfig, *, address: str, ttl: int, allow: tuple[str, ...] = (),
     inject: tuple[dict[str, object], ...] = (), read_only: tuple[dict[str, object], ...] | None = None,
-    upstream_ca: tuple[dict[str, str], ...] = (),
+    upstream_ca: tuple[dict[str, str], ...] = (), inbound: dict[str, int] | None = None,
 ) -> tuple[dict[str, Any], str]:
     """What to register a sandbox with, built as start_egress builds a podman gateway's
     settings, and a line saying what it amounts to (never the credentials)."""
@@ -104,6 +139,8 @@ def registration(
         summary += "; adds credentials for " + ", ".join(sorted({str(rule["host"]) for rule in rules}))
     if upstream_ca:
         body["upstream_ca"] = list(upstream_ca)
+    if inbound:
+        body["inbound"] = dict(inbound)
     if read_only is not None:
         body.update(readonly=True, writes=list(read_only))
         summary += "; read-only" + (" except " + ", ".join(f"{w['method']} {w['host']}{w.get('path', '')}"
