@@ -49,7 +49,11 @@ FAKE_KUBECTL = textwrap.dedent('''\
         print(json.dumps({{"items": list(state.get("sandbox", {{}}).values())}}))
     elif verb == "get" and args[1] == "pod":
         state["pods"] = state.get("pods", 0)
-        print("10.246.0.%d" % (10 + state["pods"]))
+        pod = {{"metadata": {{}}, "status": {{"podIP": "10.246.0.%d" % (10 + state["pods"]),
+                                         "conditions": [{{"type": "Ready", "status": "True"}}]}}}}
+        if state.get("terminating"):  # a suspended pod, in its grace period
+            pod["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+        print(json.dumps(pod))
     elif verb == "create":
         claim = json.loads(sys.stdin.read())
         name = claim["metadata"]["name"]
@@ -63,8 +67,11 @@ FAKE_KUBECTL = textwrap.dedent('''\
         get("sandbox", args[2])["spec"]["operatingMode"] = mode
         if mode == "Running":
             state["pods"] = state.get("pods", 0) + 1  # a new pod, at a new address
+        else:
+            state["terminating"] = True
     elif verb == "wait":
-        pass
+        if "--for=delete" in args:
+            state["terminating"] = False
     elif verb == "apply":
         route = json.loads(sys.stdin.read())
         state.setdefault("httproute", {{}})[route["metadata"]["name"]] = route
@@ -186,6 +193,7 @@ def test_stop_suspends_and_start_resumes_at_a_new_address(tmp_path, cluster, pod
     password = json.loads((tmp_path / "state" / "sessions" / "demo.json").read_text())["password"]
 
     assert "workspace is kept" in cluster_session.stop(cfg, "demo")
+    assert not state.state.get("terminating")  # stop waited for the pod to go
     assert unregistered == ["session-demo"]
     assert state.state["sandbox"]["pool-abc12"]["spec"]["operatingMode"] == "Suspended"
     assert cluster_session.list_sessions(cfg)[0]["status"] == "stopped"
@@ -316,3 +324,21 @@ def test_an_opencode_that_will_not_answer_leaves_a_note_not_a_failure(tmp_path, 
     out = cluster_session.start(_cfg(tmp_path, kubectl), "demo")
     assert "Could not open an opencode session in /workspace (curl: (22)" in out
     assert "https://session-demo.internal.example.com/\n" in out + "\n"
+
+
+def test_start_waits_for_a_pod_still_going_rather_than_using_it(tmp_path, cluster, pod):
+    """The Sandbox says Ready while its suspended pod is in its grace period: a start
+    then must not register, or serve on, the pod that is going."""
+    state, kubectl = cluster
+    _, registered, _ = pod
+    cfg = _cfg(tmp_path, kubectl)
+    cluster_session.start(cfg, "demo")
+    cluster_session._set_mode(cfg, "pool-abc12", "Suspended")  # a stop that has not finished
+    assert state.state["terminating"]
+
+    cluster_session.start(cfg, "demo")
+    calls = state.state["calls"]
+    waited = next(i for i, call in enumerate(calls) if "--for=delete" in call)
+    resumed = next(i for i, call in enumerate(calls) if "patch" in call and "Running" in call[-1])
+    assert waited < resumed
+    assert registered[-1][1]["address"] == "10.246.0.11"

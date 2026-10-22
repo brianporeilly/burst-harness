@@ -10,7 +10,9 @@ gateway (ROADMAP phase 6, step 4).
 A session is a SandboxClaim named `session-NAME`, with no deadline unless
 `--lifetime` gives one. Stopping sets its Sandbox's operatingMode to Suspended,
 which deletes the pod and keeps the workspace volume; starting sets it back to
-Running, and the new pod mounts the same volume. The agent's home (opencode's
+Running, and the new pod mounts the same volume. A suspended pod takes a while
+to go (its grace period), and the Sandbox still says Ready while it does, so
+`stop` waits for it to be gone and `start` waits for a pod that is not going. The agent's home (opencode's
 conversations, Claude Code's state) is kept there too, at /workspace/.home,
 since the pool's template mounts nothing else.
 
@@ -188,6 +190,31 @@ def _set_mode(cfg: HarnessConfig, sandbox: str, mode: str) -> None:
     _kubectl(cfg, "patch", "sandbox", sandbox, "--type", "merge", "-p", json.dumps({"spec": {"operatingMode": mode}}))
 
 
+def _wait_gone(cfg: HarnessConfig, pod: str) -> None:
+    """Until the pod is deleted (at once if there is none)."""
+    try:
+        _kubectl(cfg, "wait", "--for=delete", f"pod/{pod}", "--timeout=300s")
+    except AgentSandboxError as err:
+        raise SessionError(f"Pod {pod} did not go: {err}") from err
+
+
+def _pod_address(cfg: HarnessConfig, pod: str, timeout: float = 300) -> str:
+    """The address of the pod once it is up and ready, and not one on its way out."""
+    deadline = time.monotonic() + timeout
+    while True:
+        found = json.loads(_kubectl(cfg, "get", "pod", pod, "--ignore-not-found", "-o", "json") or "{}")
+        if found.get("metadata", {}).get("deletionTimestamp"):
+            _wait_gone(cfg, pod)
+            continue
+        ready = any(c.get("type") == "Ready" and c.get("status") == "True"
+                    for c in (found.get("status") or {}).get("conditions") or [])
+        if ready and (address := (found.get("status") or {}).get("podIP")):
+            return address
+        if time.monotonic() > deadline:
+            raise SessionError(f"Pod {pod} was not ready in {int(timeout)}s.")
+        time.sleep(2)
+
+
 def _exec(target: KubectlTarget, argv: tuple[str, ...], *, env: dict[str, str] | None = None, detach: bool = False,
           workdir: str = WORKSPACE) -> subprocess.CompletedProcess[str]:
     """Run argv in the pod, in `workdir`, with HOME on the workspace and `env` added.
@@ -299,15 +326,12 @@ def launch(
                            "`session rm` it to start afresh.")
     sandbox = _sandbox(cfg, existing)
     if (_get(cfg, "sandbox", sandbox) or {}).get("spec", {}).get("operatingMode") == "Suspended":
+        _wait_gone(cfg, sandbox)  # a stop that is still going
         _set_mode(cfg, sandbox, "Running")
-    try:
-        _kubectl(cfg, "wait", f"sandbox/{sandbox}", "--for=condition=Ready", "--timeout=300s")
-    except AgentSandboxError as err:
-        raise SessionError(f"Sandbox {sandbox} did not become ready: {err}") from err
+    address = _pod_address(cfg, sandbox)
     target = KubectlTarget(repo=f"{WORKSPACE}/repo" if cfg.repo_url else WORKSPACE, pod=sandbox,
                            namespace=cfg.namespace, container=cfg.container or None,
                            context=cfg.kube_context or None, kubectl=cfg.kubectl)
-    address = _kubectl(cfg, "get", "pod", sandbox, "-o", "jsonpath={.status.podIP}")
     deadline = (existing.get("spec") or {}).get("lifecycle", {}).get("shutdownTime")
     ttl = 0
     if deadline:
@@ -424,7 +448,9 @@ def stop(cfg: HarnessConfig, name: str) -> str:
     if claim is None:
         raise SessionError(f"No session named {name} in {cfg.namespace}.")
     saved = _unregister(cfg, name)
-    _set_mode(cfg, _sandbox(cfg, claim), "Suspended")
+    sandbox = _sandbox(cfg, claim)
+    _set_mode(cfg, sandbox, "Suspended")
+    _wait_gone(cfg, sandbox)
     return f"Stopped session {name}; its workspace is kept.{saved}"
 
 
