@@ -41,6 +41,7 @@ import secrets
 import shlex
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -62,6 +63,7 @@ from .exec_target import KubectlTarget
 from .gateway_control import Gateway, GatewayError, registration, save_events
 from .session import (
     AGENTS,
+    OPENCODE_HOSTS,
     TERMINAL_PORT,
     UI_PORT,
     UI_USER,
@@ -72,6 +74,7 @@ from .session import (
     load_record,
     model_endpoint,
     model_env,
+    open_in,
     opencode_config,
     record_path,
     save_record,
@@ -201,6 +204,24 @@ def _exec(target: KubectlTarget, argv: tuple[str, ...], *, env: dict[str, str] |
                           input=lines, capture_output=True, text=True, timeout=300)
 
 
+def _opencode_api(target: KubectlTarget, password: str) -> Callable[[str, str, dict[str, Any] | None], Any]:
+    """opencode's server in the pod, called with its curl. The password goes in on
+    stdin and from there to curl's config on its stdin: never on a command line."""
+    script = ('printf \'user = "%s:%s"\\n\' "$UI_USER" "$OPENCODE_SERVER_PASSWORD" | '
+              f'curl -sS -f -m 10 -K - -X "$0" -H "Content-Type: application/json" '
+              f'${{BODY:+--data-binary}} ${{BODY:+"$BODY"}} "http://127.0.0.1:{UI_PORT}$1"')
+
+    def call(method: str, path: str, body: dict[str, Any] | None) -> Any:
+        env = {"UI_USER": UI_USER, "OPENCODE_SERVER_PASSWORD": password}
+        if body is not None:
+            env["BODY"] = json.dumps(body)
+        proc = _exec(target, ("sh", "-c", script, method, path), env=env, workdir="/")
+        if proc.returncode != 0:
+            raise SessionError(proc.stderr.strip() or f"curl exited {proc.returncode}")
+        return json.loads(proc.stdout)
+    return call
+
+
 def _wait_for(target: KubectlTarget, port: int, timeout: int = 60) -> bool:
     """True once something answers HTTP on that port in the pod (a 401 counts)."""
     probe = (f"i=0; while [ $i -lt {timeout * 2} ]; do curl -s -o /dev/null -m 2 http://127.0.0.1:{port}/ && exit 0; "
@@ -256,6 +277,8 @@ def launch(
     else:
         config = opencode_config(cfg)
         endpoint = model_endpoint(config)
+    if not claude:
+        endpoint = (*endpoint, *OPENCODE_HOSTS)
 
     cfg = replace(cfg, egress="log" if cfg.egress == "open" else cfg.egress, engine="opencode")
     names = hosts(cfg, name, claude=claude, terminal=terminal)
@@ -308,6 +331,7 @@ def launch(
             notes.append(git.clone(target, cfg.repo_url, auth=auth))
 
     password = record.get("password") or secrets.token_urlsafe(18)
+    link = ""
     # Whatever ran in this pod before (a session started again while running) goes first.
     _exec(target, ("sh", "-c", "pkill -f 'opencode web' ; pkill -f 'zellij web' ; pkill -f 'socat TCP-LISTEN' ; true"))
     if claude:
@@ -329,6 +353,7 @@ def launch(
         if proc.returncode != 0 or not _wait_for(target, UI_PORT):
             log = target.run_shell("tail -n 20 /tmp/opencode.log", check=False, cwd="/").stdout.strip()
             raise SessionError(f"opencode's UI did not come up in {sandbox}. {proc.stderr.strip()}\n{log}")
+        link = open_in(_opencode_api(target, password), target.repo, name, notes)
     token = ""
     if terminal:
         env = claude_env(cfg) if claude else {}
@@ -346,7 +371,7 @@ def launch(
         "name": name, "target": "agent-sandbox", "namespace": cfg.namespace, "claim": claim, "hosts": names,
         "password": password, "repo_url": git.redact_url(cfg.repo_url), "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "lifetime": limit,
-        "agent": agent, "allow": allowed,
+        "agent": agent, "allow": allowed, "link": link,
     }
     if terminal:
         record["terminal"] = {"token": token, "path": terminal_session(claude)}
@@ -359,7 +384,7 @@ def urls(record: dict[str, Any]) -> dict[str, str]:
     found = {}
     if terminal := record.get("terminal"):
         found["terminal"] = by_port[TERMINAL_PORT] + (terminal.get("path") or "")
-    found["ui"] = found["terminal"] if record.get("agent") == "claude-code" else by_port[UI_PORT]
+    found["ui"] = found["terminal"] if record.get("agent") == "claude-code" else by_port[UI_PORT] + record.get("link", "")
     return found
 
 

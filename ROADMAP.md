@@ -365,5 +365,13 @@ gate. No PRs from forks until phase 6's gateway is in place.
 - Whether podman can publish ports from an `--internal` network, or whether
   inbound UI traffic must always enter through the gateway (assumed above).
 - zellij web's TLS and token requirements behind a proxy.
+- opencode's projects and sessions (spike). `session start` opens the UI on an
+  opencode session in the workspace, created through opencode's API, which
+  saves adding the directory by hand. Still to find out: whether a directory
+  that is a git repo shows up in the UI's project list as a project of its own
+  (a non-git `/workspace` is filed under opencode's hidden "global" project,
+  and the UI lists no projects), whether to `git init` an empty workspace for
+  that, and how a session per task, or per branch, should look once the
+  orchestrator starts them.
 - Signing in once, at the orchestrator, instead of to each session's opencode
   password and zellij token. Not before the orchestrator has a login of its own.

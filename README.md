@@ -350,6 +350,12 @@ python -m harness session rm my-box        # delete the workspace too
 again if the session is already running. `--repo-url` is optional: without it the
 workspace starts empty. On podman, or on a cluster (below).
 
+The address opens on an opencode session in the workspace (the repo's checkout,
+with `--repo-url`): the latest one there, or one `start` creates, titled after
+the session. Creating it calls no model. Without that, opencode's UI starts
+with no project and you add the directory yourself. If opencode will not
+answer, `start` says so and prints the plain address.
+
 - **What persists** is two volumes: `/workspace` and the agent's home (opencode's
   conversations and settings). Stopping, or a crash, loses neither; `start`
   brings up new containers on the same volumes, on the same port with the same
@@ -390,7 +396,8 @@ workspace starts empty. On podman, or on a cluster (below).
   the key — or, with `--egress-inject model`, a placeholder that the gateway
   makes real, so the key is never in the session. For anything else, pass
   `--opencode-config my-opencode.json` (used as is; allow its hosts with
-  `--egress-allow`), or set a provider up in the UI.
+  `--egress-allow`), or set a provider up in the UI. An opencode session may
+  also reach `models.opencode.ai`, where opencode gets its catalog of models.
 - **Claude Code** (`--agent claude-code`): the session's UI is a zellij terminal
   opened on Claude Code, behind a login token. It gets `ANTHROPIC_API_KEY` /
   `CLAUDE_CODE_OAUTH_TOKEN` from the driver — or placeholders, with

@@ -105,10 +105,20 @@ def pod(monkeypatch):
     ran: list[dict] = []
     registered: list[tuple[str, dict]] = []
     unregistered: list[str] = []
+    sessions: list[dict] = []  # opencode's, kept in its home on the workspace
 
     def fake_exec(target, argv, *, env=None, detach=False, workdir="/workspace"):
         ran.append({"argv": argv, "env": env or {}, "detach": detach, "workdir": workdir})
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        out = ""
+        if len(argv) > 2 and "curl" in argv[2]:  # opencode's API, as _opencode_api calls it
+            method, path = argv[3], argv[4]
+            if method == "POST":
+                sessions.append({"id": f"ses_{len(sessions) + 1}", "directory": path.split("directory=")[1],
+                                 "time": {"updated": len(sessions)}, **json.loads(env["BODY"])})
+                out = json.dumps(sessions[-1])
+            else:
+                out = json.dumps(sessions)
+        return subprocess.CompletedProcess(argv, 0, out, "")
 
     monkeypatch.setattr(cluster_session, "_exec", fake_exec)
     monkeypatch.setattr(cluster_session, "_wait_for", lambda target, port, timeout=60: True)
@@ -144,6 +154,7 @@ def test_a_session_is_claimed_registered_served_and_routed(tmp_path, cluster, po
     assert name == "session-demo" and body["address"] == "10.246.0.10" and body["ttl"] == 0
     assert body["inbound"] == {"session-demo.internal.example.com": 4096, "session-demo-term.internal.example.com": 8083}
     assert "192.0.2.11:8080" in body["allow"]  # the model, from the sandbox
+    assert "models.opencode.ai" in body["allow"]  # opencode's catalog of models
 
     serve = next(r for r in ran if r["detach"] and "opencode web" in r["argv"][-1])
     assert serve["env"]["OPENCODE_SERVER_PASSWORD"] and serve["env"]["OPENCODE_SERVER_PASSWORD"] not in serve["argv"][-1]
@@ -158,13 +169,18 @@ def test_a_session_is_claimed_registered_served_and_routed(tmp_path, cluster, po
     assert route["metadata"]["ownerReferences"][0] == {"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
                                                        "kind": "SandboxClaim", "name": "session-demo",
                                                        "uid": "uid-session-demo"}
-    assert "is up" in out and "https://session-demo.internal.example.com/" in out and "token-1" in out
+    # The UI opens on an opencode session in the workspace, created for it.
+    created = next(r for r in ran if r["argv"][3:4] == ("POST",))
+    assert created["argv"][4] == "/session?directory=/workspace" and json.loads(created["env"]["BODY"]) == {"title": "demo"}
+    assert created["env"]["OPENCODE_SERVER_PASSWORD"] not in " ".join(created["argv"])
+    assert "is up" in out and "https://session-demo.internal.example.com/L3dvcmtzcGFjZQ/session/ses_1" in out
+    assert "token-1" in out
     assert "https://session-demo-term.internal.example.com/shell" in out
 
 
 def test_stop_suspends_and_start_resumes_at_a_new_address(tmp_path, cluster, pod):
     state, kubectl = cluster
-    _, registered, unregistered = pod
+    ran, registered, unregistered = pod
     cfg = _cfg(tmp_path, kubectl)
     cluster_session.start(cfg, "demo")
     password = json.loads((tmp_path / "state" / "sessions" / "demo.json").read_text())["password"]
@@ -176,11 +192,14 @@ def test_stop_suspends_and_start_resumes_at_a_new_address(tmp_path, cluster, pod
 
     out = cluster_session.start(cfg, "demo")
     assert "is resumed" in out and password in out  # the same password
+    assert "/session/ses_1" in out  # and the same opencode session
+    assert sum(1 for r in ran if r["argv"][3:4] == ("POST",)) == 1
     assert state.state["sandbox"]["pool-abc12"]["spec"]["operatingMode"] == "Running"
     assert registered[-1][1]["address"] == "10.246.0.11"
     assert len(state.state["sandboxclaim"]) == 1
     assert cluster_session.list_sessions(cfg) == [{"name": "demo", "status": "running", "agent": "opencode",
-                                                   "ui": "https://session-demo.internal.example.com/", "repo": "-"}]
+                                                   "ui": "https://session-demo.internal.example.com/L3dvcmtzcGFjZQ/"
+                                                         "session/ses_1", "repo": "-"}]
 
 
 def test_rm_deletes_the_claim_and_its_routes(tmp_path, cluster, pod):
@@ -197,6 +216,8 @@ def test_claude_code_is_its_terminal_and_a_lifetime_is_a_deadline(tmp_path, clus
     ran, registered, _ = pod
     out = cluster_session.start(_cfg(tmp_path, kubectl), "cc", agent="claude-code", lifetime="2h")
     assert registered[-1][1]["inbound"] == {"session-cc.internal.example.com": 8083}
+    assert "models.opencode.ai" not in registered[-1][1]["allow"]
+    assert not any("curl" in r["argv"][-1] for r in ran if len(r["argv"]) > 2)
     assert 7000 < registered[-1][1]["ttl"] <= 7200
     lifecycle = state.state["sandboxclaim"]["session-cc"]["spec"]["lifecycle"]
     assert lifecycle["shutdownPolicy"] == "Delete" and lifecycle["shutdownTime"].endswith("Z")
@@ -240,3 +261,58 @@ def test_exec_passes_variables_on_stdin_never_on_the_command_line(tmp_path, monk
     proc = cluster_session._exec(target, ("sh", "-c", f'sleep 0.2; echo done > {tmp_path}/flag'), detach=True,
                                  workdir=str(work))
     assert proc.returncode == 0 and not (tmp_path / "flag").exists()  # it returned without waiting
+
+
+def test_opencode_api_runs_curl_in_the_pod_with_the_password_on_stdin(tmp_path, monkeypatch):
+    """What `_opencode_api` sends, through `_exec`, to a server standing in for opencode's."""
+    import base64
+    import http.server
+    import threading
+
+    seen: list[dict] = []
+
+    class Opencode(http.server.BaseHTTPRequestHandler):
+        def _answer(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            seen.append({"method": self.command, "path": self.path, "auth": self.headers.get("Authorization"),
+                         "body": self.rfile.read(length).decode() if length else None})
+            data = json.dumps({"id": "ses_9"} if self.command == "POST" else []).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        do_GET = do_POST = _answer
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Opencode)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(cluster_session, "UI_PORT", server.server_address[1])
+    monkeypatch.setattr(cluster_session, "HOME", str(tmp_path / "home"))
+    try:
+        api = cluster_session._opencode_api(LocalPod(repo=str(tmp_path), pod="p"), "pw-123")
+        assert cluster_session.open_in(api, "/workspace/repo", "demo", notes := []) == \
+            "L3dvcmtzcGFjZS9yZXBv/session/ses_9" and notes == []
+    finally:
+        server.shutdown()
+    auth = "Basic " + base64.b64encode(b"opencode:pw-123").decode()
+    assert seen == [
+        {"method": "GET", "path": "/session?directory=/workspace/repo&roots=true", "auth": auth, "body": None},
+        {"method": "POST", "path": "/session?directory=/workspace/repo", "auth": auth, "body": '{"title": "demo"}'},
+    ]
+
+
+def test_an_opencode_that_will_not_answer_leaves_a_note_not_a_failure(tmp_path, cluster, pod, monkeypatch):
+    _, kubectl = cluster
+    answering = cluster_session._exec
+
+    def refusing(target, argv, **kw):
+        if len(argv) > 2 and "curl" in argv[2]:
+            return subprocess.CompletedProcess(argv, 22, "", "curl: (22) The requested URL returned error: 500")
+        return answering(target, argv, **kw)
+
+    monkeypatch.setattr(cluster_session, "_exec", refusing)
+    out = cluster_session.start(_cfg(tmp_path, kubectl), "demo")
+    assert "Could not open an opencode session in /workspace (curl: (22)" in out
+    assert "https://session-demo.internal.example.com/\n" in out + "\n"

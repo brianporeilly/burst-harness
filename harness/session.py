@@ -32,6 +32,10 @@ What persists is two volumes -- the workspace (`/workspace`) and the agent's
 home (opencode's conversations and settings) -- so a stopped or crashed session
 starts again where it was. What does not is anything installed outside them.
 
+The UI's address opens on an opencode session in the workspace: the latest
+one there, or one created through opencode's API (which calls no model), so
+the UI does not start with no project to add by hand.
+
 The UI is never published from the sandbox itself, which has no way in or out
 except its gateway: the gateway listens on the host and passes connections in,
 recording each. opencode asks for a password, generated per session and kept in
@@ -43,6 +47,7 @@ time, which needs a network podman lets us lay out.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -59,7 +64,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from . import containers, git
 from .agent_sandbox import REQUIRED_COMMANDS
@@ -76,6 +81,8 @@ ZELLIJ_PORT = 8082
 TERMINAL_PORT = 8083
 ZELLIJ_CONFIG = "web_server true\nshow_startup_tips false\nshow_release_notes false\n"
 AGENTS = ("opencode", "claude-code")
+# opencode fetches its catalog of models (names, limits, prices) from here when it starts.
+OPENCODE_HOSTS = ("models.opencode.ai",)
 # The zellij session the terminal opens on, started in the workspace before the
 # web server, so the browser goes straight to it rather than to zellij's session
 # picker. A Claude Code session's runs `claude` (this layout), falling back to a
@@ -222,6 +229,47 @@ def model_endpoint(config: dict[str, Any] | None) -> tuple[str, ...]:
     return (url.hostname if port == 443 else f"{url.hostname}:{port}",)
 
 
+def opencode_session(api: Callable[[str, str, dict[str, Any] | None], Any], directory: str, title: str) -> str:
+    """The opencode session the UI opens on: the latest one in `directory`, or a new
+    one titled `title`. `api(method, path, body)` calls opencode's server and returns
+    its JSON. Creating a session calls no model."""
+    where = quote(directory, safe="/")
+    listed = api("GET", f"/session?directory={where}&roots=true", None)
+    found = [s for s in listed or [] if isinstance(s, dict) and s.get("directory") == directory and s.get("id")]
+    if found:
+        return str(max(found, key=lambda s: (s.get("time") or {}).get("updated") or 0)["id"])
+    return str(api("POST", f"/session?directory={where}", {"title": title})["id"])
+
+
+def open_in(api: Callable[[str, str, dict[str, Any] | None], Any], directory: str, title: str,
+             notes: list[str]) -> str:
+    """The UI's path to an opencode session in `directory`, or "" (and a note) if there is none."""
+    try:
+        return opencode_link(directory, opencode_session(api, directory, title))
+    except (OSError, ValueError, KeyError, TypeError, SessionError) as err:
+        notes.append(f"Could not open an opencode session in {directory} ({err}): add it as a project in the UI.")
+        return ""
+
+
+def opencode_link(directory: str, session_id: str) -> str:
+    """The web UI's path to a session, which opens its directory as a project too."""
+    encoded = base64.urlsafe_b64encode(directory.encode()).decode().rstrip("=")
+    return f"{encoded}/session/{session_id}"
+
+
+def _opencode_api(base: str, password: str) -> Callable[[str, str, dict[str, Any] | None], Any]:
+    """opencode's server at `base`, from this machine."""
+    auth = base64.b64encode(f"{UI_USER}:{password}".encode()).decode()
+
+    def call(method: str, path: str, body: dict[str, Any] | None) -> Any:
+        request = urllib.request.Request(base + path, method=method,
+                                         data=json.dumps(body).encode() if body is not None else None,
+                                         headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.load(response)
+    return call
+
+
 def _podman(*args: str, env: dict[str, str] | None = None, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run([BINARY, *args], capture_output=True, text=True, input=stdin,
                           env={**os.environ, **env} if env else None)
@@ -273,7 +321,8 @@ def urls(record: dict[str, Any]) -> dict[str, str]:
     found = {}
     if terminal := record.get("terminal"):
         found["terminal"] = f"http://{host}:{terminal['port']}/" + (terminal.get("path") or "")
-    found["ui"] = found["terminal"] if record.get("agent") == "claude-code" else f"http://{host}:{record['port']}/"
+    found["ui"] = found["terminal"] if record.get("agent") == "claude-code" \
+        else f"http://{host}:{record['port']}/" + record.get("link", "")
     return found
 
 
@@ -403,6 +452,8 @@ def launch(
     else:
         config = opencode_config(cfg)
         endpoint = model_endpoint(config)
+    if not claude:
+        endpoint = (*endpoint, *OPENCODE_HOSTS)
 
     # A session is reached through its gateway, so it always has one. Its model
     # calls come from the container, which is what `--egress-inject model` is for.
@@ -482,6 +533,7 @@ def launch(
         # The password, and any model key, go in by name from this process's
         # environment: they are in neither a command line nor the container's
         # own configuration.
+        link = ""
         if not claude:
             serve = f"exec opencode web --hostname 0.0.0.0 --port {UI_PORT} >> /tmp/opencode.log 2>&1"
             secret_env = {"OPENCODE_SERVER_PASSWORD": password, **model_env(cfg)}
@@ -492,6 +544,7 @@ def launch(
             if not _wait_for_ui(bind, port):
                 log = target.run_shell("tail -n 20 /tmp/opencode.log", check=False, cwd="/").stdout.strip()
                 raise SessionError(f"opencode's UI did not come up on port {port}.\n{log}")
+            link = open_in(_opencode_api(f"http://{_local(bind)}:{port}", password), repo, name, notes)
         elif not claude_env(cfg):
             notes.append(f"No Claude Code credential on the driver ({', '.join(CLAUDE_ENV[:2])}): log in from "
                          "the terminal, or start the session again with one set.")
@@ -509,7 +562,7 @@ def launch(
         "name": name, "bind": bind, "port": port, "password": password,
         "repo_url": git.redact_url(cfg.repo_url), "image": cfg.image, "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "root": cfg.container_root, **limits, "agent": agent, "allow": allowed,
+        "root": cfg.container_root, **limits, "agent": agent, "allow": allowed, "link": link,
     }
     if terminal:
         record["terminal"] = {"port": terminal_port, "token": token, "path": terminal_session(claude)}

@@ -148,3 +148,69 @@ def test_add_allow_keeps_entries_once(tmp_path):
     session.save_record(cfg, "box", {"name": "box", "allow": []})
     assert session.add_allow(cfg, "box", "example.com") and not session.add_allow(cfg, "box", "example.com")
     assert session.load_record(cfg, "box")["allow"] == ["example.com"]
+
+
+def test_the_ui_opens_on_the_latest_opencode_session_in_the_directory_or_a_new_one():
+    calls = []
+    listed = [{"id": "ses_old", "directory": "/workspace", "time": {"updated": 1}},
+              {"id": "ses_new", "directory": "/workspace", "time": {"updated": 5}},
+              {"id": "ses_other", "directory": "/workspace/elsewhere", "time": {"updated": 9}}]
+
+    def api(method, path, body):
+        calls.append((method, path, body))
+        return listed if method == "GET" else {"id": "ses_made"}
+
+    assert session.opencode_session(api, "/workspace", "demo") == "ses_new"
+    assert calls == [("GET", "/session?directory=/workspace&roots=true", None)]
+    listed.clear()
+    assert session.opencode_session(api, "/workspace", "demo") == "ses_made"
+    assert calls[-1] == ("POST", "/session?directory=/workspace", {"title": "demo"})
+
+
+def test_the_link_is_the_web_apps_path_to_the_session():
+    # As opencode's app encodes a directory: base64url, unpadded.
+    assert session.opencode_link("/workspace", "ses_1") == "L3dvcmtzcGFjZQ/session/ses_1"
+    assert session.opencode_link("/workspace/repo", "ses_1") == "L3dvcmtzcGFjZS9yZXBv/session/ses_1"
+
+
+def test_opencode_api_logs_in_and_a_refusal_is_a_note():
+    import base64
+    import http.server
+    import threading
+
+    seen = []
+
+    class Opencode(http.server.BaseHTTPRequestHandler):
+        def _answer(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            seen.append((self.command, self.path, self.headers.get("Authorization"),
+                         self.rfile.read(length).decode() if length else None))
+            status, data = (500, b"{}") if "broken" in self.path else (200, json.dumps(
+                {"id": "ses_9"} if self.command == "POST" else []).encode())
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        do_GET = do_POST = _answer
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Opencode)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        api = session._opencode_api(f"http://127.0.0.1:{server.server_address[1]}", "pw")
+        notes = []
+        assert session.open_in(api, "/workspace", "demo", notes) == "L3dvcmtzcGFjZQ/session/ses_9" and notes == []
+        assert session.open_in(api, "/broken", "demo", notes) == "" and "add it as a project in the UI" in notes[0]
+    finally:
+        server.shutdown()
+    auth = "Basic " + base64.b64encode(b"opencode:pw").decode()
+    assert seen[:2] == [("GET", "/session?directory=/workspace&roots=true", auth, None),
+                        ("POST", "/session?directory=/workspace", auth, '{"title": "demo"}')]
+
+
+def test_urls_open_on_the_session_when_there_is_one():
+    record = {"bind": "127.0.0.1", "port": 4100, "password": "pw", "link": "L3dvcmtzcGFjZQ/session/ses_1"}
+    assert session.urls(record)["ui"] == "http://127.0.0.1:4100/L3dvcmtzcGFjZQ/session/ses_1"
+    assert session.urls({**record, "link": ""})["ui"] == "http://127.0.0.1:4100/"
