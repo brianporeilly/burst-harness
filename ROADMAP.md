@@ -222,8 +222,12 @@ Steps:
    kernel and containerd 2.2 run `hostUsers: false` pods, root inside mapping
    to an unprivileged host uid, writing and chowning on an idmapped ceph-block
    volume. Root sessions need a second template with that; not done.
-   Not yet: `--idle` on a cluster.
-5. Registrations survive a gateway restart: built (2026-10-22). With
+   `--idle` (2026-10-23): the registration carries it, the gateway reports
+   each sandbox's last activity, and `harness session reap`, run by a CronJob
+   with the driver's rights, suspends what has been idle too long. The
+   gateway is given no rights over pods.
+5. Registrations survive a gateway restart: done (2026-10-23, checked live:
+   a session's UI and allowlist held across `kubectl rollout restart`). With
    `EGRESS_STATE`, the shared gateway keeps each registration as it was sent
    (with its expiry and spent `once` approvals) in a file, rewritten on every
    change, and restores those that have not lapsed when it starts. The file

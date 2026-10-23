@@ -29,10 +29,14 @@ session every time, running or not. A gateway with EGRESS_STATE keeps
 registrations across its restarts; after a restart of one without, `start` is
 what gives a running session its network back.
 
-Not here yet: `--idle` (the shared gateway does not stop sandboxes), `--root`
-(the pool's template runs as uid 1000; user-namespace pods work on this
-cluster, so a template for root sessions is possible), and `--port`/`--bind`,
-which mean nothing on a cluster.
+`--idle` goes in the registration. The gateway, which has no say over pods,
+only reports how long each sandbox has done nothing; `harness session reap`,
+run every few minutes by something holding the driver's rights (a CronJob),
+suspends each session idle for longer, as `stop` would. `start` brings it back.
+
+Not here yet: `--root` (the pool's template runs as uid 1000; user-namespace
+pods work on this cluster, so a template for root sessions is possible), and
+`--port`/`--bind`, which mean nothing on a cluster.
 """
 
 from __future__ import annotations
@@ -271,7 +275,7 @@ def launch(
     notes for the user, and how it is: "up" if claimed, "resumed" if it was
     suspended, "running" if it was already, its UI started again)."""
     claim = claim_name(name)
-    refused = [flag for flag, given in (("--idle", idle and seconds(idle)), ("--port", port), ("--bind", bind),
+    refused = [flag for flag, given in (("--port", port), ("--bind", bind),
                                         ("--terminal-port", terminal_port), ("--root", cfg.container_root)) if given]
     if refused:
         raise SessionError(f"{', '.join(refused)}: not for a session on a cluster (yet). See harness/cluster_session.py.")
@@ -311,7 +315,9 @@ def launch(
     names = hosts(cfg, name, claude=claude, terminal=terminal)
     # Worked out before claiming, so a setting that cannot be used claims nothing.
     try:
-        body, summary = registration(cfg, address="", ttl=0, allow=(*endpoint, *allowed), inbound=names)
+        idle_after = seconds(idle) if idle is not None else int(record.get("idle") or 0)
+        body, summary = registration(cfg, address="", ttl=0, allow=(*endpoint, *allowed), inbound=names,
+                                     idle=idle_after)
     except ContainerError as err:
         raise SessionError(str(err)) from err
 
@@ -396,6 +402,7 @@ def launch(
         "name": name, "target": "agent-sandbox", "namespace": cfg.namespace, "claim": claim, "hosts": names,
         "password": password, "repo_url": git.redact_url(cfg.repo_url), "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "lifetime": limit,
+        "idle": idle_after,
         "agent": agent, "allow": allowed, "link": link,
     }
     if terminal:
@@ -421,6 +428,8 @@ def describe(record: dict[str, Any]) -> str:
         lines = [f"  UI:        {where['ui']}", f"  user:      {UI_USER}", f"  password:  {record['password']}"]
     if record.get("allow"):
         lines.append(f"  allows:    {', '.join(record['allow'])} (as well as the defaults)")
+    if record.get("idle"):
+        lines.append(f"  suspended: after {record['idle']}s with nothing going in or out (`harness session reap`)")
     if record.get("lifetime"):
         lines.append(f"  deleted:   {record['lifetime']}s after it was first claimed")
     if (terminal := record.get("terminal")) and record.get("agent") != "claude-code":
@@ -453,6 +462,29 @@ def stop(cfg: HarnessConfig, name: str) -> str:
     _set_mode(cfg, sandbox, "Suspended")
     _wait_gone(cfg, sandbox)
     return f"Stopped session {name}; its workspace is kept.{saved}"
+
+
+def reap(cfg: HarnessConfig, now: float | None = None) -> str:
+    """Suspend every session the gateway says has been idle for longer than its `--idle`."""
+    gateway = Gateway.from_config(cfg)
+    if gateway is None:
+        raise SessionError("Reaping sessions needs gateway_control set.")
+    now = time.time() if now is None else now
+    lines = []
+    for sandbox in gateway.sandboxes():
+        claim, idle = str(sandbox.get("name") or ""), int(sandbox.get("idle") or 0)
+        quiet = now - float(sandbox.get("active") or now)
+        if not idle or quiet < idle or not claim.startswith("session-"):
+            continue
+        name = claim.removeprefix("session-")
+        found = _get(cfg, "sandboxclaim", claim)
+        if found is None or (found["metadata"].get("labels") or {}).get(LABEL_SESSION) != name:
+            continue  # not a session of ours, whatever its name
+        try:
+            lines.append(f"{stop(cfg, name)} (idle {int(quiet)}s, --idle {idle}s)")
+        except (SessionError, AgentSandboxError) as err:
+            lines.append(f"Could not stop session {name}: {err}")
+    return "\n".join(lines) or "No session has been idle too long."
 
 
 def remove(cfg: HarnessConfig, name: str) -> str:

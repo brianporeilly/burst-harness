@@ -447,13 +447,22 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   them, and then `start` is what gives a running session its network back.
 - **The model** has to be reachable from the gateway, which the cluster's
   network policy decides, as well as allowed in the registration.
-- **Not yet:** `--idle`, `--root` (the pool's template runs as uid 1000;
+- **`--idle 2h`** goes in the session's registration. The gateway cannot stop
+  pods, so it only reports how long each sandbox has done nothing (anything but
+  a connection closing counts as something, as on podman), and `harness
+  session reap` suspends each session quiet for longer than its `--idle`, as
+  `stop` would. Run it every few minutes from something with the driver's
+  rights, a CronJob for instance; `start` brings a reaped session back. After a
+  gateway restart, idle time is counted from the restart.
+- **Not yet:** `--root` (the pool's template runs as uid 1000;
   user-namespace pods work on this cluster, so a root template is possible),
   `--port`, `--bind` and `--terminal-port`, which mean nothing here.
 
 The driver needs `kubectl` with permission to create, get, list and patch
-`sandboxclaims` and `sandboxes`, to `create` `pods/exec`, to get `pods`, and to
-apply `httproutes`, all in the namespace. Port-forwarding to the gateway also
+`sandboxclaims` and `sandboxes`, to `create` `pods/exec`, to get, list and
+watch `pods` (`stop` waits for the pod to go), and to apply `httproutes`, all
+in the namespace. `session reap` needs only the sandboxclaims, sandboxes and
+pods parts, and the gateway's control API. Port-forwarding to the gateway also
 needs `get` on `services` and `create` on `pods/portforward` there.
 
 ## Orchestrator

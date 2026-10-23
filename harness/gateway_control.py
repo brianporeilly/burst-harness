@@ -88,6 +88,10 @@ class Gateway:
         """Forget the sandbox; its events, all those the gateway still kept."""
         return list(self._call("DELETE", f"/sandboxes/{name}").get("events") or [])
 
+    def sandboxes(self) -> list[dict[str, Any]]:
+        """Every registration: name, address, expiry, and when it was last active (never credentials)."""
+        return list(self._call("GET", "/sandboxes").get("sandboxes") or [])
+
     def events(self, name: str, after: int = 0) -> dict[str, Any]:
         return self._call("GET", f"/sandboxes/{name}/events?after={after}")
 
@@ -118,7 +122,7 @@ def forwarded(cfg: HarnessConfig, spec: str) -> str:
 def registration(
     cfg: HarnessConfig, *, address: str, ttl: int, allow: tuple[str, ...] = (),
     inject: tuple[dict[str, object], ...] = (), read_only: tuple[dict[str, object], ...] | None = None,
-    upstream_ca: tuple[dict[str, str], ...] = (), inbound: dict[str, int] | None = None,
+    upstream_ca: tuple[dict[str, str], ...] = (), inbound: dict[str, int] | None = None, idle: int = 0,
 ) -> tuple[dict[str, Any], str]:
     """What to register a sandbox with, built as start_egress builds a podman gateway's
     settings, and a line saying what it amounts to (never the credentials)."""
@@ -141,6 +145,8 @@ def registration(
         body["upstream_ca"] = list(upstream_ca)
     if inbound:
         body["inbound"] = dict(inbound)
+    if idle:
+        body["idle"] = idle
     if read_only is not None:
         body.update(readonly=True, writes=list(read_only))
         summary += "; read-only" + (" except " + ", ".join(f"{w['method']} {w['host']}{w.get('path', '')}"

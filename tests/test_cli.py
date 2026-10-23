@@ -71,3 +71,7 @@ def test_session_needs_a_name_and_podman_or_agent_sandbox(monkeypatch):
         cli.main(["--target", "kubectl", "session", "start", "x"])
     with pytest.raises(SystemExit, match="needs pool, gateway_control, session_domain"):
         cli.main(["--target", "agent-sandbox", "--namespace", "s", "session", "start", "x"])
+    with pytest.raises(SystemExit, match="reap is for sessions on a cluster"):
+        cli.main(["--target", "podman", "session", "reap"])
+    with pytest.raises(SystemExit, match="needs gateway_control"):
+        cli.main(["--target", "agent-sandbox", "--namespace", "s", "session", "reap"])

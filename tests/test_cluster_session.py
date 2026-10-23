@@ -236,7 +236,7 @@ def test_claude_code_is_its_terminal_and_a_lifetime_is_a_deadline(tmp_path, clus
 
 def test_what_a_cluster_session_cannot_do_is_refused_before_claiming(tmp_path, cluster, pod):
     state, kubectl = cluster
-    for options, match in [({"idle": "2h"}, "--idle"), ({"port": 8080}, "--port"), ({"bind": "0.0.0.0"}, "--bind")]:
+    for options, match in [({"port": 8080}, "--port"), ({"bind": "0.0.0.0"}, "--bind")]:
         with pytest.raises(SessionError, match=match):
             cluster_session.start(_cfg(tmp_path, kubectl), "demo", **options)
     with pytest.raises(SessionError, match="--root"):
@@ -343,3 +343,48 @@ def test_start_waits_for_a_pod_still_going_rather_than_using_it(tmp_path, cluste
     resumed = next(i for i, call in enumerate(calls) if "patch" in call and "Running" in call[-1])
     assert waited < resumed
     assert registered[-1][1]["address"] == "10.246.0.11"
+
+
+def test_idle_is_registered_and_kept_for_the_next_start(tmp_path, cluster, pod):
+    _, kubectl = cluster
+    _, registered, _ = pod
+    cfg = _cfg(tmp_path, kubectl)
+    out = cluster_session.start(cfg, "demo", idle="2h")
+    assert registered[-1][1]["idle"] == 7200 and "suspended: after 7200s" in out
+    cluster_session.start(cfg, "demo")  # as last started
+    assert registered[-1][1]["idle"] == 7200
+    cluster_session.start(cfg, "demo", idle="0")  # 0: never
+    assert "idle" not in registered[-1][1]
+
+
+def test_reap_suspends_the_sessions_idle_for_too_long_and_nothing_else(tmp_path, cluster, pod, monkeypatch):
+    state, kubectl = cluster
+    _, _, unregistered = pod
+    cfg = _cfg(tmp_path, kubectl)
+    cluster_session.start(cfg, "demo", idle="1h")
+    listing = [
+        {"name": "session-demo", "active": 1000.0, "idle": 3600},  # quiet for 3601s
+        {"name": "session-busy", "active": 4000.0, "idle": 3600},  # not long enough
+        {"name": "session-forever", "active": 0.0, "idle": None},  # no --idle
+        {"name": "burst-job-1", "active": 0.0, "idle": 60},  # not a session
+    ]
+    monkeypatch.setattr(Gateway, "sandboxes", lambda self: listing)
+    out = cluster_session.reap(cfg, now=4601.0)
+    assert "Stopped session demo" in out and "idle 3601s, --idle 3600s" in out
+    assert unregistered == ["session-demo"]
+    assert state.state["sandbox"]["pool-abc12"]["spec"]["operatingMode"] == "Suspended"
+
+    listing[0]["active"] = 4600.0
+    assert cluster_session.reap(cfg, now=4601.0) == "No session has been idle too long."
+
+
+def test_reap_leaves_a_claim_that_is_not_a_session_of_that_name(tmp_path, cluster, pod, monkeypatch):
+    state, kubectl = cluster
+    _, _, unregistered = pod
+    cfg = _cfg(tmp_path, kubectl)
+    cluster_session.start(cfg, "demo")
+    data = state.state
+    data["sandboxclaim"]["session-demo"]["metadata"]["labels"] = {}  # someone else's claim
+    state.path.write_text(json.dumps(data))
+    monkeypatch.setattr(Gateway, "sandboxes", lambda self: [{"name": "session-demo", "active": 0.0, "idle": 60}])
+    assert cluster_session.reap(cfg, now=1000.0) == "No session has been idle too long." and unregistered == []

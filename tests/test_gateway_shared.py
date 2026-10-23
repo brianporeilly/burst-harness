@@ -80,7 +80,10 @@ def test_control_registers_lists_reads_and_unregisters(shared, capsys):
     assert all(e["sandbox"] == "burst-a" for e in body["events"])
 
     status, body = gw.control("GET", "/sandboxes", {}, None, 0)
-    assert body == {"sandboxes": [{"name": "burst-a", "address": "10.42.1.7", "expires": None, "events": 4}]}
+    listed = body["sandboxes"][0]
+    assert listed.pop("active") > 0  # its last event, just now
+    assert body == {"sandboxes": [{"name": "burst-a", "address": "10.42.1.7", "expires": None, "events": 4,
+                                   "idle": None}]}
     assert "inject" not in json.dumps(body)
 
     status, body = gw.control("DELETE", "/sandboxes/burst-a", {"after": ["4"]}, None, 0)
@@ -523,3 +526,30 @@ def test_a_restarted_gateway_serves_what_was_registered_before(tmp_path):
             proc.terminate()
             errors.append(proc.communicate(timeout=20)[1])
     assert "0 restored" in errors[0] and "1 restored" in errors[1]
+
+
+# --- idle: reported, for a driver to act on ---
+
+
+def test_idle_is_registered_and_activity_is_reported(shared, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(gw.time, "time", lambda: clock[0])
+    for bad in (-1, "2h", True, 1.5):
+        assert gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7", "idle": bad}, 0)[0] == "400 Bad Request"
+    gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7", "idle": 600}, clock[0])
+    sandbox = gw.SANDBOXES["a"]
+
+    def listed():
+        return gw.control("GET", "/sandboxes", {}, None, clock[0])[1]["sandboxes"][0]
+
+    assert listed()["idle"] == 600 and listed()["active"] == 1000.0  # registering counts
+    clock[0] = 1500.0
+    gw.emit("connect", "allow", sandbox=sandbox, id="x-1", host="a.com", port=443)
+    assert listed()["active"] == 1500.0
+    clock[0] = 1900.0
+    gw.emit("connect", "close", sandbox=sandbox, id="x-1", host="a.com", port=443)  # a close is not activity
+    gw.emit("inbound", "allow", sandbox=gw.Sandbox(name="b"), id="x-2")  # nor is another sandbox's
+    assert listed()["active"] == 1500.0
+    clock[0] = 2000.0
+    gw.emit("connect", "deny", sandbox=sandbox, id="x-3", host="b.com", port=443)  # a refusal is
+    assert listed()["active"] == 2000.0

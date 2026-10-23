@@ -143,7 +143,7 @@ port EGRESS_CONTROL that wants `Authorization: Bearer` EGRESS_CONTROL_TOKEN
                               "writes": [...], "upstream_ca": [...], "approvals": [...]}
     GET    /sandboxes/NAME/events?after=N
     DELETE /sandboxes/NAME   (answers with the events not yet read, as GET does)
-    GET    /sandboxes        (names, addresses and expiry; never credentials)
+    GET    /sandboxes        (names, addresses, expiry and activity; never credentials)
     GET    /healthz          (no token)
 
 `inject`, `writes` and `upstream_ca` take what EGRESS_INJECT, EGRESS_WRITES and
@@ -152,6 +152,13 @@ replaces that sandbox's registration, and any other holding the same address.
 An address nobody registered is refused everything; so is one whose `ttl` has
 run out, which is how a driver that died without unregistering is cleaned up
 after.
+
+A registration's `idle` (seconds) is not acted on here: the gateway has no
+say over pods. It is reported, with `active` -- when the sandbox last opened a
+connection, was refused one, or was reached (anything but a close; its
+registration counts) -- in the listing, for a driver to suspend what has been
+idle that long (`harness session reap`). After a restart it counts from the
+restart.
 
 With EGRESS_STATE (a file) registrations outlive a restart: each is kept there
 as it was sent, with when it lapses and which `once` approvals it has spent,
@@ -462,6 +469,10 @@ class Sandbox:
     # Shared: (sequence number, event), the newest EVENTS_KEPT; `recorded` counts them all.
     events: collections.deque = field(default_factory=lambda: collections.deque(maxlen=EVENTS_KEPT))
     recorded: int = 0
+    # Shared: when it last did anything (an event other than a close), and how
+    # long it may do nothing before a driver should suspend it (0: forever).
+    active: float = 0.0
+    idle: int = 0
     # Shared: the registration as it was sent, for EGRESS_STATE.
     registration: dict = field(default_factory=dict, repr=False)
 
@@ -491,6 +502,9 @@ class Sandbox:
         ttl = body.get("ttl", 0)
         if not isinstance(ttl, int) or ttl < 0:
             raise ConfigError(f"ttl must be a number of seconds (got {ttl!r}).")
+        idle = body.get("idle", 0)
+        if not isinstance(idle, int) or isinstance(idle, bool) or idle < 0:
+            raise ConfigError(f"idle must be a number of seconds (got {idle!r}).")
 
         def items(key: str) -> list:
             value = body.get(key) or []
@@ -518,6 +532,8 @@ class Sandbox:
             address=address,
             expires=now + ttl if ttl else 0.0,
             inbound=dict(inbound),
+            active=now,
+            idle=idle,
             registration=dict(body),
         )
 
@@ -573,7 +589,7 @@ class Sandbox:
 
 
 REGISTRATION_KEYS = frozenset({"address", "ttl", "mode", "allow", "ports", "inject", "readonly", "writes",
-                               "upstream_ca", "approvals", "inbound"})
+                               "upstream_ca", "approvals", "inbound", "idle"})
 NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-.")
 
 # The one sandbox a gateway serves, when it is not shared.
@@ -733,6 +749,8 @@ def emit(kind: str, verdict: str, *, sandbox: Sandbox | None = None, **fields: o
     print(json.dumps(event), flush=True)
     if sandbox is not None and sandbox is not SINGLE:
         sandbox.record(event)
+        if verdict != "close":
+            sandbox.active = time.time()
     if WEBHOOK and should_notify(event, time.monotonic()):
         notify(event)
 
@@ -1305,7 +1323,8 @@ def control(method: str, path: str, query: dict[str, list[str]], body: object, n
         for name in list(SANDBOXES):
             lapse(name, now)
         return "200 OK", {"sandboxes": [{"name": s.name, "address": s.address, "expires": s.expires or None,
-                                         "events": s.recorded} for s in SANDBOXES.values()]}
+                                         "events": s.recorded, "active": s.active, "idle": s.idle or None}
+                                        for s in SANDBOXES.values()]}
     if len(parts) not in (2, 3) or parts[0] != "sandboxes":
         return "404 Not Found", {"error": "not_found"}
     name = parts[1]
