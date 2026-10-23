@@ -257,8 +257,7 @@ def _wait_for(target: KubectlTarget, port: int, timeout: int = 60) -> bool:
 
 
 def start(cfg: HarnessConfig, name: str, **options: Any) -> str:
-    record, notes, resumed = launch(cfg, name, **options)
-    how = "resumed" if resumed else "up"
+    record, notes, how = launch(cfg, name, **options)
     head = f"Session {name} is {how} ({claim_name(name)} in {cfg.namespace}, egress {record['egress']} via the gateway)."
     return "\n".join([head, *notes, describe(record)])
 
@@ -267,9 +266,10 @@ def launch(
     cfg: HarnessConfig, name: str, *, config_file: str = "", terminal: bool | None = None,
     idle: str | None = None, lifetime: str | None = None, agent: str | None = None,
     allow: tuple[str, ...] | None = None, port: int = 0, bind: str = "", terminal_port: int = 0,
-) -> tuple[dict[str, Any], list[str], bool]:
+) -> tuple[dict[str, Any], list[str], str]:
     """Claim or resume the session, register it, and start its UI. Returns (its record,
-    notes for the user, whether it was resumed rather than claimed)."""
+    notes for the user, and how it is: "up" if claimed, "resumed" if it was
+    suspended, "running" if it was already, its UI started again)."""
     claim = claim_name(name)
     refused = [flag for flag, given in (("--idle", idle and seconds(idle)), ("--port", port), ("--bind", bind),
                                         ("--terminal-port", terminal_port), ("--root", cfg.container_root)) if given]
@@ -316,7 +316,7 @@ def launch(
         raise SessionError(str(err)) from err
 
     existing = _get(cfg, "sandboxclaim", claim)
-    resumed = existing is not None
+    how = "up" if existing is None else "running"
     limit = seconds(lifetime) if lifetime is not None else int(record.get("lifetime") or 0)
     if existing is None:
         existing = json.loads(_kubectl(cfg, "create", "-f", "-", "-o", "json",
@@ -328,6 +328,7 @@ def launch(
     if (_get(cfg, "sandbox", sandbox) or {}).get("spec", {}).get("operatingMode") == "Suspended":
         _wait_gone(cfg, sandbox)  # a stop that is still going
         _set_mode(cfg, sandbox, "Running")
+        how = "resumed"
     address = _pod_address(cfg, sandbox)
     target = KubectlTarget(repo=f"{WORKSPACE}/repo" if cfg.repo_url else WORKSPACE, pod=sandbox,
                            namespace=cfg.namespace, container=cfg.container or None,
@@ -400,7 +401,7 @@ def launch(
     if terminal:
         record["terminal"] = {"token": token, "path": terminal_session(claude)}
     save_record(cfg, name, record)
-    return record, notes, resumed
+    return record, notes, how
 
 
 def urls(record: dict[str, Any]) -> dict[str, str]:

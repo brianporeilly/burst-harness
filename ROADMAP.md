@@ -365,13 +365,19 @@ gate. No PRs from forks until phase 6's gateway is in place.
 - Whether podman can publish ports from an `--internal` network, or whether
   inbound UI traffic must always enter through the gateway (assumed above).
 - zellij web's TLS and token requirements behind a proxy.
-- opencode's projects and sessions (spike). `session start` opens the UI on an
+- opencode's projects and sessions. `session start` opens the UI on an
   opencode session in the workspace, created through opencode's API, which
-  saves adding the directory by hand. Still to find out: whether a directory
-  that is a git repo shows up in the UI's project list as a project of its own
-  (a non-git `/workspace` is filed under opencode's hidden "global" project,
-  and the UI lists no projects), whether to `git init` an empty workspace for
-  that, and how a session per task, or per branch, should look once the
-  orchestrator starts them.
+  saves adding the directory by hand. Found (opencode 1.18, by its API): a
+  project is a git repo's first commit -- its id is that commit's hash, so a
+  directory is a project of its own only once its repo has a commit. Anything
+  else, an empty workspace or a `git init` with nothing committed, is filed
+  under the "global" project. But the web UI's sidebar is none of that: it is
+  a list the browser keeps, filled only by adding a project in the UI. Neither
+  the server's projects nor a link to a session add to it (checked by hand), so
+  nothing the harness does from outside fills it. What it can do is what it
+  does: print a link that opens the session, in the right directory.
+  Still open: how a session per task, or per branch, should look once the
+  orchestrator starts them (a project's records carry a list of
+  "sandboxes", not yet looked into).
 - Signing in once, at the orchestrator, instead of to each session's opencode
   password and zellij token. Not before the orchestrator has a login of its own.

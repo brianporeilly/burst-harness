@@ -200,6 +200,7 @@ def test_stop_suspends_and_start_resumes_at_a_new_address(tmp_path, cluster, pod
 
     out = cluster_session.start(cfg, "demo")
     assert "is resumed" in out and password in out  # the same password
+    assert "is running" in cluster_session.start(cfg, "demo")  # started again while running
     assert "/session/ses_1" in out  # and the same opencode session
     assert sum(1 for r in ran if r["argv"][3:4] == ("POST",)) == 1
     assert state.state["sandbox"]["pool-abc12"]["spec"]["operatingMode"] == "Running"
