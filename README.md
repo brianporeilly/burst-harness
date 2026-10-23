@@ -423,6 +423,9 @@ gateway_control = "kubectl://agent-sandbox-system/burst-gateway:8081"
 session_domain = "internal.example.com"          # a wildcard DNS name and certificate
 session_route_parent = "network/envoy-internal/https"   # NAMESPACE/GATEWAY/LISTENER
 session_route_backend = "burst-gateway:8080"     # the gateway's EGRESS_INBOUND_HTTP (the default)
+# On each route. An uptime checker that probes every route would count as the
+# session's activity, and --idle would never stop it; this one opts out.
+session_route_annotations = ["gatus.home-operations.com/enabled=false"]
 ```
 
 with the control token in `HARNESS_GATEWAY_TOKEN` (`kubectl get secret -n

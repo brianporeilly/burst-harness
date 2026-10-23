@@ -185,10 +185,13 @@ class HarnessConfig:
     # session_route_parent (NAMESPACE/GATEWAY/LISTENER) and sent to
     # session_route_backend (SERVICE:PORT, the gateway's EGRESS_INBOUND_HTTP),
     # which passes it to the sandbox. The domain needs a wildcard DNS record and
-    # certificate at that Gateway.
+    # certificate at that Gateway. session_route_annotations (KEY=VALUE, ...)
+    # go on each route: say, to keep an uptime checker that probes every route
+    # from counting as a session's activity (and holding off --idle).
     session_domain: str = ""
     session_route_parent: str = ""
     session_route_backend: str = "burst-gateway:8080"
+    session_route_annotations: tuple[str, ...] = ()
     # Keep the claim or started container after a terminal state (to inspect it).
     keep_claim: bool = False
 

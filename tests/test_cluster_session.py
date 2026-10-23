@@ -388,3 +388,24 @@ def test_reap_leaves_a_claim_that_is_not_a_session_of_that_name(tmp_path, cluste
     state.path.write_text(json.dumps(data))
     monkeypatch.setattr(Gateway, "sandboxes", lambda self: [{"name": "session-demo", "active": 0.0, "idle": 60}])
     assert cluster_session.reap(cfg, now=1000.0) == "No session has been idle too long." and unregistered == []
+
+
+def test_routes_carry_the_annotations_set_for_them(tmp_path, cluster, pod):
+    state, kubectl = cluster
+    cfg = _cfg(tmp_path, kubectl, session_route_annotations=("gatus.home-operations.com/enabled=false",))
+    cluster_session.start(cfg, "demo", terminal=True)
+    for route in state.state["httproute"].values():
+        assert route["metadata"]["annotations"] == {"gatus.home-operations.com/enabled": "false"}
+
+
+def test_routes_have_no_annotations_unless_set(tmp_path, cluster, pod):
+    state, kubectl = cluster
+    cluster_session.start(_cfg(tmp_path, kubectl), "demo")
+    assert all("annotations" not in route["metadata"] for route in state.state["httproute"].values())
+
+
+@pytest.mark.parametrize("annotations", [("no-equals",), ("=false",), ("a=1", "a=2")])
+def test_malformed_route_annotations_are_refused(tmp_path, annotations):
+    cfg = _cfg(tmp_path, "kubectl", session_route_annotations=annotations)
+    with pytest.raises(SessionError, match="session_route_annotations"):
+        cluster_session.route_manifests(cfg, "demo", {"name": "session-demo", "uid": "u"}, {"session-demo.x": 4096})

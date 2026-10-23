@@ -139,6 +139,11 @@ def route_manifests(cfg: HarnessConfig, name: str, owner: dict[str, str], names:
     if not (namespace and gateway and service and port.isdigit()):
         raise SessionError("session_route_parent is NAMESPACE/GATEWAY[/LISTENER] and session_route_backend "
                            f"SERVICE:PORT (got {cfg.session_route_parent!r}, {cfg.session_route_backend!r}).")
+    pairs = [item.partition("=") for item in cfg.session_route_annotations]
+    annotations = {key: value for key, _, value in pairs}
+    if not all(key and sep for key, sep, _ in pairs) or len(annotations) != len(pairs):
+        raise SessionError("session_route_annotations is KEY=VALUE, ... with each KEY once "
+                           f"(got {list(cfg.session_route_annotations)!r}).")
     parent = {"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": gateway, "namespace": namespace}
     if listener:
         parent["sectionName"] = listener
@@ -150,6 +155,7 @@ def route_manifests(cfg: HarnessConfig, name: str, owner: dict[str, str], names:
             "metadata": {
                 "name": host.split(".", 1)[0],
                 "labels": {LABEL_MANAGED_BY: MANAGED_BY, LABEL_SESSION: label_value(name)},
+                **({"annotations": annotations} if annotations else {}),
                 "ownerReferences": [{"apiVersion": API_VERSION, "kind": "SandboxClaim", "name": owner["name"],
                                      "uid": owner["uid"]}],
             },
