@@ -264,6 +264,11 @@ def test_a_cluster_sessions_refusals_come_from_the_shared_gateway(cluster):
     assert backend.pending("idle") == []  # not registered: stopped
     gateway.added["session-demo"] = [{"allow": "pypi.org"}]
     assert [row["destination"] for row in backend.pending("demo")] == ["llm.lan:8080"]
+    gateway.added["session-demo"] = [{"allow": "llm.lan:8080", "id": "g-3", "once": True}]
+    assert [row["destination"] for row in backend.pending("demo")] == ["pypi.org"]
+    gateway.kept["session-demo"].append({"id": "g-4", "ts": "t4", "kind": "connect", "verdict": "deny",
+                                         "host": "llm.lan", "port": 8080})  # the once was spent
+    assert [(row["id"], row["times"]) for row in backend.pending("demo")] == [("g-2", 2), ("g-4", 2)]
 
 
 def test_approving_a_cluster_sessions_refusal(cluster):

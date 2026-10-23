@@ -84,21 +84,41 @@ def write_approvals(gateway: dict[str, str], approvals: list[dict[str, Any]]) ->
         raise EgressError(f"Could not write approvals to {gateway['name']}: {proc.stderr.strip()}")
 
 
+def unapproved(events: list[dict[str, Any]], approvals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The newest refusal of each destination no live approval covers, with how many there were.
+
+    An approval covers the refusals up to the one it names (any, when it names none) while it
+    has not expired. A refusal after that means it no longer let the destination through: a
+    `once` spent or a duration run out, so the destination is pending again.
+    """
+    now, order = time.time(), {}
+    refused = [e for e in events if e.get("verdict") == "deny" and e.get("kind") in DESTINATION_KINDS
+               and e.get("host") not in (None, "-")]
+    for index, event in enumerate(refused):
+        order.setdefault(str(event.get("id")), index)
+    covered: dict[str, int] = {}
+    for entry in approvals:
+        if entry.get("expires") and float(entry["expires"]) <= now:
+            continue
+        upto = order.get(str(entry["id"]), -1) if entry.get("id") else len(refused)
+        where = str(entry.get("allow"))
+        covered[where] = max(covered.get(where, -1), upto)
+    latest: dict[str, tuple[int, dict[str, Any]]] = {}
+    counts: dict[str, int] = {}
+    for index, event in enumerate(refused):
+        where = destination(event)
+        latest[where], counts[where] = (index, event), counts.get(where, 0) + 1
+    return [{**event, "destination": where, "times": counts[where]}
+            for where, (index, event) in latest.items() if index > covered.get(where, -1)]
+
+
 def pending() -> list[dict[str, Any]]:
     """Destinations running gateways have refused and nobody has approved, newest refusal of each."""
     rows = []
     for gateway in gateways():
-        approved = {str(a.get("allow")) for a in read_approvals(gateway)}
-        latest: dict[str, dict[str, Any]] = {}
-        counts: dict[str, int] = {}
-        for event in events(gateway):
-            if event.get("verdict") == "deny" and event.get("kind") in DESTINATION_KINDS and event.get("host") not in (None, "-"):
-                where = destination(event)
-                latest[where], counts[where] = event, counts.get(where, 0) + 1
-        for where, event in latest.items():
-            if where not in approved:
-                rows.append({"id": event["id"], "destination": where, "times": counts[where], "last": event["ts"],
-                             "sandbox": event.get("sandbox") or gateway["name"].removesuffix("-egress")})
+        for event in unapproved(events(gateway), read_approvals(gateway)):
+            rows.append({"id": event["id"], "destination": event["destination"], "times": event["times"], "last": event["ts"],
+                         "sandbox": event.get("sandbox") or gateway["name"].removesuffix("-egress")})
     return sorted(rows, key=lambda row: row["last"])
 
 

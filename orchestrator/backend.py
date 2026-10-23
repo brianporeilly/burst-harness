@@ -315,33 +315,26 @@ class ClusterBackend(PodmanBackend):
     def exists(self, name: str) -> bool:
         return bool(cluster_session.load_record(self.base, name)) or cluster_session.state(self.base, name) != "absent"
 
-    def _refusals(self, name: str) -> tuple[Gateway, list[dict[str, Any]], set[str]]:
-        """The session's gateway, the refusals it has kept, and what has been approved since."""
+    def _refusals(self, name: str) -> tuple[Gateway, list[dict[str, Any]], list[dict[str, Any]]]:
+        """The session's gateway, the events it has kept, and its approvals."""
         gateway, claim = self.gateway(), cluster_session.claim_name(name)
         try:
             kept = gateway.events(claim).get("events") or []
         except GatewayError as err:
             if " 404 " in f" {err} ":
-                return gateway, [], set()  # not registered: stopped, or never started
+                return gateway, [], []  # not registered: stopped, or never started
             raise
         try:
-            approved = {str(a.get("allow")) for a in gateway.approvals(claim).get("approvals") or []}
+            approvals = gateway.approvals(claim).get("approvals") or []
         except GatewayError:
-            approved = set()  # a gateway from before approvals over the API: none of them
-        refused = [e for e in kept if e.get("verdict") == "deny" and e.get("kind") in egress.DESTINATION_KINDS
-                   and e.get("host") not in (None, "-")]
-        return gateway, refused, approved
+            approvals = []  # a gateway from before approvals over the API: none of them
+        return gateway, kept, approvals
 
     def pending(self, name: str) -> list[dict[str, Any]]:
-        _, refused, approved = self._refusals(name)
-        latest: dict[str, dict[str, Any]] = {}
-        counts: dict[str, int] = {}
-        for event in refused:
-            where = egress.destination(event)
-            latest[where], counts[where] = event, counts.get(where, 0) + 1
-        return sorted(({"id": event.get("id") or "", "destination": where, "times": counts[where],
+        _, kept, approvals = self._refusals(name)
+        return sorted(({"id": event.get("id") or "", "destination": event["destination"], "times": event["times"],
                         "last": event.get("ts") or "", "sandbox": cluster_session.claim_name(name)}
-                       for where, event in latest.items() if where not in approved), key=lambda row: row["last"])
+                       for event in egress.unapproved(kept, approvals)), key=lambda row: row["last"])
 
     def approve(self, request_id: str, scope: str) -> str:
         """Approve a refusal on the gateway, for the session whose events have it. `permanent`
@@ -349,8 +342,10 @@ class ClusterBackend(PodmanBackend):
         extra = egress._scope(scope)
         for row in self.harness.list_sessions(self.base):
             name = row["name"]
-            gateway, refused, _ = self._refusals(name)
-            if (event := next((e for e in refused if e.get("id") == request_id), None)) is None:
+            gateway, kept, _ = self._refusals(name)
+            if (event := next((e for e in kept if e.get("id") == request_id and e.get("verdict") == "deny"
+                               and e.get("kind") in egress.DESTINATION_KINDS and e.get("host") not in (None, "-")),
+                              None)) is None:
                 continue
             where = egress.destination(event)
             try:

@@ -42,6 +42,21 @@ def test_pending_groups_by_destination_and_hides_the_approved(gateway):
     assert (row["id"], row["destination"], row["times"], row["sandbox"]) == ("a-2", "example.com", 2, "burst-t-abc")
 
 
+def test_a_refusal_after_its_approval_is_pending_again(gateway, monkeypatch):
+    monkeypatch.setattr(egress.time, "time", lambda: 1000)
+    gateway["events"] = [deny("a-1", "example.com"), deny("a-2", "llm.lan", 8080), deny("a-3", "pypi.org")]
+    gateway["approvals"] = [{"allow": "example.com", "id": "a-1", "once": True},
+                            {"allow": "llm.lan:8080", "id": "a-2", "expires": 999},  # run out
+                            {"allow": "pypi.org", "id": "a-0"}]  # older than the log: a-3 came after it
+    assert [row["destination"] for row in egress.pending()] == ["llm.lan:8080", "pypi.org"]
+    gateway["approvals"][-1]["id"] = "a-3"
+    assert [row["destination"] for row in egress.pending()] == ["llm.lan:8080"]
+    gateway["events"] += [deny("a-4", "example.com", ts="2026-10-07T10:01:00Z")]  # the once was spent
+    assert [(row["id"], row["times"]) for row in egress.pending()] == [("a-2", 1), ("a-4", 2)]
+    gateway["approvals"] += [{"allow": "example.com", "id": "a-4"}]
+    assert [row["destination"] for row in egress.pending()] == ["llm.lan:8080"]
+
+
 def test_approve_writes_an_entry_per_scope(gateway, tmp_path, monkeypatch):
     cfg = HarnessConfig(state_dir=str(tmp_path))
     gateway["events"] = [deny("a-1", "example.com"), deny("a-2", "llm.lan", 8080)]
