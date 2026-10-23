@@ -137,7 +137,7 @@ class PodmanBackend:
     """Sessions on this machine's podman, through the harness."""
 
     name = "podman"
-    # Where list_sessions, urls, launch, stop and remove come from.
+    # Where list_sessions, load_record, urls, launch, stop and remove come from.
     harness: Any = session
 
     def __init__(self, base: HarnessConfig | None = None) -> None:
@@ -182,7 +182,7 @@ class PodmanBackend:
             jobs = dict(self.jobs)
         found = []
         for name in sorted(set(rows) | set(jobs)):
-            record = session.load_record(self.base, name)
+            record = self.harness.load_record(self.base, name)
             row = rows.get(name, {"name": name, "status": "absent"})
             status = row.get("status", "absent")
             job = jobs.get(name)
@@ -238,7 +238,7 @@ class PodmanBackend:
         ))
 
     def start(self, name: str) -> None:
-        record = session.load_record(self.base, name)
+        record = self.harness.load_record(self.base, name)
         if not record:
             raise SpecError(f"No session named {name}.")
         if spec := self.saved_spec(name):
@@ -313,7 +313,7 @@ class ClusterBackend(PodmanBackend):
         return found
 
     def exists(self, name: str) -> bool:
-        return bool(session.load_record(self.base, name)) or cluster_session.state(self.base, name) != "absent"
+        return bool(cluster_session.load_record(self.base, name)) or cluster_session.state(self.base, name) != "absent"
 
     def _refusals(self, name: str) -> tuple[Gateway, list[dict[str, Any]], set[str]]:
         """The session's gateway, the refusals it has kept, and what has been approved since."""
@@ -358,7 +358,7 @@ class ClusterBackend(PodmanBackend):
             except GatewayError as err:
                 raise SpecError(str(err)) from err
             if scope.strip().lower() == "permanent":
-                session.add_allow(self.base, name, where)
+                cluster_session.add_allow(self.base, name, where)
                 return f"Approved {where} for session {name}, from now on."
             return f"Approved {where} for session {name} ({scope})."
         raise SpecError(f"No running session has a refusal with id {request_id}. A stopped session's are gone; "

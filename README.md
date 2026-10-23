@@ -447,6 +447,11 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   by the claim, sends it to the gateway, which passes each connection to the
   sandbox whose registration holds that name. Every connection is an `inbound`
   event, as on podman. A stopped session's names get a 404.
+- **Its record is on the cluster**: a Secret named as the claim and owned by
+  it, holding the UI password, host names and settings. Any driver of the
+  namespace sees the same sessions (the CLI on one machine, the orchestrator on
+  another), and `rm` takes the record with the claim. A session started before
+  this is read from the local file and moved when it next starts.
 - **Registered on every start**, running or not, since the pod's address
   changes when it resumes. A gateway with `EGRESS_STATE` (a file on a volume
   of its own) keeps registrations across its restarts; one without forgets
@@ -471,8 +476,9 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
 
 The driver needs `kubectl` with permission to create, get, list and patch
 `sandboxclaims` and `sandboxes`, to `create` `pods/exec`, to get, list and
-watch `pods` (`stop` waits for the pod to go), and to apply `httproutes`, all
-in the namespace. `session reap` needs only the sandboxclaims, sandboxes and
+watch `pods` (`stop` waits for the pod to go), to apply `httproutes`, and to
+get, list, create and patch `secrets` (each session's record), all in the
+namespace. `session reap` needs only the sandboxclaims, sandboxes and
 pods parts, and the gateway's control API. Port-forwarding to the gateway also
 needs `get` on `services` and `create` on `pods/portforward` there.
 

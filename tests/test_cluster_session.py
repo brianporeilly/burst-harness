@@ -40,11 +40,13 @@ FAKE_KUBECTL = textwrap.dedent('''\
     def get(kind, name):
         return state.setdefault(kind, {{}}).get(name)
 
-    if verb == "get" and args[1] in ("sandboxclaim", "sandbox"):
+    if verb == "get" and args[1] in ("sandboxclaim", "sandbox", "secret"):
         found = get(args[1], args[2])
         print(json.dumps(found) if found else "")
     elif verb == "get" and args[1] == "sandboxclaims":
         print(json.dumps({{"items": list(state.get("sandboxclaim", {{}}).values())}}))
+    elif verb == "get" and args[1] == "secrets":
+        print(json.dumps({{"items": list(state.get("secret", {{}}).values())}}))
     elif verb == "get" and args[1] == "sandboxes":
         print(json.dumps({{"items": list(state.get("sandbox", {{}}).values())}}))
     elif verb == "get" and args[1] == "pod":
@@ -73,13 +75,14 @@ FAKE_KUBECTL = textwrap.dedent('''\
         if "--for=delete" in args:
             state["terminating"] = False
     elif verb == "apply":
-        route = json.loads(sys.stdin.read())
-        state.setdefault("httproute", {{}})[route["metadata"]["name"]] = route
+        thing = json.loads(sys.stdin.read())
+        state.setdefault(thing["kind"].lower(), {{}})[thing["metadata"]["name"]] = thing
     elif verb == "delete":
         claim = state.get("sandboxclaim", {{}}).pop(args[2], None)
-        if claim:  # the routes are the claim's
-            state["httproute"] = {{k: r for k, r in state.get("httproute", {{}}).items()
-                                  if r["metadata"]["ownerReferences"][0]["name"] != args[2]}}
+        if claim:  # the routes and the record are the claim's
+            for kind in ("httproute", "secret"):
+                state[kind] = {{k: r for k, r in state.get(kind, {{}}).items()
+                               if r["metadata"]["ownerReferences"][0]["name"] != args[2]}}
     else:
         sys.exit("fake kubectl: " + " ".join(args))
     save()
@@ -190,7 +193,7 @@ def test_stop_suspends_and_start_resumes_at_a_new_address(tmp_path, cluster, pod
     ran, registered, unregistered = pod
     cfg = _cfg(tmp_path, kubectl)
     cluster_session.start(cfg, "demo")
-    password = json.loads((tmp_path / "state" / "sessions" / "demo.json").read_text())["password"]
+    password = cluster_session.load_record(cfg, "demo")["password"]
 
     assert "workspace is kept" in cluster_session.stop(cfg, "demo")
     assert not state.state.get("terminating")  # stop waited for the pod to go
@@ -217,7 +220,7 @@ def test_rm_deletes_the_claim_and_its_routes(tmp_path, cluster, pod):
     cluster_session.start(cfg, "demo")
     assert "deleted" in cluster_session.remove(cfg, "demo")
     assert state.state["sandboxclaim"] == {} and state.state["httproute"] == {}
-    assert not (tmp_path / "state" / "sessions" / "demo.json").exists()
+    assert state.state["secret"] == {}  # the record went with the claim
 
 
 def test_claude_code_is_its_terminal_and_a_lifetime_is_a_deadline(tmp_path, cluster, pod):
@@ -429,3 +432,51 @@ def test_a_session_is_started_again_as_it_was_created(tmp_path, cluster, pod):
     with pytest.raises(SessionError, match=r"created with --root \(from pool coding-agent-root\)"):
         cluster_session.start(plain, "rooted")
     cluster_session.start(root, "rooted")  # the same way is fine
+
+
+def test_a_sessions_record_is_a_secret_owned_by_its_claim(tmp_path, cluster, pod):
+    import base64
+
+    state, kubectl = cluster
+    cfg = _cfg(tmp_path, kubectl)
+    cluster_session.start(cfg, "demo", idle="1h")
+    secret = state.state["secret"]["session-demo"]
+    assert secret["metadata"]["ownerReferences"][0] == {"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+                                                        "kind": "SandboxClaim", "name": "session-demo",
+                                                        "uid": "uid-session-demo"}
+    assert secret["metadata"]["labels"]["burst-harness/session"] == "demo"
+    record = json.loads(base64.b64decode(secret["data"]["record"]))
+    assert record["idle"] == 3600 and record["password"]
+    assert not (tmp_path / "state" / "sessions").exists() or not list((tmp_path / "state" / "sessions").iterdir())
+    apply = next(c for c in state.state["calls"] if "apply" in c and "--server-side" in c)
+    assert "--force-conflicts" in apply  # no last-applied annotation holding the password
+
+    # Another driver, with nothing of its own, sees the same session.
+    other = _cfg(tmp_path / "elsewhere", kubectl)
+    assert cluster_session.load_record(other, "demo") == record
+    assert cluster_session.list_sessions(other)[0]["ui"].startswith("https://session-demo.internal.example.com/")
+
+
+def test_a_session_from_before_secrets_is_read_from_its_file_and_moved(tmp_path, cluster, pod):
+    from harness import session
+
+    state, kubectl = cluster
+    cfg = _cfg(tmp_path, kubectl)
+    cluster_session.start(cfg, "demo")
+    record = cluster_session.load_record(cfg, "demo")
+    state.path.write_text(json.dumps({**state.state, "secret": {}}))  # as it was before
+    session.save_record(cfg, "demo", record)
+    assert cluster_session.load_record(cfg, "demo")["password"] == record["password"]
+    cluster_session.start(cfg, "demo")
+    assert cluster_session.load_record(cfg, "demo")["password"] == record["password"]  # kept
+    assert "session-demo" in state.state["secret"] and not session.record_path(cfg, "demo").exists()
+
+
+def test_an_entry_is_added_to_a_sessions_own_allowlist(tmp_path, cluster, pod):
+    cfg = _cfg(tmp_path, kubectl := cluster[1])
+    cluster_session.start(cfg, "demo")
+    assert cluster_session.add_allow(cfg, "demo", "pypi.org") is True
+    assert cluster_session.add_allow(cfg, "demo", "pypi.org") is False
+    assert cluster_session.load_record(cfg, "demo")["allow"] == ["pypi.org"]
+    with pytest.raises(SessionError, match="No session named nope"):
+        cluster_session.add_allow(_cfg(tmp_path, kubectl), "nope", "x.com")

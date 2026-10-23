@@ -264,8 +264,10 @@ On Kubernetes, in steps:
    from the shared gateway's control API, which now also takes approvals for a
    registered sandbox (`POST /sandboxes/NAME/approvals`) without the rest of its
    registration being sent again. Run from a laptop with the cluster settings.
-2. Session records on the cluster (a Secret per session, owned by its claim),
-   so the orchestrator, the CLI and the reaper see the same sessions.
+2. Session records on the cluster (2026-10-23): a Secret per session, named
+   as its claim and owned by it (applied server-side, so no annotation copies
+   the password), so the orchestrator and the CLI see the same sessions. Older
+   local records are read, and moved at the next start.
 3. The orchestrator in the cluster: an image, a Deployment with the driver's
    rights, an HTTPRoute behind Authentik's OIDC.
 4. OpenHands removed from home-ops.

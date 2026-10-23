@@ -247,6 +247,8 @@ def cluster(tmp_path, monkeypatch):
     gateway = FakeGateway()
     backend = ClusterBackend(base)
     monkeypatch.setattr(backend, "gateway", lambda: gateway)
+    monkeypatch.setattr(cluster_session, "load_record", session.load_record)  # records' storage: tested there
+    monkeypatch.setattr(cluster_session, "add_allow", session.add_allow)
     monkeypatch.setattr(cluster_session, "list_sessions",
                         lambda cfg: [{"name": "demo", "status": "running"}, {"name": "idle", "status": "stopped"}])
     backend.POLL = 0

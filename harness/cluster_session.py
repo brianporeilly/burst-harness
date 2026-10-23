@@ -24,6 +24,12 @@ sandbox's ports each name goes to. The routes belong to the claim, so deleting
 the claim deletes them; a suspended session's names get a 404 from the gateway,
 which no longer has them.
 
+A session's record (its UI password, host names and settings) is a Secret
+named as its claim and owned by it, so any driver of the namespace (the CLI,
+the orchestrator) sees the same sessions, and removing the claim removes it.
+A session from before that is still read from the local file, and moves to a
+Secret when it is next started.
+
 A pod's address changes each time it starts, so `start` registers the
 session every time, running or not. A gateway with EGRESS_STATE keeps
 registrations across its restarts; after a restart of one without, `start` is
@@ -57,6 +63,7 @@ from pathlib import Path
 from typing import Any
 
 from . import git
+from . import session as local
 from .agent_sandbox import (
     API_VERSION,
     LABEL_MANAGED_BY,
@@ -80,13 +87,11 @@ from .session import (
     SessionError,
     claude_env,
     container_name,
-    load_record,
     model_endpoint,
     model_env,
     open_in,
     opencode_config,
     record_path,
-    save_record,
     seconds,
     terminal_in,
     terminal_session,
@@ -95,6 +100,8 @@ from .session import (
 LABEL_SESSION = "burst-harness/session"
 SANDBOX_API = "agents.x-k8s.io/v1beta1"
 ROUTE_API = "gateway.networking.k8s.io/v1"
+# The session's record (password, names, settings) is this key of a Secret named as its claim.
+RECORD_KEY = "record"
 # The agent's home, on the workspace volume so it outlives the pod.
 HOME = f"{WORKSPACE}/.home"
 OPENCODE_CONFIG = f"{HOME}/.config/opencode/opencode.json"
@@ -170,6 +177,48 @@ def route_manifests(cfg: HarnessConfig, name: str, owner: dict[str, str], names:
             },
         })
     return routes
+
+
+def _record_of(secret: dict[str, Any] | None) -> dict[str, Any]:
+    data = ((secret or {}).get("data") or {}).get(RECORD_KEY)
+    return json.loads(base64.b64decode(data)) if data else {}
+
+
+def load_record(cfg: HarnessConfig, name: str) -> dict[str, Any]:
+    """The session's record: its Secret, or for a session from before those, the local file."""
+    return _record_of(_get(cfg, "secret", claim_name(name))) or local.load_record(cfg, name)
+
+
+def save_record(cfg: HarnessConfig, name: str, record: dict[str, Any], owner: dict[str, str]) -> None:
+    """Keep the record in a Secret owned by the claim (so it goes with it), where every
+    driver of the namespace finds it. Applied server-side: a client-side apply would copy
+    it, password and all, into an annotation."""
+    secret = {
+        "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+        "metadata": {
+            "name": claim_name(name),
+            "labels": {LABEL_MANAGED_BY: MANAGED_BY, LABEL_SESSION: label_value(name)},
+            "ownerReferences": [{"apiVersion": API_VERSION, "kind": "SandboxClaim", "name": owner["name"],
+                                 "uid": owner["uid"]}],
+        },
+        "data": {RECORD_KEY: base64.b64encode(json.dumps(record).encode()).decode()},
+    }
+    _kubectl(cfg, "apply", "--server-side", "--force-conflicts", "--field-manager", MANAGED_BY, "-f", "-",
+             stdin=json.dumps(secret))
+    record_path(cfg, name).unlink(missing_ok=True)  # the Secret is the record now
+
+
+def add_allow(cfg: HarnessConfig, name: str, entry: str) -> bool:
+    """Add an entry to a session's own allowlist, for its next start. False if it had it already."""
+    claim = _get(cfg, "sandboxclaim", claim_name(name))
+    record = load_record(cfg, name)
+    if claim is None or not record:
+        raise SessionError(f"No session named {name} in {cfg.namespace}.")
+    if entry in record.get("allow", []):
+        return False
+    save_record(cfg, name, {**record, "allow": [*record.get("allow", []), entry]},
+                {"name": claim["metadata"]["name"], "uid": claim["metadata"]["uid"]})
+    return True
 
 
 def _get(cfg: HarnessConfig, kind: str, name: str) -> dict[str, Any] | None:
@@ -427,7 +476,7 @@ def launch(
     }
     if terminal:
         record["terminal"] = {"token": token, "path": terminal_session(claude)}
-    save_record(cfg, name, record)
+    save_record(cfg, name, record, owner)
     return record, notes, how
 
 
@@ -517,13 +566,15 @@ def remove(cfg: HarnessConfig, name: str) -> str:
 
 def list_sessions(cfg: HarnessConfig) -> list[dict[str, str]]:
     claims = json.loads(_kubectl(cfg, "get", "sandboxclaims", "-l", LABEL_SESSION, "-o", "json")).get("items", [])
+    records = {secret["metadata"]["name"]: _record_of(secret) for secret in
+               json.loads(_kubectl(cfg, "get", "secrets", "-l", LABEL_SESSION, "-o", "json")).get("items", [])}
     modes = {}
     for sandbox in json.loads(_kubectl(cfg, "get", "sandboxes", "-o", "json")).get("items", []):
         modes[sandbox["metadata"]["name"]] = (sandbox.get("spec") or {}).get("operatingMode") or "Running"
     rows = []
     for claim in claims:
         name = claim["metadata"]["labels"][LABEL_SESSION]
-        record = load_record(cfg, name)
+        record = records.get(claim["metadata"]["name"]) or local.load_record(cfg, name)
         sandbox = (claim.get("status") or {}).get("sandbox", {}).get("name", "")
         running = modes.get(sandbox, "Running") != "Suspended"
         rows.append({
