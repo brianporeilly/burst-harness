@@ -1,8 +1,11 @@
+import json
+
 import pytest
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from harness.gateway_control import GatewayError
 from orchestrator.app import create_app  # noqa: E402
 from orchestrator.backend import SessionSpec, SpecError  # noqa: E402
 
@@ -198,3 +201,107 @@ def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
 def test_without_job_directories_the_jobs_api_says_how_to_add_them(client):
     assert client.get("/api/jobs").json() == {"directories": [], "jobs": []}
     assert "--jobs" in client.get("/api/jobs/x").json()["error"]
+
+
+# --- sessions on a cluster ---
+
+
+class FakeGateway:
+    def __init__(self):
+        self.kept = {"session-demo": [
+            {"id": "g-1", "kind": "connect", "verdict": "deny", "host": "pypi.org", "port": 443, "ts": "t1"},
+            {"id": "g-2", "kind": "connect", "verdict": "deny", "host": "pypi.org", "port": 443, "ts": "t2"},
+            {"id": "g-3", "kind": "connect", "verdict": "deny", "host": "llm.lan", "port": 8080, "ts": "t3"},
+            {"id": "g-4", "kind": "request", "verdict": "deny", "host": "-", "ts": "t4"},
+            {"id": "g-5", "kind": "connect", "verdict": "allow", "host": "github.com", "port": 443, "ts": "t5"},
+        ]}
+        self.added = {}
+
+    def _known(self, claim):
+        if claim not in self.kept:
+            raise GatewayError(f"gateway GET /sandboxes/{claim}/events: 404 not_registered")
+
+    def events(self, claim, after=0):
+        self._known(claim)
+        return {"events": self.kept[claim][after:], "next": len(self.kept[claim]), "dropped": 0}
+
+    def approvals(self, claim):
+        self._known(claim)
+        return {"approvals": self.added.get(claim, []), "spent": []}
+
+    def approve(self, claim, entry):
+        self._known(claim)
+        self.added.setdefault(claim, []).append(entry)
+
+
+@pytest.fixture
+def cluster(tmp_path, monkeypatch):
+    from harness import cluster_session, session
+    from harness.config import HarnessConfig
+    from orchestrator.backend import ClusterBackend
+
+    base = HarnessConfig(target="agent-sandbox", namespace="ns", pool="p", gateway_control="http://gw:8081",
+                         state_dir=str(tmp_path))
+    session.save_record(base, "demo", {"name": "demo", "allow": []})
+    session.save_record(base, "idle", {"name": "idle", "allow": []})
+    gateway = FakeGateway()
+    backend = ClusterBackend(base)
+    monkeypatch.setattr(backend, "gateway", lambda: gateway)
+    monkeypatch.setattr(cluster_session, "list_sessions",
+                        lambda cfg: [{"name": "demo", "status": "running"}, {"name": "idle", "status": "stopped"}])
+    backend.POLL = 0
+    return backend, gateway, base
+
+
+def test_a_cluster_sessions_refusals_come_from_the_shared_gateway(cluster):
+    backend, gateway, _ = cluster
+    assert backend.pending("demo") == [
+        {"id": "g-2", "destination": "pypi.org", "times": 2, "last": "t2", "sandbox": "session-demo"},
+        {"id": "g-3", "destination": "llm.lan:8080", "times": 1, "last": "t3", "sandbox": "session-demo"},
+    ]
+    assert backend.pending("idle") == []  # not registered: stopped
+    gateway.added["session-demo"] = [{"allow": "pypi.org"}]
+    assert [row["destination"] for row in backend.pending("demo")] == ["llm.lan:8080"]
+
+
+def test_approving_a_cluster_sessions_refusal(cluster):
+    from harness import session
+
+    backend, gateway, base = cluster
+    assert backend.approve("g-3", "once") == "Approved llm.lan:8080 for session demo (once)."
+    assert gateway.added["session-demo"] == [{"allow": "llm.lan:8080", "id": "g-3", "once": True}]
+    assert session.load_record(base, "demo")["allow"] == []
+    assert backend.approve("g-1", "permanent") == "Approved pypi.org for session demo, from now on."
+    assert session.load_record(base, "demo")["allow"] == ["pypi.org"]  # for its next start too
+    with pytest.raises(SpecError, match="No running session has a refusal with id g-9"):
+        backend.approve("g-9", "session")
+    with pytest.raises(SpecError, match="g-4"):  # refused, but not for where it was going
+        backend.approve("g-4", "session")
+
+
+def test_a_cluster_sessions_events_follow_the_gateway(cluster):
+    import asyncio
+
+    backend, gateway, _ = cluster
+
+    async def take(count):
+        seen, stream = [], backend.events("demo")
+        async for line in stream:
+            seen.append(json.loads(line)["id"])
+            if len(seen) == 2:
+                gateway.kept["session-demo"].append({"id": "g-6", "kind": "connect", "verdict": "allow"})
+            if len(seen) == 6:  # registered afresh: counted from 0 again
+                gateway.kept["session-demo"] = [{"id": "r-1", "kind": "sandbox", "verdict": "register"}]
+            if len(seen) == count:
+                await stream.aclose()
+                return seen
+
+    assert asyncio.run(take(7)) == ["g-1", "g-2", "g-3", "g-4", "g-5", "g-6", "r-1"]
+
+
+def test_a_cluster_backend_needs_a_cluster_target(tmp_path):
+    from harness.config import HarnessConfig
+    from orchestrator.backend import ClusterBackend
+
+    with pytest.raises(ValueError, match="agent-sandbox"):
+        ClusterBackend(HarnessConfig(state_dir=str(tmp_path)))

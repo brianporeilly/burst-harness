@@ -142,6 +142,8 @@ port EGRESS_CONTROL that wants `Authorization: Bearer` EGRESS_CONTROL_TOKEN
                               "mode": "allowlist", "inject": [...], "readonly": true,
                               "writes": [...], "upstream_ca": [...], "approvals": [...]}
     GET    /sandboxes/NAME/events?after=N
+    GET    /sandboxes/NAME/approvals
+    POST   /sandboxes/NAME/approvals    {"allow": "pypi.org", "id": "a1b2c3-9", "once": true}
     DELETE /sandboxes/NAME   (answers with the events not yet read, as GET does)
     GET    /sandboxes        (names, addresses, expiry and activity; never credentials)
     GET    /healthz          (no token)
@@ -152,6 +154,12 @@ replaces that sandbox's registration, and any other holding the same address.
 An address nobody registered is refused everything; so is one whose `ttl` has
 run out, which is how a driver that died without unregistering is cleaned up
 after.
+
+A POST to a sandbox's approvals adds one entry (as in an approvals file:
+`allow`, and optionally `id`, `once` or `expires`) to its registration, without
+sending the rest again, and replaces any with the same `id` (or, without one,
+the same `allow`); a GET answers with them and which `once` ones are spent. It
+lasts as the registration does: a PUT replaces them all.
 
 A registration's `idle` (seconds) is not acted on here: the gateway has no
 say over pods. It is reported, with `active` -- when the sandbox last opened a
@@ -576,6 +584,23 @@ class Sandbox:
     def intercepts(self, host: str, port: int) -> bool:
         """Whether TLS to host:port is terminated here: credentials to add there, or read-only mode."""
         return CERTIFICATES is not None and (self.readonly or any(r.host == host and r.port == port for r in self.inject))
+
+    def approve(self, body: object) -> None:
+        """Add one approval to a shared sandbox's registration, replacing any with its key."""
+        if not isinstance(body, dict) or not isinstance(body.get("allow"), str) or not body["allow"].strip() \
+                or set(body) - {"allow", "id", "once", "expires"} \
+                or not isinstance(body.get("id", ""), str) or not isinstance(body.get("once", False), bool) \
+                or not isinstance(body.get("expires", 0), (int, float)) or isinstance(body.get("expires"), bool):
+            raise ConfigError(f"an approval is {{\"allow\": HOST, \"id\"?, \"once\"?, \"expires\"?}} (got {body!r}).")
+        entry = {key: value for key, value in body.items() if value not in ("", False, 0)}
+        [parsed] = Approvals.parse([entry])
+        key = parsed["key"]
+        self.approvals.entries = [e for e in self.approvals.entries if e["key"] != key] + [parsed]
+        self.approvals.spent.discard(str(key))
+        kept = [e for e in self.registration.get("approvals") or [] if str(e.get("id") or e.get("allow")) != key]
+        self.registration = {**self.registration, "approvals": [*kept, entry]}
+        emit("approval", "add", sandbox=self, allow=entry["allow"], id=entry.get("id"),
+             detail="once" if entry.get("once") else None)
 
     def record(self, event: dict[str, object]) -> None:
         self.recorded += 1
@@ -1335,11 +1360,20 @@ def control(method: str, path: str, query: dict[str, list[str]], body: object, n
     except ValueError:
         return "400 Bad Request", {"error": "bad_after"}
     if len(parts) == 3:
-        if parts[2] != "events" or method != "GET":
+        if (parts[2], method) not in (("events", "GET"), ("approvals", "GET"), ("approvals", "POST")):
             return "404 Not Found", {"error": "not_found"}
         if (sandbox := SANDBOXES.get(name)) is None:
             return "404 Not Found", {"error": "not_registered"}
-        return "200 OK", sandbox.events_after(after)
+        if parts[2] == "events":
+            return "200 OK", sandbox.events_after(after)
+        if method == "POST":
+            try:
+                sandbox.approve(body)
+            except ConfigError as err:
+                return "400 Bad Request", {"error": "bad_approval", "message": str(err)}
+            save_state()
+        return "200 OK", {"approvals": list(sandbox.registration.get("approvals") or []),
+                          "spent": sorted(sandbox.approvals.spent)}
     if method == "PUT":
         try:
             sandbox = Sandbox.register(name, body, now)

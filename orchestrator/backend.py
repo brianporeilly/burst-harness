@@ -1,9 +1,10 @@
 """Where sessions run, behind one interface the web app talks to.
 
-`PodmanBackend` is the only one so far: it drives `harness session` and
-`harness egress` on this machine. A Kubernetes backend (agent-sandbox claims
-behind a shared gateway per namespace) is meant to slot in beside it, which is
-why the app never calls the harness directly.
+`PodmanBackend` drives `harness session` and `harness egress` on this machine.
+`ClusterBackend` does the same for sessions on a cluster (agent-sandbox claims
+behind the namespace's shared gateway): `harness.cluster_session` for the
+sessions, and the gateway's control API for their events and approvals. The app
+never calls the harness directly, so it does not know which it has.
 """
 
 from __future__ import annotations
@@ -20,8 +21,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness import containers, egress, git, session
+from harness import cluster_session, containers, egress, git, session
 from harness.config import HarnessConfig
+from harness.gateway_control import Gateway, GatewayError
 
 PROVIDERS = ("anthropic", "llamacpp", "openai")
 EGRESS = ("allowlist", "log")
@@ -134,6 +136,10 @@ class Job:
 class PodmanBackend:
     """Sessions on this machine's podman, through the harness."""
 
+    name = "podman"
+    # Where list_sessions, urls, launch, stop and remove come from.
+    harness: Any = session
+
     def __init__(self, base: HarnessConfig | None = None) -> None:
         self.base = base or HarnessConfig.load(None, {})
         self.jobs: dict[str, Job] = {}
@@ -159,7 +165,7 @@ class PodmanBackend:
         """What the form needs to know: which credentials this process can hand on, and the defaults."""
         cfg = self.base
         return {
-            "backend": "podman",
+            "backend": self.name,
             "credentials": {
                 "git": bool(git.token()),
                 "anthropic_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -171,7 +177,7 @@ class PodmanBackend:
         }
 
     def sessions(self) -> list[dict[str, Any]]:
-        rows = {row["name"]: row for row in session.list_sessions(self.base)}
+        rows = {row["name"]: row for row in self.harness.list_sessions(self.base)}
         with self.lock:
             jobs = dict(self.jobs)
         found = []
@@ -192,7 +198,7 @@ class PodmanBackend:
                 "started": record.get("started") or "",
             }
             if record and status == "running":
-                item["urls"] = session.urls(record)
+                item["urls"] = self.harness.urls(record)
                 item["password"] = record.get("password") if item["agent"] == "opencode" else ""
                 item["token"] = (record.get("terminal") or {}).get("token", "")
             found.append(item)
@@ -216,14 +222,17 @@ class PodmanBackend:
 
         self.pool.submit(go)
 
+    def exists(self, name: str) -> bool:
+        return bool(session.load_record(self.base, name)) or session.state(name) != "absent"
+
     def create(self, spec: SessionSpec) -> None:
-        if session.load_record(self.base, spec.name) or session.state(spec.name) != "absent":
+        if self.exists(spec.name):
             raise SpecError(f"There is already a session named {spec.name}; start it, or remove it first.")
         cfg = self.config(spec.overrides())
         path = self.spec_path(spec.name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(spec), indent=2) + "\n")
-        self._run(spec.name, lambda: session.launch(
+        self._run(spec.name, lambda: self.harness.launch(
             cfg, spec.name, agent=spec.agent, allow=spec.allow, terminal=spec.terminal,
             idle=spec.idle or "0", lifetime=spec.lifetime or "0",
         ))
@@ -238,18 +247,18 @@ class PodmanBackend:
         else:  # made outside the orchestrator: what its record says
             cfg = self.config({"egress": record.get("egress") or "allowlist", "container_root": bool(record.get("root")),
                                **({"repo_url": record["repo_url"]} if record.get("repo_url") else {})})
-        self._run(name, lambda: session.launch(cfg, name))
+        self._run(name, lambda: self.harness.launch(cfg, name))
 
     def stop(self, name: str) -> str:
         with self.lock:
             self.jobs.pop(name, None)
-        return session.stop(self.base, name)
+        return self.harness.stop(self.base, name)
 
     def remove(self, name: str) -> str:
         with self.lock:
             self.jobs.pop(name, None)
         self.spec_path(name).unlink(missing_ok=True)
-        return session.remove(self.base, name)
+        return self.harness.remove(self.base, name)
 
     def pending(self, name: str) -> list[dict[str, Any]]:
         box = session.container_name(name)
@@ -275,3 +284,101 @@ class PodmanBackend:
             if proc.returncode is None:
                 proc.kill()
                 await proc.wait()
+
+
+class ClusterBackend(PodmanBackend):
+    """Sessions on a cluster: claimed, suspended and removed by harness.cluster_session, and
+    watched and approved through the shared gateway's control API (the base config's
+    target, namespace, pool, gateway_control and so on say which cluster and gateway)."""
+
+    name = "agent-sandbox"
+    harness = cluster_session
+    POLL = 2.0
+
+    def __init__(self, base: HarnessConfig | None = None) -> None:
+        super().__init__(base)
+        if self.base.target != "agent-sandbox":
+            raise ValueError("ClusterBackend needs target = agent-sandbox in the configuration.")
+
+    def gateway(self) -> Gateway:
+        found = Gateway.from_config(self.base)
+        if found is None:
+            raise SpecError("Sessions on a cluster need gateway_control set.")
+        return found
+
+    def info(self) -> dict[str, Any]:
+        found = super().info()
+        found["defaults"]["allowed_for_good"] = []  # a cluster session's approvals go in its own allowlist
+        found["namespace"] = self.base.namespace
+        return found
+
+    def exists(self, name: str) -> bool:
+        return bool(session.load_record(self.base, name)) or cluster_session.state(self.base, name) != "absent"
+
+    def _refusals(self, name: str) -> tuple[Gateway, list[dict[str, Any]], set[str]]:
+        """The session's gateway, the refusals it has kept, and what has been approved since."""
+        gateway, claim = self.gateway(), cluster_session.claim_name(name)
+        try:
+            kept = gateway.events(claim).get("events") or []
+        except GatewayError as err:
+            if " 404 " in f" {err} ":
+                return gateway, [], set()  # not registered: stopped, or never started
+            raise
+        try:
+            approved = {str(a.get("allow")) for a in gateway.approvals(claim).get("approvals") or []}
+        except GatewayError:
+            approved = set()  # a gateway from before approvals over the API: none of them
+        refused = [e for e in kept if e.get("verdict") == "deny" and e.get("kind") in egress.DESTINATION_KINDS
+                   and e.get("host") not in (None, "-")]
+        return gateway, refused, approved
+
+    def pending(self, name: str) -> list[dict[str, Any]]:
+        _, refused, approved = self._refusals(name)
+        latest: dict[str, dict[str, Any]] = {}
+        counts: dict[str, int] = {}
+        for event in refused:
+            where = egress.destination(event)
+            latest[where], counts[where] = event, counts.get(where, 0) + 1
+        return sorted(({"id": event.get("id") or "", "destination": where, "times": counts[where],
+                        "last": event.get("ts") or "", "sandbox": cluster_session.claim_name(name)}
+                       for where, event in latest.items() if where not in approved), key=lambda row: row["last"])
+
+    def approve(self, request_id: str, scope: str) -> str:
+        """Approve a refusal on the gateway, for the session whose events have it. `permanent`
+        also adds it to the session's own allowlist, so its next start has it."""
+        extra = egress._scope(scope)
+        for row in self.harness.list_sessions(self.base):
+            name = row["name"]
+            gateway, refused, _ = self._refusals(name)
+            if (event := next((e for e in refused if e.get("id") == request_id), None)) is None:
+                continue
+            where = egress.destination(event)
+            try:
+                gateway.approve(cluster_session.claim_name(name), {"allow": where, "id": request_id, **extra})
+            except GatewayError as err:
+                raise SpecError(str(err)) from err
+            if scope.strip().lower() == "permanent":
+                session.add_allow(self.base, name, where)
+                return f"Approved {where} for session {name}, from now on."
+            return f"Approved {where} for session {name} ({scope})."
+        raise SpecError(f"No running session has a refusal with id {request_id}. A stopped session's are gone; "
+                        "add the host to its allowlist instead.")
+
+    async def events(self, name: str) -> AsyncIterator[str]:
+        """The gateway's events for the session as they come, after the last few hundred it kept.
+        Polled: the control API answers with what is new since a sequence number."""
+        gateway, claim, after, first = self.gateway(), cluster_session.claim_name(name), 0, True
+        while True:
+            try:
+                answer = await asyncio.to_thread(gateway.events, claim, after)
+            except GatewayError:
+                answer = None  # not registered now (stopped, starting): ask again
+            if answer is not None and int(answer.get("next") or 0) < after:
+                after = 0  # registered afresh (a start), so counted from 0 again
+                continue
+            if answer is not None:
+                found = answer.get("events") or []
+                for event in found[-300:] if first else found:
+                    yield json.dumps(event)
+                after, first = int(answer.get("next") or after), False
+            await asyncio.sleep(self.POLL)

@@ -95,6 +95,14 @@ class Gateway:
     def events(self, name: str, after: int = 0) -> dict[str, Any]:
         return self._call("GET", f"/sandboxes/{name}/events?after={after}")
 
+    def approvals(self, name: str) -> dict[str, Any]:
+        """What has been approved for a sandbox since it was registered, and which `once` ones are spent."""
+        return self._call("GET", f"/sandboxes/{name}/approvals")
+
+    def approve(self, name: str, entry: dict[str, Any]) -> dict[str, Any]:
+        """Add an approval ({"allow": ..., "id"?, "once"?, "expires"?}) to a sandbox's registration."""
+        return self._call("POST", f"/sandboxes/{name}/approvals", entry)
+
 
 def forwarded(cfg: HarnessConfig, spec: str) -> str:
     """A local URL for `kubectl://NAMESPACE/SERVICE:PORT`, by a port-forward that ends with this process."""

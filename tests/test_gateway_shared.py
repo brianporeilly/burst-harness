@@ -553,3 +553,40 @@ def test_idle_is_registered_and_activity_is_reported(shared, monkeypatch):
     clock[0] = 2000.0
     gw.emit("connect", "deny", sandbox=sandbox, id="x-3", host="b.com", port=443)  # a refusal is
     assert listed()["active"] == 2000.0
+
+
+# --- approvals added over the control API ---
+
+
+def test_an_approval_is_added_to_a_registration_without_sending_it_again(shared, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(gw, "STATE", str(tmp_path / "state.json"))
+    gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7", "allow": ["a.com"]}, 0)
+    a = gw.SANDBOXES["a"]
+    assert not a.permitted("pypi.org", 443)
+    status, body = gw.control("POST", "/sandboxes/a/approvals", {}, {"allow": "pypi.org", "id": "x-1"}, 0)
+    assert status == "200 OK" and body == {"approvals": [{"allow": "pypi.org", "id": "x-1"}], "spent": []}
+    assert a.permitted("pypi.org", 443) and a.permitted("a.com", 443)
+    assert '"kind": "approval"' in capsys.readouterr().out
+    assert a.events_after(0)["events"][-1]["allow"] == "pypi.org"
+
+    # The same id again replaces it; a once approval is spent by use and reported so.
+    gw.control("POST", "/sandboxes/a/approvals", {}, {"allow": "once.com", "id": "x-1", "once": True}, 0)
+    assert not a.permitted("pypi.org", 443) and a.permitted("once.com", 443)
+    assert not a.permitted("once.com", 443)
+    assert gw.control("GET", "/sandboxes/a/approvals", {}, None, 0)[1]["spent"] == ["x-1"]
+
+    _restart(monkeypatch)  # kept with the registration
+    gw.load_state(0)
+    assert gw.control("GET", "/sandboxes/a/approvals", {}, None, 0)[1] == {
+        "approvals": [{"allow": "once.com", "id": "x-1", "once": True}], "spent": ["x-1"]}
+
+
+def test_a_bad_approval_or_an_unknown_sandbox_is_refused(shared):
+    gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7"}, 0)
+    for body in [None, {}, {"allow": ""}, {"allow": "x.com", "nope": 1}, {"allow": "x.com", "once": "yes"},
+                 {"allow": "x.com", "expires": True}, {"allow": 7}]:
+        status, answer = gw.control("POST", "/sandboxes/a/approvals", {}, body, 0)
+        assert status == "400 Bad Request" and answer["error"] == "bad_approval", body
+    assert gw.control("POST", "/sandboxes/b/approvals", {}, {"allow": "x.com"}, 0)[0] == "404 Not Found"
+    assert gw.control("DELETE", "/sandboxes/a/approvals", {}, None, 0)[0] == "404 Not Found"
+    assert gw.SANDBOXES["a"].registration.get("approvals") is None

@@ -507,10 +507,16 @@ orchestrator's environment), and shows every run: its report, its output, and
 the hosts its gateway let through or refused. Runs started from the command
 line are there too.
 
+With `target = "agent-sandbox"` and a cluster session's settings (On a cluster,
+above), its sessions are on that cluster instead: claimed, suspended and
+removed as `harness session` does there, with events and refusals read from
+the shared gateway's control API (polled every 2 seconds) and approvals added
+to a session's registration there. An approval lasts until the session is next
+started; `always` also adds it to the session's own allowlist, for its next
+start. A stopped session's refusals are gone with its registration.
+
 Local only, with no login: it answers only to `127.0.0.1` / `localhost`, and
-refuses changes that lack a header a page on another site cannot send. A proof
-of concept on podman; the cluster version sits behind the same backend
-interface (`orchestrator/backend.py`).
+refuses changes that lack a header a page on another site cannot send.
 
 ## Jobs
 

@@ -221,9 +221,10 @@ Steps:
    User-namespace pods checked (2026-10-21): Kubernetes 1.36, Flatcar's 6.12
    kernel and containerd 2.2 run `hostUsers: false` pods, root inside mapping
    to an unprivileged host uid, writing and chowning on an idmapped ceph-block
-   volume. Root sessions (2026-10-23): `--root` claims from `root_pool`, a
-   second warm pool whose template has that; the claim's pool fixes which kind
-   a session is.
+   volume. Root sessions (2026-10-23, checked live: uid 0 in the pod, mapped
+   to an unprivileged range on the node, with only the template's
+   capabilities): `--root` claims from `root_pool`, a second warm pool whose
+   template has that; the claim's pool fixes which kind a session is.
    `--idle` (2026-10-23): the registration carries it, the gateway reports
    each sandbox's last activity, and `harness session reap`, run by a CronJob
    with the driver's rights, suspends what has been idle too long. The
@@ -255,6 +256,19 @@ Jobs (2026-10-20): a Jobs tab, given `--jobs DIR`, lists jobs and their last
 outcome, runs one on demand, and shows each run's report, output and network
 summary, from the run log the harness now keeps (`harness job runs`).
 Scheduling, when it comes, is likely to live here (or in launchd/CronJobs).
+
+On Kubernetes, in steps:
+
+1. A cluster backend (2026-10-23): `ClusterBackend` drives
+   `harness.cluster_session`, and reads each session's events and refusals
+   from the shared gateway's control API, which now also takes approvals for a
+   registered sandbox (`POST /sandboxes/NAME/approvals`) without the rest of its
+   registration being sent again. Run from a laptop with the cluster settings.
+2. Session records on the cluster (a Secret per session, owned by its claim),
+   so the orchestrator, the CLI and the reaper see the same sessions.
+3. The orchestrator in the cluster: an image, a Deployment with the driver's
+   rights, an HTTPRoute behind Authentik's OIDC.
+4. OpenHands removed from home-ops.
 
 Original plan:
 

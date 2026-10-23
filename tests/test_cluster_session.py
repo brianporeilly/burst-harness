@@ -419,7 +419,7 @@ def test_a_root_session_is_claimed_from_the_root_pool(tmp_path, cluster, pod):
 
 
 def test_a_session_is_started_again_as_it_was_created(tmp_path, cluster, pod):
-    state, kubectl = cluster
+    _, kubectl = cluster
     plain, root = _cfg(tmp_path, kubectl, root_pool="coding-agent-root"), \
         _cfg(tmp_path, kubectl, container_root=True, root_pool="coding-agent-root")
     cluster_session.start(plain, "demo")
