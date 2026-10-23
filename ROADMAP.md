@@ -55,9 +55,9 @@ control plane needs to store specs).
   credentials, so protected branches are guarded by token scope and GitHub
   branch protection, not `git_policy.py`.
 - **Root filesystem.** Read-only root is an option, not the default. Root in the
-  container (for `dnf install`) is an opt-in: on rootless podman now, in the
-  cluster once there is a template with user-namespace pods (`hostUsers: false`),
-  which work there (checked 2026-10-21, phase 6 step 4).
+  container (for `dnf install`) is an opt-in: on rootless podman, and in the
+  cluster from a second pool whose template runs user-namespace pods
+  (`hostUsers: false`; phase 6 step 4).
   Agents are told to prefer non-root installs.
 - **Web terminal (zellij) is optional** per session, bound to localhost in the
   sandbox and reached through the gateway. Both UIs require authentication even
@@ -221,7 +221,9 @@ Steps:
    User-namespace pods checked (2026-10-21): Kubernetes 1.36, Flatcar's 6.12
    kernel and containerd 2.2 run `hostUsers: false` pods, root inside mapping
    to an unprivileged host uid, writing and chowning on an idmapped ceph-block
-   volume. Root sessions need a second template with that; not done.
+   volume. Root sessions (2026-10-23): `--root` claims from `root_pool`, a
+   second warm pool whose template has that; the claim's pool fixes which kind
+   a session is.
    `--idle` (2026-10-23): the registration carries it, the gateway reports
    each sandbox's last activity, and `harness session reap`, run by a CronJob
    with the driver's rights, suspends what has been idle too long. The

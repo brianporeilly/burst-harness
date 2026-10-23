@@ -170,6 +170,10 @@ class HarnessConfig:
     kubectl: str = "kubectl"
     # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
     pool: str = ""
+    # The pool `--root` sessions are claimed from: its template runs pods as
+    # root in a user namespace (hostUsers: false), so root there is an
+    # unprivileged uid on the node. Unset: --root is refused on a cluster.
+    root_pool: str = ""
     claim_name: str = ""
     # Hard deadline on a claim: the controller deletes it after this even if the
     # driver died mid-burst. Longer than any burst, shorter than forgotten.

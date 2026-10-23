@@ -568,7 +568,8 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--image", help="Image a fresh docker/podman container starts from.")
     where.add_argument("--root", action=argparse.BooleanOptionalAction, default=None,
                        help="Run a fresh container as root, so the agent can install packages. Rootless podman "
-                            "only, where that is still your own user outside the container.")
+                            "only, where that is still your own user outside the container; for a session on a "
+                            "cluster, claimed from root_pool (a user-namespace template).")
     where.add_argument("--egress", choices=["open", "log", "allowlist"],
                        help="Network for a fresh docker/podman container. log: no route out except a gateway "
                             "that records everything. allowlist: the gateway only reaches --egress-allow hosts, "

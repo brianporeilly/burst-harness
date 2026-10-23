@@ -83,6 +83,7 @@ credentials from, the machine driving it. Those go in the user file:
 target = "agent-sandbox"
 namespace = "agent-sandbox-system"
 pool = "coding-agent"
+root_pool = "coding-agent-root"                 # for --root: a hostUsers: false template
 ```
 
 A repo's own file:
@@ -134,7 +135,8 @@ the local twin of an agent-sandbox claim. `container_args` adds `run` flags
 needs, with only the capabilities that takes (changing file ownership and
 switching user; nothing over the network stack or the system) and
 `no-new-privileges` still set. It is refused unless podman is rootless, where
-root in the container is your own unprivileged user outside it. What is
+root in the container is your own unprivileged user outside it (for sessions
+on a cluster, see `root_pool` below). What is
 installed lasts as long as the container. For a session, `--root` is fixed when
 it is created, since its volumes' files are owned accordingly. A container with uncommitted work and no terminal state is
 kept; `harness list` shows it and `harness --target podman --docker-container
@@ -417,6 +419,7 @@ cluster's shared gateway. Settings (in your config file, or `HARNESS_*`):
 target = "agent-sandbox"
 namespace = "agent-sandbox-system"
 pool = "coding-agent"
+root_pool = "coding-agent-root"                 # for --root: a hostUsers: false template
 # From outside the cluster: a port-forward to the control API, for as long as the
 # command runs. In a pod, its Service URL instead.
 gateway_control = "kubectl://agent-sandbox-system/burst-gateway:8081"
@@ -457,9 +460,14 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   `stop` would. Run it every few minutes from something with the driver's
   rights, a CronJob for instance; `start` brings a reaped session back. After a
   gateway restart, idle time is counted from the restart.
-- **Not yet:** `--root` (the pool's template runs as uid 1000;
-  user-namespace pods work on this cluster, so a root template is possible),
-  `--port`, `--bind` and `--terminal-port`, which mean nothing here.
+- **`--root`** claims from `root_pool` instead of `pool`: a warm pool whose
+  template runs pods as root in a user namespace (`hostUsers: false`), so root
+  in the sandbox is an unprivileged uid on the node. Without `root_pool` it is
+  refused. The claim's pool is which kind of session it is, and starting it
+  the other way is refused, as on podman. `dnf install` also needs the
+  distribution's mirrors allowed (`--allow`).
+- **Not here:** `--port`, `--bind` and `--terminal-port`, which mean nothing on
+  a cluster.
 
 The driver needs `kubectl` with permission to create, get, list and patch
 `sandboxclaims` and `sandboxes`, to `create` `pods/exec`, to get, list and

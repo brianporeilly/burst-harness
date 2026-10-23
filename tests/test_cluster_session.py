@@ -409,3 +409,23 @@ def test_malformed_route_annotations_are_refused(tmp_path, annotations):
     cfg = _cfg(tmp_path, "kubectl", session_route_annotations=annotations)
     with pytest.raises(SessionError, match="session_route_annotations"):
         cluster_session.route_manifests(cfg, "demo", {"name": "session-demo", "uid": "u"}, {"session-demo.x": 4096})
+
+
+def test_a_root_session_is_claimed_from_the_root_pool(tmp_path, cluster, pod):
+    state, kubectl = cluster
+    cluster_session.start(_cfg(tmp_path, kubectl, container_root=True, root_pool="coding-agent-root"), "demo")
+    assert state.state["sandboxclaim"]["session-demo"]["spec"] == {"warmPoolRef": {"name": "coding-agent-root"}}
+    assert cluster_session.load_record(_cfg(tmp_path, kubectl), "demo")["root"] is True
+
+
+def test_a_session_is_started_again_as_it_was_created(tmp_path, cluster, pod):
+    state, kubectl = cluster
+    plain, root = _cfg(tmp_path, kubectl, root_pool="coding-agent-root"), \
+        _cfg(tmp_path, kubectl, container_root=True, root_pool="coding-agent-root")
+    cluster_session.start(plain, "demo")
+    with pytest.raises(SessionError, match="created without --root"):
+        cluster_session.start(root, "demo")
+    cluster_session.start(root, "rooted")
+    with pytest.raises(SessionError, match=r"created with --root \(from pool coding-agent-root\)"):
+        cluster_session.start(plain, "rooted")
+    cluster_session.start(root, "rooted")  # the same way is fine

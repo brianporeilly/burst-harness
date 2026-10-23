@@ -34,9 +34,12 @@ only reports how long each sandbox has done nothing; `harness session reap`,
 run every few minutes by something holding the driver's rights (a CronJob),
 suspends each session idle for longer, as `stop` would. `start` brings it back.
 
-Not here yet: `--root` (the pool's template runs as uid 1000; user-namespace
-pods work on this cluster, so a template for root sessions is possible), and
-`--port`/`--bind`, which mean nothing on a cluster.
+`--root` claims from root_pool instead of pool: a template whose pods run as
+root in a user namespace (hostUsers: false), so that root is no one on the
+node. Which pool a claim came from is which kind of session it is; starting it
+the other way is refused, as on podman, since its files are owned accordingly.
+
+Not here: `--port`/`--bind`, which mean nothing on a cluster.
 """
 
 from __future__ import annotations
@@ -114,7 +117,7 @@ def hosts(cfg: HarnessConfig, name: str, *, claude: bool, terminal: bool) -> dic
 
 
 def claim_manifest(cfg: HarnessConfig, name: str, *, lifetime: int, now: datetime | None = None) -> dict[str, Any]:
-    spec: dict[str, Any] = {"warmPoolRef": {"name": cfg.pool}}
+    spec: dict[str, Any] = {"warmPoolRef": {"name": cfg.root_pool if cfg.container_root else cfg.pool}}
     if lifetime:
         deadline = (now or datetime.now(timezone.utc)) + timedelta(seconds=lifetime)
         spec["lifecycle"] = {"shutdownTime": deadline.strftime("%Y-%m-%dT%H:%M:%SZ"), "shutdownPolicy": "Delete"}
@@ -282,11 +285,14 @@ def launch(
     suspended, "running" if it was already, its UI started again)."""
     claim = claim_name(name)
     refused = [flag for flag, given in (("--port", port), ("--bind", bind),
-                                        ("--terminal-port", terminal_port), ("--root", cfg.container_root)) if given]
+                                        ("--terminal-port", terminal_port)) if given]
     if refused:
-        raise SessionError(f"{', '.join(refused)}: not for a session on a cluster (yet). See harness/cluster_session.py.")
-    missing = [key for key in ("pool", "namespace", "gateway_control", "session_domain", "session_route_parent")
-               if not getattr(cfg, key)]
+        raise SessionError(f"{', '.join(refused)}: not for a session on a cluster. See harness/cluster_session.py.")
+    if cfg.container_root and not cfg.root_pool:
+        raise SessionError("--root on a cluster needs root_pool: a warm pool whose template runs pods as root in a "
+                           "user namespace (hostUsers: false). See harness/cluster_session.py.")
+    missing = [key for key in ("root_pool" if cfg.container_root else "pool", "namespace", "gateway_control",
+                               "session_domain", "session_route_parent") if not getattr(cfg, key)]
     if missing:
         raise SessionError(f"A session on a cluster needs {', '.join(missing)} set.")
     gateway = Gateway.from_config(cfg)
@@ -333,9 +339,17 @@ def launch(
     if existing is None:
         existing = json.loads(_kubectl(cfg, "create", "-f", "-", "-o", "json",
                                        stdin=json.dumps(claim_manifest(cfg, name, lifetime=limit))))
-    elif lifetime is not None:
-        raise SessionError(f"Session {name} exists: --lifetime is set when it is first claimed. "
-                           "`session rm` it to start afresh.")
+    else:
+        pool = (existing.get("spec") or {}).get("warmPoolRef", {}).get("name")
+        root = bool(cfg.root_pool) and pool == cfg.root_pool
+        if root != bool(cfg.container_root):
+            raise SessionError(
+                f"Session {name} was created {'with' if root else 'without'} --root (from pool {pool}), and its files "
+                "are owned accordingly. Start it the same way, or `session rm` it and start afresh."
+            )
+        if lifetime is not None:
+            raise SessionError(f"Session {name} exists: --lifetime is set when it is first claimed. "
+                               "`session rm` it to start afresh.")
     sandbox = _sandbox(cfg, existing)
     if (_get(cfg, "sandbox", sandbox) or {}).get("spec", {}).get("operatingMode") == "Suspended":
         _wait_gone(cfg, sandbox)  # a stop that is still going
@@ -408,7 +422,7 @@ def launch(
         "name": name, "target": "agent-sandbox", "namespace": cfg.namespace, "claim": claim, "hosts": names,
         "password": password, "repo_url": git.redact_url(cfg.repo_url), "egress": cfg.egress,
         "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "lifetime": limit,
-        "idle": idle_after,
+        "idle": idle_after, "root": bool(cfg.container_root),
         "agent": agent, "allow": allowed, "link": link,
     }
     if terminal:
