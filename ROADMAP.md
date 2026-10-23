@@ -186,7 +186,8 @@ Steps:
    API, reads its events back, and unregisters it. An unregistered or lapsed
    address is refused everything. TLS is terminated with a CA from files
    (cert-manager's), so sandboxes can trust it from their template and a
-   restart breaks nothing but registrations, which drivers make again.
+   restart breaks nothing but registrations, which drivers make again
+   (or, with `EGRESS_STATE`, nothing: step 5).
    Single-sandbox gateways on podman are unchanged.
 2. The driver: done (2026-10-21). With `gateway_control` set, a claimed
    sandbox's pod IP is registered with the settings a podman gateway would
@@ -221,8 +222,14 @@ Steps:
    kernel and containerd 2.2 run `hostUsers: false` pods, root inside mapping
    to an unprivileged host uid, writing and chowning on an idmapped ceph-block
    volume. Root sessions need a second template with that; not done.
-   Not yet: `--idle` on a cluster, and registrations surviving a gateway
-   restart (today `session start` re-registers).
+   Not yet: `--idle` on a cluster.
+5. Registrations survive a gateway restart: built (2026-10-22). With
+   `EGRESS_STATE`, the shared gateway keeps each registration as it was sent
+   (with its expiry and spent `once` approvals) in a file, rewritten on every
+   change, and restores those that have not lapsed when it starts. The file
+   holds the credentials registrations carry, so it is on a volume only the
+   gateway mounts (a ceph-block PVC; the Deployment recreates rather than
+   rolls, as an RWO volume is on one node at a time). Events are not kept.
 
 Open: the control API is plain HTTP inside the cluster, and a registration
 carries credentials, so it relies on Calico keeping everyone but the driver

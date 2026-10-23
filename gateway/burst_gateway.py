@@ -18,6 +18,8 @@ the harness.
                     (default none). The way in to a UI the sandbox serves.
     EGRESS_INBOUND_HTTP shared only: port where sandboxes' UIs are reached, by
                     Host name (default 0: off; see Shared, below)
+    EGRESS_STATE    shared only: file registrations are kept in across restarts
+                    (default none: memory only; see Shared, below)
     EGRESS_LISTEN   proxy port (default 3128)
     EGRESS_DNS      UDP port of the resolver (default 53; 0 turns it off)
     EGRESS_REDIRECT port that redirected connections arrive on (default 0: off)
@@ -149,8 +151,16 @@ EGRESS_UPSTREAM_CA do, and `approvals` the entries of an approvals file. A PUT
 replaces that sandbox's registration, and any other holding the same address.
 An address nobody registered is refused everything; so is one whose `ttl` has
 run out, which is how a driver that died without unregistering is cleaned up
-after. Registrations live only in memory: after a restart every sandbox is
-refused until its driver registers it again.
+after.
+
+With EGRESS_STATE (a file) registrations outlive a restart: each is kept there
+as it was sent, with when it lapses and which `once` approvals it has spent,
+rewritten whole (0600, by rename) on every change, and read back at start,
+less any that lapsed meanwhile. It holds the credentials registrations carry,
+so it belongs on a volume only the gateway mounts. Events are not kept: after
+a restart a driver reads those since. Without it, registrations live only in
+memory, and after a restart every sandbox is refused until its driver
+registers it again.
 
 The way in to a UI a sandbox serves (a session's) is EGRESS_INBOUND_HTTP, a
 port where HTTP arrives from the cluster's ingress for every sandbox at once. A
@@ -452,6 +462,8 @@ class Sandbox:
     # Shared: (sequence number, event), the newest EVENTS_KEPT; `recorded` counts them all.
     events: collections.deque = field(default_factory=lambda: collections.deque(maxlen=EVENTS_KEPT))
     recorded: int = 0
+    # Shared: the registration as it was sent, for EGRESS_STATE.
+    registration: dict = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_env(cls, env: dict[str, str] | os._Environ[str] = os.environ) -> "Sandbox":
@@ -506,6 +518,7 @@ class Sandbox:
             address=address,
             expires=now + ttl if ttl else 0.0,
             inbound=dict(inbound),
+            registration=dict(body),
         )
 
     def permitted(self, host: str, port: int) -> bool:
@@ -515,6 +528,8 @@ class Sandbox:
         if entry := self.approvals.find(host, port, self.policy.ports):
             if entry.get("once"):
                 self.approvals.spent.add(str(entry["key"]))
+                if SINGLE is None:
+                    save_state()  # spent for good, restart or not
             return True
         return False
 
@@ -585,7 +600,61 @@ def lapse(name: str, now: float) -> None:
     """Forget a registration whose ttl has run out (and its credentials with it)."""
     if (sandbox := SANDBOXES.get(name)) is not None and sandbox.expires and sandbox.expires <= now:
         del SANDBOXES[name]
+        save_state()
         emit("sandbox", "expire", name=name, address=sandbox.address)
+
+
+# Shared: where registrations are kept across restarts (EGRESS_STATE), or "".
+STATE = ""
+
+
+def save_state() -> None:
+    """Write every registration to STATE: whole, to a file of its own, then renamed over it."""
+    if not STATE:
+        return
+    data = {"sandboxes": [{"name": s.name, "registration": s.registration, "expires": s.expires,
+                           "spent": sorted(s.approvals.spent)} for s in SANDBOXES.values()]}
+    path = Path(STATE)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except OSError as err:
+        # Serving goes on; what is lost is only the next restart's memory of this change.
+        emit("gateway", "error", detail=f"EGRESS_STATE: could not save: {err}")
+
+
+def load_state(now: float) -> None:
+    """Register again what STATE kept, less what has lapsed since."""
+    try:
+        data = json.loads(Path(STATE).read_text())
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as err:
+        # Better to serve, refusing every sandbox until it is registered again, than not to start.
+        emit("gateway", "error", detail=f"EGRESS_STATE: could not read, starting empty: {err}")
+        return
+    entries = data.get("sandboxes") if isinstance(data, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        try:
+            name, expires = str(entry["name"]), float(entry.get("expires") or 0)
+            if expires and expires <= now:
+                emit("sandbox", "expire", name=name, detail="lapsed while the gateway was down")
+                continue
+            body = {**entry["registration"], "ttl": max(1, int(expires - now)) if expires else 0}
+            sandbox = Sandbox.register(name, body, now)
+        except (KeyError, TypeError, ValueError, AttributeError) as err:
+            emit("gateway", "error", detail=f"EGRESS_STATE: skipping a registration: {err}")
+            continue
+        sandbox.expires = expires  # as it was, not rounded down to a whole second
+        sandbox.approvals.spent = set(entry.get("spent") or [])
+        SANDBOXES[name] = sandbox
+        emit("sandbox", "restore", sandbox=sandbox, address=sandbox.address)
+    save_state()  # without what lapsed, or could not be read
 
 
 async def intercept_port(host: str) -> int:
@@ -1265,12 +1334,14 @@ def control(method: str, path: str, query: dict[str, list[str]], body: object, n
             del SANDBOXES[other]
             emit("sandbox", "replace", name=other, address=sandbox.address, detail=f"address now {name}'s")
         SANDBOXES[name] = sandbox
+        save_state()
         emit("sandbox", "register", sandbox=sandbox, address=sandbox.address,
              expires=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sandbox.expires)) if sandbox.expires else None)
         return "200 OK", {"name": name, "address": sandbox.address, "expires": sandbox.expires or None}
     if method == "DELETE":
         if (sandbox := SANDBOXES.pop(name, None)) is None:
             return "404 Not Found", {"error": "not_registered"}
+        save_state()
         emit("sandbox", "unregister", name=name, address=sandbox.address)
         return "200 OK", sandbox.events_after(after)
     return "405 Method Not Allowed", {"error": "method_not_allowed"}
@@ -1338,7 +1409,7 @@ async def watch(idle: int, lifetime: int) -> None:
 
 
 async def main() -> None:
-    global SINGLE, WEBHOOK, REDIRECT, CERTIFICATES, CONTROL_TOKEN, EVENTS_KEPT
+    global SINGLE, WEBHOOK, REDIRECT, CERTIFICATES, CONTROL_TOKEN, EVENTS_KEPT, STATE
     env = os.environ
     control_port = int(env.get("EGRESS_CONTROL", "0") or 0)
     WEBHOOK = env.get("EGRESS_WEBHOOK", "")
@@ -1358,6 +1429,8 @@ async def main() -> None:
             EVENTS_KEPT = int(env.get("EGRESS_EVENTS_KEPT", str(EVENTS_KEPT)))
             CERTIFICATES = Certificates(ca_dir, ca=(Path(ca_cert), Path(ca_key)))
             CERTIFICATES.context("burst-gateway.invalid")  # a CA that cannot sign fails here, not on first use
+            if STATE := env.get("EGRESS_STATE", ""):
+                load_state(time.time())
             ignored = [k for k in ("EGRESS_ALLOW", "EGRESS_INJECT", "EGRESS_READONLY", "EGRESS_WRITES",
                                    "EGRESS_UPSTREAM_CA", "EGRESS_INBOUND") if env.get(k)]
             if ignored:
@@ -1399,6 +1472,8 @@ async def main() -> None:
         await asyncio.start_server(handle_control, "0.0.0.0", control_port)
         tasks.append(asyncio.create_task(prune()))
         what = f"shared: sandboxes registered on control :{control_port}"
+        if STATE:
+            what += f" (kept in {STATE}: {len(SANDBOXES)} restored)"
         if inbound_port := int(env.get("EGRESS_INBOUND_HTTP", "0") or 0):
             await asyncio.start_server(handle_inbound_http, "0.0.0.0", inbound_port)
             what += f", their UIs on :{inbound_port}"

@@ -24,10 +24,10 @@ sandbox's ports each name goes to. The routes belong to the claim, so deleting
 the claim deletes them; a suspended session's names get a 404 from the gateway,
 which no longer has them.
 
-A pod's address changes each time it starts, and the gateway keeps
-registrations only in memory, so `start` registers the session every time,
-running or not: after a gateway restart, `start` is what gives a running
-session its network back.
+A pod's address changes each time it starts, so `start` registers the
+session every time, running or not. A gateway with EGRESS_STATE keeps
+registrations across its restarts; after a restart of one without, `start` is
+what gives a running session its network back.
 
 Not here yet: `--idle` (the shared gateway does not stop sandboxes), `--root`
 (the pool's template runs as uid 1000; user-namespace pods work on this

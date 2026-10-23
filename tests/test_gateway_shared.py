@@ -30,6 +30,7 @@ needs_openssl = pytest.mark.skipif(shutil.which("openssl") is None, reason="need
 def shared(monkeypatch):
     monkeypatch.setattr(gw, "SINGLE", None)
     monkeypatch.setattr(gw, "SANDBOXES", {})
+    monkeypatch.setattr(gw, "STATE", "")
     monkeypatch.setattr(gw, "CONTROL_TOKEN", TOKEN)
     monkeypatch.setattr(gw, "CERTIFICATES", None)
     monkeypatch.setattr(gw, "_LISTENERS", {})
@@ -425,3 +426,100 @@ def test_inbound_reaches_the_sandbox_holding_the_name(shared):
             assert status == 404  # unregistered: its name goes with it
 
     asyncio.run(scenario())
+
+
+# --- registrations kept across restarts (EGRESS_STATE) ---
+
+
+def _restart(monkeypatch):
+    """What a restart leaves: nothing in memory."""
+    monkeypatch.setattr(gw, "SANDBOXES", {})
+
+
+def test_registrations_are_kept_in_the_state_file_privately(shared, tmp_path, monkeypatch):
+    state = tmp_path / "state.json"
+    monkeypatch.setattr(gw, "STATE", str(state))
+    inject = [{"host": "api.github.com", "header": "Authorization", "value": "Bearer s3cret"}]
+    gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7", "ttl": 100, "allow": ["a.com"], "inject": inject,
+                                           "inbound": {"a.example.com": 4096}}, 1000.0)
+    gw.control("PUT", "/sandboxes/b", {}, {"address": "10.42.1.8"}, 1000.0)
+    assert state.stat().st_mode & 0o777 == 0o600
+    kept = json.loads(state.read_text())["sandboxes"]
+    assert [(k["name"], k["expires"]) for k in kept] == [("a", 1100.0), ("b", 0.0)]
+    assert kept[0]["registration"]["inject"] == inject  # as sent: credentials included
+    assert not list(tmp_path.glob(".state.json.*"))  # written aside, then renamed over
+
+    gw.control("DELETE", "/sandboxes/b", {}, None, 1000.0)
+    assert [k["name"] for k in json.loads(state.read_text())["sandboxes"]] == ["a"]
+
+
+def test_a_restart_restores_what_was_registered_less_what_lapsed(shared, tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state.json"
+    monkeypatch.setattr(gw, "STATE", str(state))
+    gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7", "ttl": 100, "allow": ["a.com"],
+                                           "inbound": {"a.example.com": 4096}}, 1000.0)
+    gw.control("PUT", "/sandboxes/b", {}, {"address": "10.42.1.8", "ttl": 10}, 1000.0)
+    gw.control("PUT", "/sandboxes/c", {}, {"address": "10.42.1.9"}, 1000.0)
+    _restart(monkeypatch)
+    capsys.readouterr()
+
+    monkeypatch.setattr(gw.time, "time", lambda: 1050.0)
+    gw.load_state(1050.0)
+    assert sorted(gw.SANDBOXES) == ["a", "c"]  # b lapsed while the gateway was down
+    a = gw.SANDBOXES["a"]
+    assert a.expires == 1100.0 and a.permitted("a.com", 443) and not a.permitted("b.com", 443)
+    assert gw.sandbox_serving("a.example.com") is a and gw.sandbox_for("10.42.1.9").expires == 0.0
+    out = capsys.readouterr().out
+    assert out.count('"verdict": "restore"') == 2 and "lapsed while the gateway was down" in out
+    gw.lapse("b", 1050.0)  # nothing to forget
+    assert sorted(k["name"] for k in json.loads(state.read_text())["sandboxes"]) == ["a", "c"]
+
+
+def test_a_spent_once_approval_stays_spent_after_a_restart(shared, tmp_path, monkeypatch):
+    monkeypatch.setattr(gw, "STATE", str(tmp_path / "state.json"))
+    gw.control("PUT", "/sandboxes/a", {}, {"address": "10.42.1.7",
+                                           "approvals": [{"allow": "once.com", "once": True}]}, 0)
+    assert gw.SANDBOXES["a"].permitted("once.com", 443)
+    _restart(monkeypatch)
+    gw.load_state(0)
+    assert not gw.SANDBOXES["a"].permitted("once.com", 443)
+
+
+def test_a_state_file_that_cannot_be_read_starts_the_gateway_empty(shared, tmp_path, monkeypatch, capsys):
+    state = tmp_path / "state.json"
+    monkeypatch.setattr(gw, "STATE", str(state))
+    gw.load_state(0)  # none yet: a first start
+    assert gw.SANDBOXES == {} and capsys.readouterr().out == ""
+    state.write_text("{not json")
+    gw.load_state(0)
+    assert gw.SANDBOXES == {} and "could not read, starting empty" in capsys.readouterr().out
+    state.write_text(json.dumps({"sandboxes": [{"name": "x", "registration": {"address": "nope"}},
+                                               {"name": "y", "registration": {"address": "10.42.1.7"}}]}))
+    gw.load_state(0)
+    assert list(gw.SANDBOXES) == ["y"] and "skipping a registration" in capsys.readouterr().out
+
+
+@needs_openssl
+def test_a_restarted_gateway_serves_what_was_registered_before(tmp_path):
+    ca = gw.Certificates(tmp_path / "ca")
+    listen, control_port = _free_port(), _free_port()
+    env = {"EGRESS_LISTEN": str(listen), "EGRESS_CONTROL": str(control_port), "EGRESS_CONTROL_TOKEN": TOKEN,
+           "EGRESS_CA_CERT": str(ca.ca_crt), "EGRESS_CA_KEY": str(ca.ca_key), "EGRESS_CA_DIR": str(tmp_path / "hosts"),
+           "EGRESS_STATE": str(tmp_path / "state.json")}
+    errors = []
+    for attempt in range(2):
+        proc = _start(env)
+        try:
+            _wait_listening(listen, proc)
+
+            async def scenario():
+                if attempt == 0:
+                    assert (await _control(control_port, "PUT", "/sandboxes/a", {"address": "127.0.0.2"}))[0] == 200
+                return await _control(control_port, "GET", "/sandboxes")
+
+            _, listing = asyncio.run(scenario())
+            assert [s["name"] for s in listing["sandboxes"]] == ["a"]
+        finally:
+            proc.terminate()
+            errors.append(proc.communicate(timeout=20)[1])
+    assert "0 restored" in errors[0] and "1 restored" in errors[1]

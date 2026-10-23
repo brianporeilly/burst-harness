@@ -441,9 +441,10 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   by the claim, sends it to the gateway, which passes each connection to the
   sandbox whose registration holds that name. Every connection is an `inbound`
   event, as on podman. A stopped session's names get a 404.
-- **Registered on every start**, running or not. The pod's address changes when
-  it resumes, and the gateway keeps registrations only in memory, so after a
-  gateway restart `start` is what gives a running session its network back.
+- **Registered on every start**, running or not, since the pod's address
+  changes when it resumes. A gateway with `EGRESS_STATE` (a file on a volume
+  of its own) keeps registrations across its restarts; one without forgets
+  them, and then `start` is what gives a running session its network back.
 - **The model** has to be reachable from the gateway, which the cluster's
   network policy decides, as well as allowed in the registration.
 - **Not yet:** `--idle`, `--root` (the pool's template runs as uid 1000;
