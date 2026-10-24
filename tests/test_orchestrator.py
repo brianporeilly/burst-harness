@@ -100,6 +100,18 @@ def test_only_this_machine_may_ask(client):
     assert client.get("/api/sessions", headers={"Host": "localhost:8700"}).status_code == 200
 
 
+def test_behind_a_signing_in_proxy():
+    app = create_app(FakeBackend(), hosts=("Orchestrator.example",), user_header="Remote-User")
+    proxied = TestClient(app, base_url="https://orchestrator.example")
+    who = {"Remote-User": "me@example.com"}
+    assert proxied.get("/api/sessions").status_code == 401  # not through the proxy's sign-in
+    assert proxied.get("/api/sessions", headers={"Remote-User": " "}).status_code == 401
+    assert proxied.get("/api/info", headers=who).json()["user"] == "me@example.com"
+    assert proxied.get("/api/sessions", headers={**who, "Host": "evil.example"}).status_code == 403
+    assert proxied.post("/api/sessions/box/stop", headers=who).status_code == 403  # still needs the header
+    assert proxied.post("/api/sessions/box/stop", headers={**who, **CHANGE}).json() == {"message": "Stopped box."}
+
+
 def test_pending_approve_and_events(client):
     assert client.get("/api/sessions/box/pending").json()[0]["destination"] == "example.com"
     assert client.post("/api/approve", json={"id": "a-1", "scope": "permanent"}, headers=CHANGE).json() == {"message": "ok"}

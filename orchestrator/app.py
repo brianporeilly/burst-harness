@@ -1,13 +1,19 @@
 """The orchestrator's web app: create, list, start, stop and remove sessions,
 watch what their gateways see, and approve what they refused.
 
-Local only for now. There is no login, so two things stand in for one:
+It has no login of its own. Run on a laptop, two things stand in for one:
 
 * It refuses requests whose Host is not this machine, so a web page cannot
   reach it by pointing a name of its own at 127.0.0.1 (DNS rebinding).
 * Anything that changes something needs the `X-Orchestrator: 1` header. A page
   on another site cannot send a custom header here without a CORS preflight,
   which this app never answers, so it cannot drive the API from your browser.
+
+In a cluster it sits behind a proxy that signs people in (Envoy Gateway's
+OIDC, in home-ops): `hosts` adds the name it is reached by to the Host check,
+and `user_header` names the header the proxy sets to who signed in. A request
+without that header is refused, and the header is only as good as the network
+policy that lets nothing but the proxy reach this app.
 """
 
 from __future__ import annotations
@@ -34,15 +40,19 @@ USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.C
                JobsError)
 
 
-def create_app(backend: Backend, jobs: JobRunner | None = None) -> FastAPI:
+def create_app(backend: Backend, jobs: JobRunner | None = None, *, hosts: tuple[str, ...] = (),
+               user_header: str = "") -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
+    allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Any) -> Any:
         host = request.headers.get("host", "").rsplit(":", 1)[0] if not request.headers.get("host", "").startswith("[") \
             else request.headers.get("host", "").split("]")[0] + "]"
-        if host not in LOCAL_HOSTS:
-            return JSONResponse({"error": "This orchestrator only answers to this machine."}, status_code=403)
+        if host.lower() not in allowed:
+            return JSONResponse({"error": f"This orchestrator does not answer to {host or 'no host'}."}, status_code=403)
+        if user_header and not request.headers.get(user_header, "").strip():
+            return JSONResponse({"error": "Not signed in."}, status_code=401)
         if request.method not in ("GET", "HEAD") and request.headers.get(CHANGE_HEADER) != "1":
             return JSONResponse({"error": f"Missing the {CHANGE_HEADER} header."}, status_code=403)
         return await call_next(request)
@@ -58,8 +68,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None) -> FastAPI:
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/info")
-    def info() -> dict[str, Any]:
-        return backend.info()
+    def info(request: Request) -> dict[str, Any]:
+        return {**backend.info(), "user": request.headers.get(user_header, "").strip() if user_header else ""}
 
     @app.get("/api/sessions")
     def sessions() -> list[dict[str, Any]]:

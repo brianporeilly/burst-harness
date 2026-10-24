@@ -212,6 +212,7 @@ async function loadInfo() {
   creds.replaceChildren(...Object.entries(info.credentials).map(([key, present]) =>
     el("span", { class: "chip " + (present ? "ok" : ""), title: present ? "available to hand on" : "not set in the orchestrator's environment" },
        (present ? "✓ " : "✗ ") + label[key])));
+  if (info.user) creds.append(el("span", { class: "chip", title: "signed in" }, info.user));
   const d = info.defaults;
   document.getElementById("defaults").textContent =
     [...d.allow, ...d.allowed_for_good].join(", ") + (d.allowed_for_good.length ? "  (the last ones approved for good)" : "");
@@ -308,6 +309,8 @@ function openStream(name) {
   box.replaceChildren();
   streaming = name;
   stream = new EventSource(`/api/sessions/${name}/events`);
+  // Each connection starts with the events the gateway already has, so a reconnect starts the list afresh.
+  stream.onopen = () => box.replaceChildren();
   stream.onmessage = (message) => {
     const e = JSON.parse(message.data);
     if (e.verdict === "close") return;

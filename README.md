@@ -447,8 +447,10 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   by the claim, sends it to the gateway, which passes each connection to the
   sandbox whose registration holds that name. Every connection is an `inbound`
   event, as on podman. A stopped session's names get a 404.
-- **Its record is on the cluster**: a Secret named as the claim and owned by
-  it, holding the UI password, host names and settings. Any driver of the
+- **Its record is on the cluster**: a ConfigMap named as the claim and owned by
+  it, holding the UI password, host names and settings. A ConfigMap, so that
+  reading records doesn't mean reading the namespace's Secrets (in home-ops,
+  every namespace holds Flux's decryption key). Any driver of the
   namespace sees the same sessions (the CLI on one machine, the orchestrator on
   another), and `rm` takes the record with the claim. A session started before
   this is read from the local file and moved when it next starts.
@@ -475,9 +477,10 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   a cluster.
 
 The driver needs `kubectl` with permission to create, get, list and patch
-`sandboxclaims` and `sandboxes`, to `create` `pods/exec`, to get, list and
+`sandboxclaims` and `sandboxes` (and delete `sandboxclaims`: `rm`), to create and
+get `pods/exec` (kubectl execs over a WebSocket, a GET), to get, list and
 watch `pods` (`stop` waits for the pod to go), to apply `httproutes`, and to
-get, list, create and patch `secrets` (each session's record), all in the
+get, list, create and patch `configmaps` (each session's record), all in the
 namespace. `session reap` needs only the sandboxclaims, sandboxes and
 pods parts, and the gateway's control API. Port-forwarding to the gateway also
 needs `get` on `services` and `create` on `pods/portforward` there.
@@ -521,8 +524,25 @@ to a session's registration there. An approval lasts until the session is next
 started; `always` also adds it to the session's own allowlist, for its next
 start. A stopped session's refusals are gone with its registration.
 
-Local only, with no login: it answers only to `127.0.0.1` / `localhost`, and
-refuses changes that lack a header a page on another site cannot send.
+It has no login of its own. By default it answers only to `127.0.0.1` /
+`localhost`, and refuses changes that lack a header a page on another site
+cannot send.
+
+In a cluster it runs from the harness image (`python -m orchestrator` in place
+of the entrypoint) behind a proxy that signs people in, such as Envoy Gateway's
+OIDC:
+
+```bash
+python -m orchestrator --listen 0.0.0.0 --host orchestrator.example.com --user-header Remote-User
+```
+
+`--host` adds the name it is reached by, and `--user-header` names the header
+the proxy sets to who signed in. A request without it is refused, and the page
+shows who you are. The header proves nothing if anything but the proxy can
+reach the pod, so `--listen` beyond this machine needs `--user-header`, and the
+pod needs a network policy that admits only the proxy. Its ServiceAccount needs
+what a cluster session's CLI does (On a cluster, above), and `/state` should be
+a volume: that's where it keeps what each session was created with.
 
 ## Jobs
 

@@ -40,13 +40,13 @@ FAKE_KUBECTL = textwrap.dedent('''\
     def get(kind, name):
         return state.setdefault(kind, {{}}).get(name)
 
-    if verb == "get" and args[1] in ("sandboxclaim", "sandbox", "secret"):
+    if verb == "get" and args[1] in ("sandboxclaim", "sandbox", "configmap"):
         found = get(args[1], args[2])
         print(json.dumps(found) if found else "")
     elif verb == "get" and args[1] == "sandboxclaims":
         print(json.dumps({{"items": list(state.get("sandboxclaim", {{}}).values())}}))
-    elif verb == "get" and args[1] == "secrets":
-        print(json.dumps({{"items": list(state.get("secret", {{}}).values())}}))
+    elif verb == "get" and args[1] == "configmaps":
+        print(json.dumps({{"items": list(state.get("configmap", {{}}).values())}}))
     elif verb == "get" and args[1] == "sandboxes":
         print(json.dumps({{"items": list(state.get("sandbox", {{}}).values())}}))
     elif verb == "get" and args[1] == "pod":
@@ -80,7 +80,7 @@ FAKE_KUBECTL = textwrap.dedent('''\
     elif verb == "delete":
         claim = state.get("sandboxclaim", {{}}).pop(args[2], None)
         if claim:  # the routes and the record are the claim's
-            for kind in ("httproute", "secret"):
+            for kind in ("httproute", "configmap"):
                 state[kind] = {{k: r for k, r in state.get(kind, {{}}).items()
                                if r["metadata"]["ownerReferences"][0]["name"] != args[2]}}
     else:
@@ -220,7 +220,7 @@ def test_rm_deletes_the_claim_and_its_routes(tmp_path, cluster, pod):
     cluster_session.start(cfg, "demo")
     assert "deleted" in cluster_session.remove(cfg, "demo")
     assert state.state["sandboxclaim"] == {} and state.state["httproute"] == {}
-    assert state.state["secret"] == {}  # the record went with the claim
+    assert state.state["configmap"] == {}  # the record went with the claim
 
 
 def test_claude_code_is_its_terminal_and_a_lifetime_is_a_deadline(tmp_path, cluster, pod):
@@ -434,18 +434,17 @@ def test_a_session_is_started_again_as_it_was_created(tmp_path, cluster, pod):
     cluster_session.start(root, "rooted")  # the same way is fine
 
 
-def test_a_sessions_record_is_a_secret_owned_by_its_claim(tmp_path, cluster, pod):
-    import base64
-
+def test_a_sessions_record_is_a_configmap_owned_by_its_claim(tmp_path, cluster, pod):
     state, kubectl = cluster
     cfg = _cfg(tmp_path, kubectl)
     cluster_session.start(cfg, "demo", idle="1h")
-    secret = state.state["secret"]["session-demo"]
-    assert secret["metadata"]["ownerReferences"][0] == {"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
+    configmap = state.state["configmap"]["session-demo"]
+    assert configmap["metadata"]["ownerReferences"][0] == {"apiVersion": "extensions.agents.x-k8s.io/v1beta1",
                                                         "kind": "SandboxClaim", "name": "session-demo",
                                                         "uid": "uid-session-demo"}
-    assert secret["metadata"]["labels"]["burst-harness/session"] == "demo"
-    record = json.loads(base64.b64decode(secret["data"]["record"]))
+    assert configmap["metadata"]["labels"]["burst-harness/session"] == "demo"
+    assert "secret" not in state.state  # reading records is not reading the namespace's Secrets
+    record = json.loads(configmap["data"]["record"])
     assert record["idle"] == 3600 and record["password"]
     assert not (tmp_path / "state" / "sessions").exists() or not list((tmp_path / "state" / "sessions").iterdir())
     apply = next(c for c in state.state["calls"] if "apply" in c and "--server-side" in c)
@@ -457,19 +456,19 @@ def test_a_sessions_record_is_a_secret_owned_by_its_claim(tmp_path, cluster, pod
     assert cluster_session.list_sessions(other)[0]["ui"].startswith("https://session-demo.internal.example.com/")
 
 
-def test_a_session_from_before_secrets_is_read_from_its_file_and_moved(tmp_path, cluster, pod):
+def test_a_session_from_before_cluster_records_is_read_from_its_file_and_moved(tmp_path, cluster, pod):
     from harness import session
 
     state, kubectl = cluster
     cfg = _cfg(tmp_path, kubectl)
     cluster_session.start(cfg, "demo")
     record = cluster_session.load_record(cfg, "demo")
-    state.path.write_text(json.dumps({**state.state, "secret": {}}))  # as it was before
+    state.path.write_text(json.dumps({**state.state, "configmap": {}}))  # as it was before
     session.save_record(cfg, "demo", record)
     assert cluster_session.load_record(cfg, "demo")["password"] == record["password"]
     cluster_session.start(cfg, "demo")
     assert cluster_session.load_record(cfg, "demo")["password"] == record["password"]  # kept
-    assert "session-demo" in state.state["secret"] and not session.record_path(cfg, "demo").exists()
+    assert "session-demo" in state.state["configmap"] and not session.record_path(cfg, "demo").exists()
 
 
 def test_an_entry_is_added_to_a_sessions_own_allowlist(tmp_path, cluster, pod):

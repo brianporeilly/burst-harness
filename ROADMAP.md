@@ -264,12 +264,17 @@ On Kubernetes, in steps:
    from the shared gateway's control API, which now also takes approvals for a
    registered sandbox (`POST /sandboxes/NAME/approvals`) without the rest of its
    registration being sent again. Run from a laptop with the cluster settings.
-2. Session records on the cluster (2026-10-23): a Secret per session, named
+2. Session records on the cluster (2026-10-23): a ConfigMap per session, named
    as its claim and owned by it (applied server-side, so no annotation copies
    the password), so the orchestrator and the CLI see the same sessions. Older
-   local records are read, and moved at the next start.
-3. The orchestrator in the cluster: an image, a Deployment with the driver's
-   rights, an HTTPRoute behind Authentik's OIDC.
+   local records are read, and moved at the next start. First a Secret; a
+   ConfigMap since step 3, as the right to list a namespace's Secrets would
+   include Flux's decryption key, which every namespace in home-ops holds.
+3. The orchestrator in the cluster: the harness image now carries it, and
+   `--listen`, `--host` and `--user-header` let it sit behind a proxy that
+   signs people in (and refuse anything that didn't come through it). In
+   home-ops: a Deployment with a session's rights, an HTTPRoute behind
+   Authentik's OIDC, and a network policy that admits only Envoy.
 4. OpenHands removed from home-ops.
 
 Original plan:

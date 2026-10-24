@@ -30,8 +30,11 @@ RUN arch="$(dpkg --print-architecture)" \
 
 WORKDIR /opt/harness
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY orchestrator/requirements.txt ./orchestrator/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -r orchestrator/requirements.txt
 COPY harness/ ./harness/
+# The orchestrator, for a Deployment: `python -m orchestrator` in place of the entrypoint.
+COPY orchestrator/ ./orchestrator/
 
 # Snapshots and offloaded blobs. Mount a volume here to make resume survive the pod.
 ENV HARNESS_STATE_DIR=/state \
