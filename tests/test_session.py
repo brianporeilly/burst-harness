@@ -1,5 +1,7 @@
 import json
+import os
 import stat
+import subprocess
 
 import pytest
 
@@ -214,3 +216,23 @@ def test_urls_open_on_the_session_when_there_is_one():
     record = {"bind": "127.0.0.1", "port": 4100, "password": "pw", "link": "L3dvcmtzcGFjZQ/session/ses_1"}
     assert session.urls(record)["ui"] == "http://127.0.0.1:4100/L3dvcmtzcGFjZQ/session/ses_1"
     assert session.urls({**record, "link": ""})["ui"] == "http://127.0.0.1:4100/"
+
+
+@pytest.mark.parametrize("before, kept", [
+    (None, False), (session.OLD_ZELLIJ_CONFIG, False), ("web_server true\ntheme \"nord\"\n", True),
+], ids=["none", "the-old-default", "edited"])
+def test_zellij_lets_the_browser_into_the_harnesss_session(tmp_path, before, kept):
+    kdl = tmp_path / ".config" / "zellij" / "config.kdl"
+    if before is not None:
+        kdl.parent.mkdir(parents=True)
+        kdl.write_text(before)
+
+    def run(*argv, detach=False):
+        if argv[:2] == ("sh", "-c") and not detach:  # the config: run here, in a home of its own
+            return subprocess.run(argv, env={**os.environ, "HOME": str(tmp_path)}, capture_output=True, text=True, check=False)
+        out = "token 01234567-89ab-cdef-0123-456789abcdef\n" if "--create-token" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    assert session.terminal_in(run) == "01234567-89ab-cdef-0123-456789abcdef"
+    assert kdl.read_text() == (before if kept else session.ZELLIJ_CONFIG)
+    assert kept or 'web_sharing "on"' in kdl.read_text()

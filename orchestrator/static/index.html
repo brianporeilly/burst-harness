@@ -256,7 +256,8 @@ async function act(label, work) {
 function renderDetail() {
   const s = sessions.find((x) => x.name === selected);
   const detail = document.getElementById("detail");
-  if (!s) { detail.replaceChildren(el("p", { class: "muted" }, "Gone.")); closeStream(); return; }
+  // Removed (here or elsewhere): the panel is rebuilt if a session of that name comes back.
+  if (!s) { detail.replaceChildren(el("p", { class: "muted" }, "Gone.")); delete detail.dataset.name; closeStream(); return; }
   if (detail.dataset.name !== s.name) {
     detail.dataset.name = s.name;
     detail.replaceChildren(document.getElementById("detail-template").content.cloneNode(true));
@@ -268,7 +269,7 @@ function renderDetail() {
   if (!running && s.status !== "starting") actions.push(el("button", { class: "primary", onclick: () => act("Start", () => api(`/api/sessions/${s.name}/start`, { method: "POST" })) }, "Start"));
   if (running) actions.push(el("button", { onclick: () => act("Stop", () => api(`/api/sessions/${s.name}/stop`, { method: "POST" })) }, "Stop"));
   actions.push(el("button", { class: "danger", onclick: () => confirm(`Delete ${s.name} and its workspace?`) &&
-    act("Remove", async () => { await api(`/api/sessions/${s.name}`, { method: "DELETE" }); selected = null; }) }, "Remove"));
+    act("Remove", () => api(`/api/sessions/${s.name}`, { method: "DELETE" })) }, "Remove"));
   detail.querySelector("[data-actions]").replaceChildren(...actions);
   detail.querySelector("[data-error]").textContent = s.error || "";
 

@@ -79,7 +79,11 @@ UI_USER = "opencode"
 # certificate); socat on TERMINAL_PORT is what the gateway passes connections to.
 ZELLIJ_PORT = 8082
 TERMINAL_PORT = 8083
-ZELLIJ_CONFIG = "web_server true\nshow_startup_tips false\nshow_release_notes false\n"
+# web_sharing: zellij lets the browser into a session started from the command
+# line (as the harness's are) only with it on; "off" is its default.
+ZELLIJ_CONFIG = 'web_server true\nweb_sharing "on"\nshow_startup_tips false\nshow_release_notes false\n'
+# What the harness wrote before, without it: replaced, where nobody has edited it.
+OLD_ZELLIJ_CONFIG = "web_server true\nshow_startup_tips false\nshow_release_notes false\n"
 AGENTS = ("opencode", "claude-code")
 # opencode fetches its catalog of models (names, limits, prices) from here when it starts.
 OPENCODE_HOSTS = ("models.opencode.ai",)
@@ -395,8 +399,9 @@ def terminal_in(run: Callable[..., subprocess.CompletedProcess[str]], *, claude:
     """start_terminal's work, given `run(*argv, detach=False)`, which runs a command in the sandbox."""
     # zellij will not start its web server without a config file. One you have
     # edited (it is in the home volume) is left alone.
-    setup = ('mkdir -p "$HOME/.config/zellij" && { [ -f "$HOME/.config/zellij/config.kdl" ] || '
-             f'printf {shlex.quote(ZELLIJ_CONFIG)} > "$HOME/.config/zellij/config.kdl"; }}')
+    kdl = '"$HOME/.config/zellij/config.kdl"'
+    setup = (f'mkdir -p "$HOME/.config/zellij" && {{ [ -f {kdl} ] && ! printf %s {shlex.quote(OLD_ZELLIJ_CONFIG)} | '
+             f'cmp -s - {kdl} || printf %s {shlex.quote(ZELLIJ_CONFIG)} > {kdl}; }}')
     if claude:
         layout = '"$HOME/.config/zellij/layouts/harness-claude.kdl"'
         setup += f' && mkdir -p "$HOME/.config/zellij/layouts" && printf %s {shlex.quote(CLAUDE_LAYOUT)} > {layout}'
