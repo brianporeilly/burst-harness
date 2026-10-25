@@ -133,7 +133,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, hosts: tuple[
     def list_jobs() -> dict[str, Any]:
         if jobs is None:
             return {"directories": [], "jobs": []}
-        return {"directories": [str(d) for d in jobs.directories], "jobs": jobs.jobs()}
+        return {"directories": [str(d) for d in jobs.directories], "jobs": jobs.jobs(),
+                "schedule": {"on": jobs.schedule, "timezone": str(jobs.zone)}}
 
     @app.get("/api/jobs/{name}")
     def job_detail(name: str) -> dict[str, Any]:
@@ -142,6 +143,16 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, hosts: tuple[
     @app.post("/api/jobs/{name}/run", status_code=202)
     def run_job(name: str) -> dict[str, str]:
         return {"name": name, "run": runner().run(name)}
+
+    @app.post("/api/jobs/{name}/pause")
+    def pause_job(name: str) -> dict[str, Any]:
+        runner().pause(name, True)
+        return {"name": name, "paused": True}
+
+    @app.post("/api/jobs/{name}/resume")
+    def resume_job(name: str) -> dict[str, Any]:
+        runner().pause(name, False)
+        return {"name": name, "paused": False}
 
     @app.get("/api/jobs/{name}/runs/{run_id}")
     def run_detail(name: str, run_id: str) -> dict[str, Any]:

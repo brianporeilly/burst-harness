@@ -534,6 +534,30 @@ orchestrator's environment), and shows every run: its report, its output, and
 the hosts its gateway let through or refused. Runs started from the command
 line are there too.
 
+**Schedules.** With `--schedule` (or `ORCHESTRATOR_SCHEDULE=1`), a job whose
+`[job] trigger` is a cron schedule (`"0 7 * * 1-5"`) is also run when it's due:
+
+```bash
+python -m orchestrator --jobs ~/jobs --schedule --timezone America/Anchorage --catch-up 1h
+```
+
+- Times are wall-clock times in `--timezone` (`ORCHESTRATOR_TIMEZONE`; by
+  default this machine's), through summer time changes. A time the change
+  skips doesn't happen that day, and one it repeats happens once.
+- The run log is the only record: a job is run when it's due unless a run of
+  it has started since. A restart therefore neither misses a run nor repeats
+  one. A time missed by up to `--catch-up` (`ORCHESTRATOR_CATCH_UP`, default
+  `1h`) runs late, once. One missed for longer (the machine asleep, the
+  orchestrator down) is skipped. A laptop can set a longer `--catch-up`.
+- A job still running when it is due again isn't started twice.
+- **Pause and resume** a job's schedule from its page in the Jobs tab, which
+  shows when it runs next. The pause is kept beside the job's runs
+  (`jobs/NAME/schedule.json` in the state directory), not in `job.toml`.
+  With `--start-paused` (`ORCHESTRATOR_START_PAUSED=1`), a job starts paused
+  and runs on its schedule only once someone resumes it.
+- A run's record says what started it: `"trigger": "schedule"` with
+  `scheduled_for`, or `"manual"`.
+
 With `target = "agent-sandbox"` and a cluster session's settings (On a cluster,
 above), its sessions are on that cluster instead: claimed, suspended and
 removed as `harness session` does there, with events and refusals read from
@@ -628,7 +652,7 @@ Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
 "allowlist"`. A job's settings sit between your config file and `HARNESS_*`.
 Headless Claude Code runs only the tools it is allowed (`claude_args =
 "--allowedTools ..."`, or `claude_settings`). `[job] trigger` (cron or
-`manual`) is read by the scheduler (to come), not by `run`; `mode = "act"` is
+`manual`) is read by the orchestrator's scheduler, not by `run`; `mode = "act"` is
 refused until approvals exist. See ROADMAP.md, phase 8.
 
 `mode = "report"` is enforced by the gateway, not by the prompt. It terminates

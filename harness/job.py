@@ -8,7 +8,7 @@ A job is a directory, kept in its own repo (one per instance, personal or work):
     scripts/     optional; copied into the sandbox at /workspace/scripts
 
     [job]
-    trigger = "0 7 * * *"          # cron, or "manual". Read by `render` (later), not by `run`.
+    trigger = "0 7 * * *"          # cron, or "manual". Read by the orchestrator's scheduler, not by `run`.
     mode = "report"                # enforced by the gateway; "act" comes later, with approvals
     writes = [{host = "api.github.com", method = "POST", path = "/graphql"}]  # optional, see below
     output = ["stdout", "file:~/reports/digest-%Y-%m-%d.md", "slack:C0123456"]
@@ -83,7 +83,7 @@ from urllib.parse import urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers, mcp
+from . import agent_sandbox, containers, cron, mcp
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -103,7 +103,6 @@ ENGINES = ("strands", "claude-code", "opencode")
 OPENCODE_RULES = "/tmp/burst-harness/job-rules.md"
 SLACK_API = "https://slack.com/api/chat.postMessage"
 SLACK_LIMIT = 39_000  # chat.postMessage truncates text at 40,000 characters
-CRON_FIELD = re.compile(r"[0-9*/,\-A-Za-z]+")
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 RULES = """You are running an unattended job for burst-harness, in a sandbox. Nobody is watching to answer questions.
@@ -224,11 +223,12 @@ def _trigger(value: Any) -> str:
     value = " ".join(value.split())
     if value == "manual":
         return value
-    parts = value.split(" ")
-    if len(parts) == 5 and all(CRON_FIELD.fullmatch(part) for part in parts):
-        return value
-    raise JobError(f"[job] trigger {value!r} is not a cron schedule (five fields) or \"manual\". "
-                   "Webhook and Slack triggers come later, through the control plane.")
+    try:
+        cron.parse(value)
+    except cron.CronError as err:
+        raise JobError(f"[job] trigger {value!r} is not a cron schedule or \"manual\": {err} "
+                       "Webhook and Slack triggers come later, through the control plane.") from err
+    return value
 
 
 def _mode(value: Any) -> str:
@@ -594,6 +594,9 @@ def _acquire(cfg: HarnessConfig, spec: JobSpec) -> SubprocessTarget:
 RUN_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4,12}")
 # Set by whoever starts `harness job run` and wants to find its record (the orchestrator).
 RUN_ID_ENV = "HARNESS_JOB_RUN_ID"
+# And what started it: "schedule" (with the time it was due, as UTC ISO), or "manual" if unset.
+TRIGGER_ENV = "HARNESS_JOB_TRIGGER"
+SCHEDULED_FOR_ENV = "HARNESS_JOB_SCHEDULED_FOR"
 
 
 def runs_dir(cfg: HarnessConfig, name: str) -> Path:
@@ -665,7 +668,8 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         "id": run_id, "job": spec.name, "path": str(spec.path), "state": "running",
         "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
         "engine": cfg.engine, "model": f"{cfg.provider} {cfg.model_id}", "mode": spec.mode,
-        "pid": os.getpid(),
+        "pid": os.getpid(), "trigger": os.environ.get(TRIGGER_ENV) or "manual",
+        **({"scheduled_for": due} if (due := os.environ.get(SCHEDULED_FOR_ENV)) else {}),
     }
     _write_run(record_dir, record)
     report: str | None = None

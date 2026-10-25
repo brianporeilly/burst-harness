@@ -351,12 +351,16 @@ loses nothing, because nothing is waiting.
    or passed in; a failure notice when there is no report. Example:
    `examples/jobs/repo-digest` (the Renovate part only). Verified on podman
    with a stand-in llama.cpp server; not yet run with a real model.
-2. Scheduling. Deferred (2026-10-20): not systemd. Most likely a cron in the
-   orchestrator, launchd on macOS, or CronJobs in the cluster. A CronJob runs
-   the driver image, as home-ops #1083 does, and starts the sandbox through
-   agent-sandbox. Until phase 6's gateway exists, a cluster job's credentials
-   are passed into the sandbox, so only read-only tokens are acceptable there.
-   A real Slack bot (not just a webhook) also waits; it belongs with the
+2. Scheduling: in the orchestrator (2026-10-25). With `--schedule`, a job
+   whose trigger is a cron schedule runs when it is due, in one timezone
+   (`--timezone`), through summer time changes. The run log is the record, so
+   a restart neither misses nor repeats a run; a time missed by more than
+   `--catch-up` is skipped. Jobs can be paused from the Jobs tab, and with
+   `--start-paused` a new job waits until someone resumes it. One scheduler
+   for podman and the cluster, and the runs it starts are in the Jobs tab
+   like any other; on the cluster it replaces the CronJobs. Before that
+   (2026-10-20), deferred: not systemd; a cron in the orchestrator, launchd
+   on macOS, or CronJobs in the cluster were the options. A real Slack bot (not just a webhook) also waits; it belongs with the
    control plane's triggers.
 3. Report mode enforced at the gateway: done (2026-10-20). The gateway
    terminates all of a report job's TLS and refuses every request that writes

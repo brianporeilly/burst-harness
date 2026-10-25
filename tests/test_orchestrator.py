@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from harness.gateway_control import GatewayError
 from orchestrator.app import create_app  # noqa: E402
 from orchestrator.backend import SessionSpec, SpecError  # noqa: E402
+from orchestrator.jobs import JobsError
 
 CHANGE = {"X-Orchestrator": "1"}
 
@@ -234,6 +235,137 @@ def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
     assert env[jobs_client.job.RUN_ID_ENV] == run_id
     assert jobs_client.post("/api/jobs/watcher/run", headers=CHANGE).status_code == 400  # already running
     assert jobs_client.get("/api/jobs/watcher").json()["runs"][0] == {"id": run_id, "job": "watcher", "state": "starting"}
+
+
+def _scheduled(tmp_path, monkeypatch, **options):
+    """A runner over two jobs due at 08:00 Anchorage time, one manual, with runs faked."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    from harness import job
+    from orchestrator.jobs import JobRunner
+
+    root = tmp_path / "jobs"
+    for name, trigger in (("watcher", "0 8 * * *"), ("digest", "0 8 * * *"), ("adhoc", "manual")):
+        (root / name).mkdir(parents=True, exist_ok=True)  # again, for a restart
+        (root / name / "prompt.md").write_text("do it")
+        (root / name / "job.toml").write_text(f'[job]\ntrigger = "{trigger}"\n')
+    runner = JobRunner([root], schedule=True, zone=ZoneInfo("America/Anchorage"),
+                       catch_up=options.pop("catch_up", timedelta(hours=1)), **options)
+    started = []
+
+    def run(name, *, scheduled_for=None):
+        started.append((name, scheduled_for))
+        cfg = job.config(job.load(runner.discover()[name]))
+        run_id = f"20261025T{16 + len(started):02d}0000Z-abcd"
+        job._write_run(job.runs_dir(cfg, name) / run_id, {"id": run_id, "job": name, "state": "reported",
+                                                           "started": f"2026-10-25T{16 + len(started):02d}:00:00Z"})
+        return run_id
+
+    monkeypatch.setattr(runner, "run", run)
+    return runner, started
+
+
+def _at(text):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    return datetime.fromisoformat(text).replace(tzinfo=ZoneInfo("America/Anchorage"))
+
+
+def test_a_due_job_runs_once_and_a_restart_does_not_repeat_it(tmp_path, monkeypatch):
+    runner, started = _scheduled(tmp_path, monkeypatch)
+    assert runner.tick(_at("2026-10-25T07:59")) == [] and started == []
+    done = runner.tick(_at("2026-10-25T08:00"))  # 16:00Z
+    assert sorted(name for name, _ in started) == ["digest", "watcher"]
+    assert all(due == _at("2026-10-25T08:00") for _, due in started) and len(done) == 2
+    runner.tick(_at("2026-10-25T08:00:30"))
+    assert len(started) == 2  # not again
+    # A new orchestrator (a restart) finds the runs in the run log, and does not run them again.
+    again, started_again = _scheduled(tmp_path, monkeypatch)
+    again.tick(_at("2026-10-25T08:20"))
+    assert started_again == []
+
+
+def test_a_missed_time_runs_late_within_the_catch_up_and_not_after(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    runner, started = _scheduled(tmp_path, monkeypatch, catch_up=timedelta(minutes=30))
+    runner.tick(_at("2026-10-25T08:45"))
+    assert started == []  # missed by more than 30m: skipped, not made up
+    runner.tick(_at("2026-10-26T08:29"))
+    assert len(started) == 2 and started[0][1] == _at("2026-10-26T08:00")
+
+
+def test_paused_jobs_are_not_run_and_new_ones_can_start_paused(tmp_path, monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    runner, started = _scheduled(tmp_path, monkeypatch, start_paused=True)
+    runner.tick(_at("2026-10-25T08:00"))
+    assert started == []
+    summary = {j["name"]: j for j in runner.jobs()}
+    schedule = summary["watcher"]["schedule"]
+    nxt = datetime.fromisoformat(schedule["next"]).astimezone(ZoneInfo("America/Anchorage"))
+    assert schedule["on"] and schedule["paused"] and (nxt.hour, nxt.minute) == (8, 0)
+    assert "schedule" not in summary["adhoc"]
+    runner.pause("watcher", False)
+    runner.tick(_at("2026-10-25T08:01"))
+    assert started == [("watcher", _at("2026-10-25T08:00"))]
+    runner.pause("watcher", True)
+    runner.tick(_at("2026-10-26T08:00"))
+    assert len(started) == 1
+    with pytest.raises(JobsError, match="manual"):
+        runner.pause("adhoc", True)
+
+
+def test_a_due_job_that_cannot_run_is_tried_once_per_time(tmp_path, monkeypatch):
+    runner, _ = _scheduled(tmp_path, monkeypatch)
+    calls = []
+
+    def refuse(name, *, scheduled_for=None):
+        calls.append(name)
+        raise JobsError(f"{name} is already running.")
+
+    monkeypatch.setattr(runner, "run", refuse)
+    assert runner.tick(_at("2026-10-25T08:00")) == [
+        "digest: due 2026-10-25T16:00:00Z, not run: digest is already running.",
+        "watcher: due 2026-10-25T16:00:00Z, not run: watcher is already running."]
+    runner.tick(_at("2026-10-25T08:00:30"))
+    assert len(calls) == 2
+
+
+def test_a_scheduled_run_says_so_in_its_environment(jobs_client, monkeypatch):
+    from datetime import UTC, datetime
+
+    from orchestrator import jobs as jobs_module
+
+    started = []
+
+    class FakeProcess:
+        def __init__(self, argv, **kwargs):
+            started.append(kwargs["env"])
+
+        def wait(self):
+            pass
+
+    monkeypatch.setattr(jobs_module.subprocess, "Popen", FakeProcess)
+    jobs_client.runner.run("watcher", scheduled_for=datetime(2026, 10, 25, 16, tzinfo=UTC))
+    assert started[0][jobs_client.job.TRIGGER_ENV] == "schedule"
+    assert started[0][jobs_client.job.SCHEDULED_FOR_ENV] == "2026-10-25T16:00:00Z"
+    jobs_client.runner.running.clear()
+    jobs_client.runner.run("watcher")
+    assert started[1][jobs_client.job.TRIGGER_ENV] == "manual" and jobs_client.job.SCHEDULED_FOR_ENV not in started[1]
+
+
+def test_pause_and_resume_over_the_api(tmp_path, monkeypatch):
+    runner, _ = _scheduled(tmp_path, monkeypatch)
+    test = TestClient(create_app(FakeBackend(), runner), base_url="http://127.0.0.1:8700")
+    assert test.get("/api/jobs").json()["schedule"] == {"on": True, "timezone": "America/Anchorage"}
+    assert test.post("/api/jobs/watcher/pause", headers=CHANGE).json() == {"name": "watcher", "paused": True}
+    assert test.get("/api/jobs/watcher").json()["schedule"]["paused"] is True
+    assert test.post("/api/jobs/watcher/resume", headers=CHANGE).json()["paused"] is False
+    assert test.post("/api/jobs/adhoc/pause", headers=CHANGE).status_code == 400
 
 
 def test_without_job_directories_the_jobs_api_says_how_to_add_them(client):

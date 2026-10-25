@@ -401,11 +401,19 @@ async function refreshJobs() {
     el("div", { class: "row spread" }, el("span", { class: "name" }, j.name),
        j.error ? el("span", { class: "chip bad" }, "broken") : runChip(j.running ? "running" : j.last_run && j.last_run.state)),
     el("div", { class: "muted" }, j.error ? j.error.slice(0, 120) : [
-      j.engine, j.trigger === "manual" ? "manual" : `cron ${j.trigger}`,
+      j.engine, j.trigger === "manual" ? "manual" : `cron ${j.trigger}`, scheduleText(j.schedule),
       j.last_success ? `last good ${when(j.last_success.started)}` : "no good run yet",
-    ].join(" · ")),
+    ].filter(Boolean).join(" · ")),
     j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null)));
   if (selectedJob) renderJob();
+}
+
+// A cron job's schedule, in a few words: off (no --schedule), paused, or when it next runs.
+function scheduleText(s) {
+  if (!s) return "";
+  if (!s.on) return "not scheduled (orchestrator without --schedule)";
+  if (s.paused) return "paused";
+  return s.next ? `next ${new Date(s.next).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}` : "never due";
 }
 
 function selectJob(name) { selectedJob = name; selectedRun = null; refreshJobs(); }
@@ -417,7 +425,8 @@ async function renderJob() {
   if (selectedJob !== j.name) return;
   if (!selectedRun && j.runs && j.runs.length) selectedRun = j.runs[0].id;
   // Redrawn only when something shown has changed, so an open section or a scrolled report stays put.
-  const key = JSON.stringify([j.name, j.running, j.missing, j.error, selectedRun, (j.runs || []).map((r) => [r.id, r.state])]);
+  const key = JSON.stringify([j.name, j.running, j.missing, j.error, j.schedule, selectedRun,
+                              (j.runs || []).map((r) => [r.id, r.state])]);
   if (box.dataset.key === key) { if (selectedRun) renderRun(j.name, selectedRun); return; }
   box.dataset.key = key;
   const runButton = el("button", { class: "primary", onclick: async () => {
@@ -427,14 +436,22 @@ async function renderJob() {
     refreshJobs();
   } }, j.running ? "Running..." : "Run now");
   runButton.disabled = Boolean(j.running || j.error || (j.missing && j.missing.length));
+  const pauseButton = j.schedule ? el("button", { onclick: async () => {
+    pauseButton.disabled = true;
+    try { await api(`/api/jobs/${j.name}/${j.schedule.paused ? "resume" : "pause"}`, { method: "POST" }); }
+    catch (err) { alert(`${j.schedule.paused ? "Resume" : "Pause"}: ${err.message}`); }
+    refreshJobs();
+  } }, j.schedule.paused ? "Resume schedule" : "Pause schedule") : null;
   const rows = (j.runs || []).map((r) => el("tr", {
       class: "clickable" + (r.id === selectedRun ? " selected" : ""), onclick: () => { selectedRun = r.id; renderJob(); } },
-    el("td", {}, r.started ? new Date(r.started).toLocaleString() : r.id), el("td", {}, runChip(r.state)),
+    el("td", {}, r.started ? new Date(r.started).toLocaleString() : r.id,
+       r.trigger === "schedule" ? el("span", { class: "muted" }, " (scheduled)") : null), el("td", {}, runChip(r.state)),
     el("td", {}, r.seconds != null ? `${r.seconds}s` : ""),
     el("td", {}, r.egress && r.egress.refused_count ? el("span", { class: "chip bad" }, `${r.egress.refused_count} refused`) : "")));
   box.replaceChildren(
-    el("div", { class: "row spread" }, el("h2", {}, j.name), runButton),
+    el("div", { class: "row spread" }, el("h2", {}, j.name), el("div", { class: "row" }, pauseButton, runButton)),
     j.error ? el("div", { class: "error" }, j.error) : null,
+    j.schedule ? el("p", { class: "muted" }, `Schedule: cron ${j.trigger}, ${scheduleText(j.schedule)}.`) : null,
     j.missing && j.missing.length ? el("p", { class: "error" },
       `The orchestrator's environment is missing ${j.missing.join(", ")}. Set it where the orchestrator is started.`) : null,
     j.describe ? el("pre", { class: "text" }, j.describe) : null,
