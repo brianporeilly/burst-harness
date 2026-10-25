@@ -66,7 +66,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from . import containers, git
+from . import containers, git, mcp
 from .agent_sandbox import REQUIRED_COMMANDS
 from .config import HarnessConfig
 from .containers import ContainerError
@@ -164,7 +164,7 @@ def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
     if model_env(cfg):
         # opencode knows Anthropic already; it only needs telling which model.
         return {"$schema": "https://opencode.ai/config.json", "model": f"anthropic/{cfg.model_id}",
-                "autoupdate": False, "share": "disabled"}
+                "autoupdate": False, "share": "disabled", **_mcp(cfg)}
     if cfg.provider == "llamacpp" and cfg.base_url:
         # As for the Strands engine: base_url is the server's root.
         base = cfg.base_url.rstrip("/") + "/v1"
@@ -196,7 +196,20 @@ def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
         # The image is immutable and pinned; nothing is shared to opencode's service.
         "autoupdate": False,
         "share": "disabled",
+        **_mcp(cfg),
     }
+
+
+def opencode_file(cfg: HarnessConfig, config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What to write as opencode.json: `config`, or without a model to describe, the MCP servers alone."""
+    if config is not None or not mcp.servers(cfg):
+        return config
+    return {"$schema": "https://opencode.ai/config.json", "autoupdate": False, "share": "disabled", **_mcp(cfg)}
+
+
+def _mcp(cfg: HarnessConfig) -> dict[str, Any]:
+    """opencode.json's MCP servers, when there are any."""
+    return {"mcp": servers} if (servers := mcp.opencode(cfg)) else {}
 
 
 # How a container reaches its host, which the driver, on that host, reaches as itself.
@@ -351,6 +364,11 @@ def claude_env(cfg: HarnessConfig) -> dict[str, str]:
         found = {name: containers.MODEL_CREDENTIALS[name][1] if name in containers.MODEL_CREDENTIALS else value
                  for name, value in found.items()}
     return found
+
+
+def claude_json(cfg: HarnessConfig) -> dict[str, str]:
+    """burst-sandbox-init's CLAUDE_JSON layer adding the MCP servers to ~/.claude.json, if there are any."""
+    return {"CLAUDE_JSON": json.dumps(mcp.claude(cfg))} if mcp.servers(cfg) else {}
 
 
 def terminal_session(claude: bool) -> str:
@@ -509,7 +527,7 @@ def launch(
         needed = (*REQUIRED_COMMANDS, "claude" if claude else "opencode", *(("zellij", "socat") if terminal else ()))
         if missing := target.missing_commands(needed):
             raise SessionError(f"{cfg.image} is missing: {', '.join(missing)}. See images/sandbox/Containerfile.")
-        if cfg.egress_inject:
+        if cfg.egress_inject or mcp.inject_rules(cfg):
             containers.trust_gateway(BINARY, proxy=proxy, name=box)
 
         notes = []
@@ -520,15 +538,20 @@ def launch(
                 auth = () if "git" in cfg.egress_inject else git.auth_args(cfg.repo_url)
                 notes.append(git.clone(target, cfg.repo_url, auth=auth))
         if claude:
-            pass  # Claude Code needs no config written: burst-sandbox-init composes its own at start.
-        elif config is not None:
-            target.run_shell(f"mkdir -p {shlex.quote(str(Path(OPENCODE_CONFIG).parent))} && cat > {shlex.quote(OPENCODE_CONFIG)}",
-                             stdin=json.dumps(config, indent=2) + "\n", cwd="/")
+            # burst-sandbox-init composed Claude Code's config at start; the MCP servers are added to it.
+            if extra := claude_json(cfg):
+                proc = _podman("exec", "-e", "CLAUDE_JSON", box, "burst-sandbox-init", env=extra)
+                if proc.returncode != 0:
+                    raise SessionError(f"Could not add the MCP servers to Claude Code's config: {proc.stderr.strip()}")
         else:
-            notes.append(
-                f"No model configured for opencode: provider={cfg.provider} is not one the harness can describe to "
-                "it. Set one up in the UI, or pass --opencode-config FILE."
-            )
+            if (written := opencode_file(cfg, config)) is not None:
+                target.run_shell(f"mkdir -p {shlex.quote(str(Path(OPENCODE_CONFIG).parent))} && "
+                                 f"cat > {shlex.quote(OPENCODE_CONFIG)}", stdin=json.dumps(written, indent=2) + "\n", cwd="/")
+            if config is None:
+                notes.append(
+                    f"No model configured for opencode: provider={cfg.provider} is not one the harness can describe "
+                    "to it. Set one up in the UI, or pass --opencode-config FILE."
+                )
 
         # The password, and any model key, go in by name from this process's
         # environment: they are in neither a command line nor the container's

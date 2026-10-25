@@ -167,6 +167,10 @@ class HarnessConfig:
         "pypi.org", "files.pythonhosted.org",
         "registry.npmjs.org",
     )
+    # MCP servers the agent connects to, as NAME=URL (remote ones, over HTTPS):
+    # say, context7=https://mcp.context7.com/mcp. A key in the driver's
+    # <NAME>_API_KEY is sent as a bearer token. See harness/mcp.py.
+    mcp: tuple[str, ...] = ()
     kubectl: str = "kubectl"
     # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
     pool: str = ""
@@ -283,6 +287,8 @@ class HarnessConfig:
         cfg = cfg._merge(cfg._env_values(), source="environment")
         if overrides:
             cfg = cfg._merge({k: v for k, v in overrides.items() if v is not None}, source="command line")
+        from .mcp import servers
+        servers(cfg)  # a bad entry fails here, not halfway through starting a sandbox
         return cfg
 
     def _env_values(self) -> dict[str, Any]:

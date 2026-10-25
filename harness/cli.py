@@ -139,6 +139,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "egress_webhook": args.egress_webhook,
         "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
         "engine": args.engine,
+        "mcp": tuple(args.mcp) if args.mcp else None,
         "claude_json": args.claude_json,
         "claude_settings": args.claude_settings,
         "claude_permission_mode": args.permission_mode,
@@ -595,6 +596,10 @@ def main(argv: list[str] | None = None) -> int:
     engine = parser.add_argument_group("engine")
     engine.add_argument("--engine", choices=list(ENGINES),
                         help="strands (default): the harness's own agent. claude-code: Claude Code in the target.")
+    engine.add_argument("--mcp", action="append", metavar="NAME=URL",
+                        help="An MCP server the agent connects to, over HTTPS (repeatable; replaces the mcp "
+                             "setting): context7=https://mcp.context7.com/mcp. A key in the driver's "
+                             "NAME_API_KEY is sent as a bearer token, added by the gateway for a sandbox.")
     engine.add_argument("--claude-json", dest="claude_json",
                         help="JSON file merged into the target's ~/.claude.json (engine=claude-code).")
     engine.add_argument("--claude-settings", dest="claude_settings",

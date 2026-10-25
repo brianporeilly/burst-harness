@@ -128,6 +128,32 @@ def test_spec_overrides_only_what_was_chosen():
                                 "provider": "llamacpp", "base_url": "http://llm.lan:8080", "model_id": "qwen"}
 
 
+def test_mcp_servers_in_a_spec_are_checked_and_kept():
+    spec = SessionSpec.parse({"name": "box", "mcp": "context7=https://mcp.context7.com/mcp\n\n"})
+    assert spec.mcp == ("context7=https://mcp.context7.com/mcp",)
+    assert spec.overrides()["mcp"] == spec.mcp
+    # An empty field is none at all; no field at all is the orchestrator's own setting.
+    assert SessionSpec.parse({"name": "box", "mcp": ""}).overrides()["mcp"] == ()
+    assert "mcp" not in SessionSpec.parse({"name": "box"}).overrides()
+    with pytest.raises(SpecError, match="only passes HTTPS"):
+        SessionSpec.parse({"name": "box", "mcp": "c7=http://mcp.context7.com/mcp"})
+
+
+def test_a_saved_spec_keeps_its_mcp_servers(tmp_path):
+    from dataclasses import asdict
+
+    from harness.config import HarnessConfig
+    from orchestrator.backend import PodmanBackend
+
+    backend = PodmanBackend(HarnessConfig(state_dir=str(tmp_path), mcp=("c7=https://mcp.context7.com/mcp",)))
+    spec = SessionSpec.parse({"name": "box", "mcp": ""})
+    backend.spec_path("box").parent.mkdir(parents=True)
+    backend.spec_path("box").write_text(json.dumps(asdict(spec)))
+    assert backend.saved_spec("box") == spec
+    assert backend.info()["defaults"]["mcp"] == ["c7=https://mcp.context7.com/mcp"]
+    assert backend.info()["mcp_keys"] == {"c7": False}
+
+
 def _jobs_dir(tmp_path):
     from harness import job
 

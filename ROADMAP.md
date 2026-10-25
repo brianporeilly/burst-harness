@@ -390,7 +390,19 @@ gate. No PRs from forks until phase 6's gateway is in place.
   scoped keys. This decides whether Gmail triage can run entirely on the
   cluster. Routing is per job either way, via `job.toml`'s model fields.
 - Whether a job reaches Gmail and Slack with `curl` plus scripts, or through
-  MCP servers in the sandbox.
+  MCP servers. Connecting to remote MCP servers is in (2026-10-24, below); this
+  is now a question of whether good hosted servers exist for those, with keys
+  the gateway can add.
+
+**MCP servers** (2026-10-24): the agent connects to remote ones (`mcp =
+["context7=https://mcp.context7.com/mcp"]`), in sessions and jobs, on every
+engine: opencode's config, Claude Code's `--mcp-config`, and Strands'
+`MCPClient` from the driver. The sandbox engines reach them through the
+gateway, which allowlists the host, lets a report-only job POST to the
+server's URL, and adds a key from the driver's `<NAME>_API_KEY` as a bearer
+token. The first use is Context7 in sessions, for current library docs
+instead of web searches. Running MCP servers ourselves (stdio ones, inside the
+sandbox) is not planned.
 
 ## Open
 

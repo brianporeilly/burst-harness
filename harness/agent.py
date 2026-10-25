@@ -15,6 +15,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import file_editor, handoff_to_user, shell
 
+from . import mcp
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
 from .models import build_model, retry_strategy
@@ -103,7 +104,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
             base=cfg.base_branch,
             doc=doc_rel,
         ),
-        tools=[*exec_tools, handoff_to_user, *make_tools(ctx)],
+        tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg)],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
         conversation_manager=SlidingWindowConversationManager(

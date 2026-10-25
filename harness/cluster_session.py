@@ -88,11 +88,13 @@ from .session import (
     WORKSPACE,
     SessionError,
     claude_env,
+    claude_json,
     container_name,
     model_endpoint,
     model_env,
     open_in,
     opencode_config,
+    opencode_file,
     record_path,
     seconds,
     terminal_in,
@@ -438,15 +440,15 @@ def launch(
     _exec(target, ("sh", "-c", "pkill -f 'opencode web' ; pkill -f 'zellij web' ; pkill -f 'socat TCP-LISTEN' ; true"))
     if claude:
         # Claude Code's config is composed in $HOME, which here is on the workspace.
-        _exec(target, ("burst-sandbox-init",))
+        _exec(target, ("burst-sandbox-init",), env=claude_json(cfg))
         if not claude_env(cfg):
             notes.append("No Claude Code credential on the driver: log in from the terminal, or start the session "
                          "again with one set.")
     else:
-        if config is not None:
+        if (written := opencode_file(cfg, config)) is not None:
             target.run_shell(f"mkdir -p {shlex.quote(str(Path(OPENCODE_CONFIG).parent))} && "
-                             f"cat > {shlex.quote(OPENCODE_CONFIG)}", stdin=json.dumps(config, indent=2) + "\n", cwd="/")
-        else:
+                             f"cat > {shlex.quote(OPENCODE_CONFIG)}", stdin=json.dumps(written, indent=2) + "\n", cwd="/")
+        if config is None:
             notes.append(f"No model configured for opencode: provider={cfg.provider} is not one the harness can "
                          "describe to it. Set one up in the UI, or pass --opencode-config FILE.")
         serve = f"exec opencode web --hostname 0.0.0.0 --port {UI_PORT} >> /tmp/opencode.log 2>&1"

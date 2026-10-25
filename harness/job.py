@@ -83,7 +83,7 @@ from urllib.parse import urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers
+from . import agent_sandbox, containers, mcp
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -288,7 +288,7 @@ def write_rules(spec: JobSpec, cfg: HarnessConfig) -> tuple[dict[str, str], ...]
         elif config:
             model = ANTHROPIC_WRITES
     # engine=strands calls the model from the driver: nothing of it passes the gateway.
-    return (*RUN_WRITES, *model, *spec.writes)
+    return (*RUN_WRITES, *model, *mcp.writes(cfg), *spec.writes)
 
 
 def _secrets(value: Any) -> tuple[Secret, ...]:
@@ -386,6 +386,11 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
         + (" (called from the driver)" if cfg.engine == "strands" else " (called from the sandbox)"),
         f"  egress   {cfg.egress}" + (f": {', '.join(containers.allowlist(cfg, _hosts(spec)))}" if cfg.egress == "allowlist" else ""),
     ]
+    for name, url in mcp.servers(cfg).items():
+        key = (f", key ${mcp.key_var(name)} " + ("added by the gateway" if mcp.in_sandbox(cfg) else "sent from the driver")
+               if mcp.headers(name) else "")
+        lines.append(f"  mcp      {name}: {url}" + (" (from the sandbox" if mcp.in_sandbox(cfg) else " (from the driver")
+                     + key + ")")
     for s in spec.secrets:
         where = f"added by the gateway at {s.host}" if s.host else f"passed into the sandbox as {s.sandbox_env}"
         where += f", verified with {s.ca_file}" if s.ca_file else ""
@@ -493,7 +498,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         sandbox=sandbox,
         system_prompt=_rules(target, has_scripts=has_scripts, ending=CALL_FINISH),
         # As for tasks: a sandbox with its own tools (podman, kubectl) registers them itself.
-        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), finish_report],
+        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), finish_report, *mcp.clients(cfg)],
         plugins=[ContextOffloader(storage=offload_storage(target, str(state_dir)),
                                   max_result_tokens=cfg.offload_max_result_tokens,
                                   preview_tokens=cfg.offload_preview_tokens)],

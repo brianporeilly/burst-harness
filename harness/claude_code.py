@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import git, git_policy, state, terminal
+from . import git, git_policy, mcp, state, terminal
 from .containers import MODEL_CREDENTIALS
 from .agent_sandbox import label_value
 from .context import HarnessContext
@@ -200,11 +200,16 @@ class ClaudeCodeEngine:
         # model_id, unless claude_args picks one: without it Claude Code uses
         # its own default, whatever the harness's settings say.
         model = [] if any(arg == "--model" or arg.startswith("--model=") for arg in yours) else ["--model", cfg.model_id]
+        # The MCP servers you configured, with their tools allowed: you chose them, and
+        # nobody is there to approve each call.
+        servers = ["--mcp-config", json.dumps(mcp.claude(cfg)), "--allowedTools", ",".join(mcp.claude_tools(cfg))] \
+            if mcp.servers(cfg) else []
         argv = [
             "claude", *args, *model,
             "--permission-mode", cfg.claude_permission_mode,
             "--settings", self.hook_settings(),
             "--append-system-prompt", self.rules(),
+            *servers,
             *yours,
         ]
         env = f"set -a && . {shlex.quote(ENV_FILE)} && set +a && " if self.has_env_file else ""

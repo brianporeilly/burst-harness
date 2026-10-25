@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import git
+from . import git, mcp
 from .agent_sandbox import LABEL_MANAGED_BY, LABEL_TASK, MANAGED_BY, REQUIRED_COMMANDS, label_value
 
 # On the containers of a `harness session`: the session's name.
@@ -127,7 +127,7 @@ def approved(cfg: HarnessConfig) -> list[str]:
 
 def allowlist(cfg: HarnessConfig, extra: tuple[str, ...] = ()) -> list[str]:
     """egress_allow, what has been approved for good, and the hosts this run needs to reach no matter what."""
-    hosts = list(dict.fromkeys((*cfg.egress_allow, *approved(cfg), *extra)))
+    hosts = list(dict.fromkeys((*cfg.egress_allow, *approved(cfg), *extra, *mcp.hosts(cfg))))
     for url in (cfg.repo_url, os.environ.get("ANTHROPIC_BASE_URL", "")):
         parts = urlsplit(url)
         if parts.scheme == "https" and parts.hostname and parts.hostname not in hosts:
@@ -171,7 +171,7 @@ def inject_rules(cfg: HarnessConfig) -> list[dict[str, object]]:
         # is not offered to the rest of the host.
         rules += [{"host": host, "path": f"/{path}{suffix}/*", "headers": {"Authorization": f"Basic {basic}"}}
                   for suffix in (".git", "")]
-    return rules
+    return [*rules, *mcp.inject_rules(cfg)]
 
 
 def model_rule(cfg: HarnessConfig) -> dict[str, object]:
@@ -395,7 +395,7 @@ def acquire(
                 f"{cfg.image} is missing required commands: {', '.join(missing)}. "
                 "See images/sandbox/Containerfile for the contract."
             )
-        if proxy and (cfg.egress_inject or inject or read_only is not None):
+        if proxy and (cfg.egress_inject or inject or read_only is not None or mcp.inject_rules(cfg)):
             trust_gateway(binary, proxy=proxy, name=name)
     except Exception:
         target.release()

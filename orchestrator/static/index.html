@@ -130,6 +130,13 @@
         <label class="inline"><input type="checkbox" name="inject" value="model"> Model key (Anthropic)</label>
       </fieldset>
       <fieldset>
+        <legend>MCP servers</legend>
+        <label>Servers the agent connects to, over HTTPS (one per line: name=https://...)
+          <textarea name="mcp" placeholder="context7=https://mcp.context7.com/mcp"></textarea>
+        </label>
+        <p class="muted" id="mcp-keys">A key in the orchestrator's NAME_API_KEY is added by the gateway.</p>
+      </fieldset>
+      <fieldset>
         <legend>Model</legend>
         <div class="grid2">
           <label>Provider
@@ -214,6 +221,10 @@ async function loadInfo() {
        (present ? "✓ " : "✗ ") + label[key])));
   if (info.user) creds.append(el("span", { class: "chip", title: "signed in" }, info.user));
   const d = info.defaults;
+  form.mcp.defaultValue = form.mcp.value = (d.mcp || []).join("\n");
+  const keys = Object.entries(info.mcp_keys || {});
+  if (keys.length) document.getElementById("mcp-keys").textContent = "Keys the gateway adds: " +
+    keys.map(([name, present]) => `${name} ${present ? "✓" : "✗ (none)"}`).join(", ") + ".";
   document.getElementById("defaults").textContent =
     [...d.allow, ...d.allowed_for_good].join(", ") + (d.allowed_for_good.length ? "  (the last ones approved for good)" : "");
 }
@@ -348,7 +359,7 @@ form.onsubmit = async (event) => {
     allow: data.get("allow"), inject: data.getAll("inject"), root: data.has("root"),
     terminal: data.has("terminal"), idle: data.get("idle"), lifetime: data.get("lifetime"),
     provider: data.get("provider"), model: data.get("model"), base_url: data.get("base_url"),
-    context_window: Number(data.get("context_window") || 0),
+    context_window: Number(data.get("context_window") || 0), mcp: data.get("mcp"),
   };
   const error = document.getElementById("form-error");
   error.textContent = "";

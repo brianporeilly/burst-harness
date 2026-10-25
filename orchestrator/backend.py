@@ -17,11 +17,11 @@ import threading
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness import cluster_session, containers, egress, git, session
+from harness import cluster_session, containers, egress, git, mcp, session
 from harness.config import HarnessConfig
 from harness.gateway_control import Gateway, GatewayError
 
@@ -53,6 +53,8 @@ class SessionSpec:
     base_url: str = ""
     model: str = ""
     context_window: int = 0
+    # NAME=URL entries; None (not given) is the orchestrator's own `mcp` setting.
+    mcp: tuple[str, ...] | None = None
 
     @classmethod
     def parse(cls, raw: dict[str, Any]) -> "SessionSpec":
@@ -81,7 +83,7 @@ class SessionSpec:
             egress=text("egress") or "allowlist", allow=entries("allow"), inject=entries("inject", INJECT),
             root=bool(raw.get("root")), terminal=bool(raw.get("terminal")), idle=text("idle"), lifetime=text("lifetime"),
             provider=text("provider"), base_url=text("base_url"), model=text("model"),
-            context_window=int(raw.get("context_window") or 0),
+            context_window=int(raw.get("context_window") or 0), mcp=servers(raw.get("mcp")),
         )
         try:
             session.container_name(spec.name)
@@ -108,8 +110,32 @@ class SessionSpec:
             "repo_url": self.repo_url, "egress": self.egress, "egress_inject": self.inject,
             "container_root": self.root, "provider": self.provider or None, "base_url": self.base_url or None,
             "model_id": self.model or None, "context_window_limit": self.context_window or None,
+            "mcp": self.mcp,
         }
         return {key: value for key, value in chosen.items() if value is not None}
+
+
+def servers(value: Any) -> tuple[str, ...] | None:
+    """The form's MCP servers (NAME=URL, one per line or a list), checked; None if it gave none at all."""
+    if value is None:
+        return None
+    items = value.split() if isinstance(value, str) else value
+    if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+        raise SpecError("mcp must be a list of NAME=URL.")
+    found = tuple(item.strip() for item in items if item.strip())
+    try:
+        mcp.servers(replace(HarnessConfig(), mcp=found))
+    except mcp.MCPError as err:
+        raise SpecError(str(err)) from err
+    return found
+
+
+def _spec(raw: dict[str, Any]) -> SessionSpec:
+    """A saved spec, back from its JSON."""
+    found = {**raw, "allow": tuple(raw.get("allow", ())), "inject": tuple(raw.get("inject", ()))}
+    if found.get("mcp") is not None:
+        found["mcp"] = tuple(found["mcp"])
+    return SessionSpec(**found)
 
 
 class Backend(Protocol):
@@ -155,8 +181,7 @@ class PodmanBackend:
         path = self.spec_path(name)
         if not path.is_file():
             return None
-        raw = json.loads(path.read_text())
-        return SessionSpec(**{**raw, "allow": tuple(raw.get("allow", ())), "inject": tuple(raw.get("inject", ()))})
+        return _spec(json.loads(path.read_text()))
 
     def config(self, overrides: dict[str, Any] | None = None) -> HarnessConfig:
         return HarnessConfig.load(None, overrides or {}) if overrides else self.base
@@ -172,7 +197,10 @@ class PodmanBackend:
                 "claude_oauth_token": bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")),
             },
             "defaults": {"provider": cfg.provider, "base_url": cfg.base_url, "model": cfg.model_id,
-                         "allow": list(cfg.egress_allow), "allowed_for_good": containers.approved(cfg)},
+                         "allow": list(cfg.egress_allow), "allowed_for_good": containers.approved(cfg),
+                         "mcp": list(cfg.mcp)},
+            # Which servers' keys this process holds, for the gateway to add (never the keys).
+            "mcp_keys": {name: bool(mcp.headers(name)) for name in mcp.servers(cfg)},
             "agents": list(session.AGENTS), "providers": list(PROVIDERS),
         }
 

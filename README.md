@@ -682,6 +682,34 @@ runs first-run onboarding even with `CLAUDE_CODE_OAUTH_TOKEN` set, which looks l
 the token being ignored. On the `local` target none of this applies — Claude runs
 as you, with your own `~/.claude`.
 
+### MCP servers (`--mcp NAME=URL`)
+
+The agent can connect to remote MCP servers over HTTPS, such as Context7's
+library docs. Every engine and session gets them, each in its own way:
+
+```toml
+# ~/.config/burst-harness/config.toml, a job.toml, or HARNESS_MCP (comma-separated)
+mcp = ["context7=https://mcp.context7.com/mcp"]
+```
+
+- **opencode** (sessions and jobs): the `mcp` section of the `opencode.json` the
+  harness writes (not one you pass with `--opencode-config`).
+- **Claude Code:** `--mcp-config` on every run, with the servers' tools allowed
+  (`--allowedTools mcp__NAME`), because a headless run has nobody to approve
+  them. A Claude Code session gets them in `~/.claude.json`, and asks as usual.
+- **strands:** Strands' `MCPClient`, from the driver, the same place the model
+  is called from. A server that is down leaves its tools out instead of
+  ending the run.
+
+opencode and Claude Code connect from the sandbox, so each server's host is
+added to the allowlist. A report-only job may send POSTs (MCP's requests) to
+the server's URL and nowhere else on that host. **Keys:** a key in the driver's
+`<NAME>_API_KEY` (`CONTEXT7_API_KEY`) is sent as `Authorization: Bearer`. For
+the sandbox engines the gateway adds it, so the sandbox never holds it. Without
+a gateway (`--egress open`), the server is used without the key. The
+orchestrator's form lists its own servers, which you can change for each
+session, and shows which keys it holds.
+
 ## Providers
 
 `--provider` / `HARNESS_PROVIDER`: `anthropic` (default), `openai` (any
