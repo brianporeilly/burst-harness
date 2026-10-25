@@ -250,8 +250,8 @@ podman: a local web page that creates and manages sessions with every option a
 session has, shows each gateway's events live, and approves refusals. It calls
 the harness's session and egress code directly; it moves to its own repo when
 the Kubernetes backend arrives. Sessions can now run Claude Code (in a browser
-terminal) as well as opencode, and keep their own allowlists. OpenHands is not
-used and is to be removed from home-ops once this covers the same ground.
+terminal) as well as opencode, and keep their own allowlists. It replaced
+OpenHands, removed from home-ops on 2026-10-25 (step 4).
 Jobs (2026-10-20): a Jobs tab, given `--jobs DIR`, lists jobs and their last
 outcome, runs one on demand, and shows each run's report, output and network
 summary, from the run log the harness now keeps (`harness job runs`).
@@ -270,12 +270,14 @@ On Kubernetes, in steps:
    local records are read, and moved at the next start. First a Secret; a
    ConfigMap since step 3, as the right to list a namespace's Secrets would
    include Flux's decryption key, which every namespace in home-ops holds.
-3. The orchestrator in the cluster: the harness image now carries it, and
+3. The orchestrator in the cluster (2026-10-24): the harness image now carries it, and
    `--listen`, `--host` and `--user-header` let it sit behind a proxy that
    signs people in (and refuse anything that didn't come through it). In
    home-ops: a Deployment with a session's rights, an HTTPRoute behind
-   Authentik's OIDC, and a network policy that admits only Envoy.
-4. OpenHands removed from home-ops.
+   Authentik's OIDC, and a network policy that admits only Envoy. Its
+   sessions connect to Context7's MCP server (2026-10-25).
+4. OpenHands removed from home-ops (2026-10-25), with its state, its
+   runtime namespace and its Authentik application.
 
 Original plan:
 
@@ -426,4 +428,5 @@ sandbox) is not planned.
   orchestrator starts them (a project's records carry a list of
   "sandboxes", not yet looked into).
 - Signing in once, at the orchestrator, instead of to each session's opencode
-  password and zellij token. Not before the orchestrator has a login of its own.
+  password and zellij token. The orchestrator has a login now (Authentik, in
+  the cluster), so this can be designed.
