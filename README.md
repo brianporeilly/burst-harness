@@ -429,6 +429,8 @@ session_route_backend = "burst-gateway:8080"     # the gateway's EGRESS_INBOUND_
 # On each route. An uptime checker that probes every route would count as the
 # session's activity, and --idle would never stop it; this one opts out.
 session_route_annotations = ["gatus.home-operations.com/enabled=false"]
+# The cluster signs people in on the routes (see "Signed in by the cluster" below).
+session_sign_in = true
 ```
 
 with the control token in `HARNESS_GATEWAY_TOKEN` (`kubectl get secret -n
@@ -454,6 +456,22 @@ agent-sandbox-system burst-gateway-control -o jsonpath='{.data.token}' | base64 
   namespace sees the same sessions (the CLI on one machine, the orchestrator on
   another), and `rm` takes the record with the claim. A session started before
   this is read from the local file and moved when it next starts.
+- **Signed in by the cluster** (`session_sign_in = true`): for a cluster where
+  an Envoy Gateway SecurityPolicy in the namespace signs people in (OIDC, for
+  instance) on every HTTPRoute labelled `app.kubernetes.io/managed-by:
+  burst-harness`. The UIs keep their own logins, which keep one session from
+  another, but you never type them. On each start the harness has Envoy add
+  them after its sign-in, through an HTTPRouteFilter (`credentialInjection`)
+  per route that reads a Secret owned by the claim. opencode's password goes in
+  as basic auth. For the terminal, the harness logs in to zellij's web server
+  with the token and passes on the session cookie it gets back, which lasts
+  four weeks. The injected values replace whatever the browser sent. The
+  orchestrator and `start` then show no password or token. With no such policy
+  the UIs would be open to anyone who can reach the ingress, so a session
+  won't start without one. The driver creates these Secrets but never reads or
+  changes them, so each start makes new ones, and they go when the claim goes.
+  Its RBAC needs `create` on `secrets`, `get`/`create`/`patch` on
+  `httproutefilters` and `list` on `securitypolicies`.
 - **Registered on every start**, running or not, since the pod's address
   changes when it resumes. A gateway with `EGRESS_STATE` (a file on a volume
   of its own) keeps registrations across its restarts; one without forgets

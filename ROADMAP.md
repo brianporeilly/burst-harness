@@ -427,6 +427,18 @@ sandbox) is not planned.
   Still open: how a session per task, or per branch, should look once the
   orchestrator starts them (a project's records carry a list of
   "sandboxes", not yet looked into).
-- Signing in once, at the orchestrator, instead of to each session's opencode
-  password and zellij token. The orchestrator has a login now (Authentik, in
-  the cluster), so this can be designed.
+- Signing in once, instead of to each session's opencode password and zellij
+  token: on the cluster, done (2026-10-25, `session_sign_in`). Envoy Gateway
+  puts Authentik's sign-in on the session routes with one SecurityPolicy that
+  selects them by label (one provider for every session host, with a regex
+  redirect URI). It then adds each UI's own login with an HTTPRouteFilter
+  (`credentialInjection`) per route, reading a Secret the harness creates:
+  opencode's password as basic auth, and for the terminal a zellij session
+  cookie the harness logs in for. The UIs keep their logins, which keep one
+  session from another. A live test (2026-10-25, with basic auth standing in
+  for Authentik) checked that Envoy adds the credential after its sign-in
+  check, that a forged header is replaced, and that opencode's event stream
+  and zellij's websockets work through it. On podman, sessions are on
+  localhost and the local orchestrator has no login, so they keep their
+  passwords. Not decided: limiting each session to whoever started it, which
+  matters once more than one person uses the cluster.

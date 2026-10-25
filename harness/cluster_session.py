@@ -47,6 +47,21 @@ root in a user namespace (hostUsers: false), so that root is no one on the
 node. Which pool a claim came from is which kind of session it is; starting it
 the other way is refused, as on podman, since its files are owned accordingly.
 
+`session_sign_in` is for a cluster that signs people in on these routes: an
+Envoy Gateway SecurityPolicy (OIDC, say) that selects them by their
+app.kubernetes.io/managed-by label. The UIs keep their own logins, which keep
+one session from another's, but the browser no longer needs them: each start
+has Envoy add them, after its sign-in, with an HTTPRouteFilter
+(credentialInjection) per route reading a Secret owned by the claim. opencode's
+password goes in as basic auth; for the terminal, the harness logs in to
+zellij's web server with the token as its login page would, and the session
+cookie that comes back (good for four weeks) goes in as the Cookie header. Both
+overwrite what the browser sent. Without such a policy that would open the UIs
+to anyone who can reach the ingress, so a session is refused unless one is
+there. The Secrets are created, never read or changed (the driver may not, in
+a namespace holding Flux's key), so each start makes new ones, named for it,
+and they go with the claim.
+
 Not here: `--port`/`--bind`, which mean nothing on a cluster.
 """
 
@@ -54,6 +69,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import secrets
 import shlex
 import subprocess
@@ -86,6 +102,7 @@ from .session import (
     UI_PORT,
     UI_USER,
     WORKSPACE,
+    ZELLIJ_PORT,
     SessionError,
     claude_env,
     claude_json,
@@ -104,6 +121,9 @@ from .session import (
 LABEL_SESSION = "burst-harness/session"
 SANDBOX_API = "agents.x-k8s.io/v1beta1"
 ROUTE_API = "gateway.networking.k8s.io/v1"
+ENVOY_GROUP = "gateway.envoyproxy.io"
+# What a SecurityPolicy may do to sign people in.
+SIGN_IN = ("oidc", "jwt", "basicAuth", "apiKeyAuth", "extAuth")
 # The session's record (password, names, settings) is this key of a ConfigMap named as its claim.
 RECORD_KEY = "record"
 # The agent's home, on the workspace volume so it outlives the pod.
@@ -143,10 +163,19 @@ def claim_manifest(cfg: HarnessConfig, name: str, *, lifetime: int, now: datetim
     }
 
 
-def route_manifests(cfg: HarnessConfig, name: str, owner: dict[str, str], names: dict[str, int]) -> list[dict[str, Any]]:
+def _owned(thing: str, name: str, owner: dict[str, str]) -> dict[str, Any]:
+    """Metadata for something of session `name`'s, owned by its claim (so deleted with it)."""
+    return {"name": thing, "labels": {LABEL_MANAGED_BY: MANAGED_BY, LABEL_SESSION: label_value(name)},
+            "ownerReferences": [{"apiVersion": API_VERSION, "kind": "SandboxClaim", "name": owner["name"],
+                                 "uid": owner["uid"]}]}
+
+
+def route_manifests(cfg: HarnessConfig, name: str, owner: dict[str, str], names: dict[str, int],
+                    *, filtered: bool = False) -> list[dict[str, Any]]:
     """One HTTPRoute per host name, owned by the claim. One each, not one with every name, so
     the ingress pools each name's connections apart; the gateway routes a connection by its
-    first request's name."""
+    first request's name. `filtered`: each goes through the HTTPRouteFilter of its name,
+    which adds the UI's credential (credential_manifests)."""
     namespace, _, rest = cfg.session_route_parent.partition("/")
     gateway, _, listener = rest.partition("/")
     service, _, port = cfg.session_route_backend.rpartition(":")
@@ -166,21 +195,70 @@ def route_manifests(cfg: HarnessConfig, name: str, owner: dict[str, str], names:
         routes.append({
             "apiVersion": ROUTE_API,
             "kind": "HTTPRoute",
-            "metadata": {
-                "name": host.split(".", 1)[0],
-                "labels": {LABEL_MANAGED_BY: MANAGED_BY, LABEL_SESSION: label_value(name)},
-                **({"annotations": annotations} if annotations else {}),
-                "ownerReferences": [{"apiVersion": API_VERSION, "kind": "SandboxClaim", "name": owner["name"],
-                                     "uid": owner["uid"]}],
-            },
+            "metadata": {**_owned(route_name(host), name, owner), **({"annotations": annotations} if annotations else {})},
             "spec": {
                 "parentRefs": [parent],
                 "hostnames": [host],
                 # A UI holds event streams open; the ingress's default would cut them.
-                "rules": [{"backendRefs": [{"name": service, "port": int(port)}], "timeouts": {"request": "0s"}}],
+                "rules": [{"backendRefs": [{"name": service, "port": int(port)}], "timeouts": {"request": "0s"},
+                           **({"filters": [{"type": "ExtensionRef", "extensionRef": {
+                               "group": ENVOY_GROUP, "kind": "HTTPRouteFilter", "name": route_name(host)}}]}
+                              if filtered else {})}],
             },
         })
     return routes
+
+
+def route_name(host: str) -> str:
+    return host.split(".", 1)[0]
+
+
+def sign_in_policy(cfg: HarnessConfig) -> str:
+    """The SecurityPolicy that signs people in on the session routes: one in the namespace
+    selecting HTTPRoutes by labels they all carry, and doing some kind of sign-in."""
+    raw = _kubectl(cfg, "get", "securitypolicies", "-o", "json")
+    labels = {LABEL_MANAGED_BY: MANAGED_BY}
+    for policy in json.loads(raw or "{}").get("items", []):
+        spec = policy.get("spec") or {}
+        selects = any(s.get("kind") == "HTTPRoute" and s.get("group", "gateway.networking.k8s.io") == "gateway.networking.k8s.io"
+                      and (s.get("matchLabels") or {}) and (s.get("matchLabels") or {}).items() <= labels.items()
+                      for s in spec.get("targetSelectors") or [])
+        if selects and any(spec.get(kind) for kind in SIGN_IN):
+            return str(policy["metadata"]["name"])
+    raise SessionError(
+        f"session_sign_in is set, but no SecurityPolicy in {cfg.namespace} signs people in on the session routes "
+        f"(one selecting HTTPRoutes labelled {LABEL_MANAGED_BY}={MANAGED_BY}, with oidc or another sign-in). "
+        "Without one the UIs would be open: add it, or unset session_sign_in.")
+
+
+def credential_manifests(name: str, owner: dict[str, str], names: dict[str, int], credentials: dict[int, tuple[str, str]],
+                         stamp: str) -> list[dict[str, Any]]:
+    """For each route, a Secret holding the header its UI needs (by the port it goes to:
+    {port: (header, value)}), named for this start, and the HTTPRouteFilter that adds it."""
+    found = []
+    for host, port in names.items():
+        header, value = credentials[port]
+        secret = f"{route_name(host)}-credential-{stamp}"
+        found.append({"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
+                      "metadata": _owned(secret, name, owner), "stringData": {"credential": value}})
+        found.append({"apiVersion": f"{ENVOY_GROUP}/v1alpha1", "kind": "HTTPRouteFilter",
+                      "metadata": _owned(route_name(host), name, owner),
+                      "spec": {"credentialInjection": {"header": header, "overwrite": True,
+                                                       "credential": {"valueRef": {"name": secret}}}}})
+    return found
+
+
+def _terminal_cookie(target: KubectlTarget, token: str) -> str:
+    """Log in to zellij's web server with the token, as its login page does, for the
+    session cookie that then lets a browser in. The token goes in on stdin."""
+    script = ('printf \'{"auth_token":"%s","remember_me":true}\' "$ZELLIJ_TOKEN" | '
+              'curl -sS -i -m 10 -X POST -H "Content-Type: application/json" --data-binary @- '
+              f'http://127.0.0.1:{ZELLIJ_PORT}/command/login')
+    proc = _exec(target, ("sh", "-c", script), env={"ZELLIJ_TOKEN": token}, workdir="/")
+    if match := re.search(r"(?im)^set-cookie:\s*(session_token=[^;\s]+)", proc.stdout):
+        return match[1]
+    status = proc.stdout.splitlines()[0] if proc.stdout else proc.stderr.strip()
+    raise SessionError(f"Could not log in to the terminal for the browser: {status or 'no answer'}")
 
 
 def _record_of(configmap: dict[str, Any] | None) -> dict[str, Any]:
@@ -385,6 +463,8 @@ def launch(
                                      idle=idle_after)
     except ContainerError as err:
         raise SessionError(str(err)) from err
+    if cfg.session_sign_in:
+        sign_in_policy(cfg)
 
     existing = _get(cfg, "sandboxclaim", claim)
     how = "up" if existing is None else "running"
@@ -468,15 +548,24 @@ def launch(
             raise SessionError(f"The terminal did not come up in {sandbox}.\n{log}")
 
     owner = {"name": claim, "uid": existing["metadata"]["uid"]}
-    for route in route_manifests(cfg, name, owner, names):
+    started = datetime.now(timezone.utc)
+    if cfg.session_sign_in:
+        credentials = {UI_PORT: ("Authorization", "Basic " + base64.b64encode(f"{UI_USER}:{password}".encode()).decode())}
+        if terminal:
+            credentials[TERMINAL_PORT] = ("Cookie", _terminal_cookie(target, token))
+        for item in credential_manifests(name, owner, names, credentials,
+                                         f"{started:%Y%m%d%H%M%S}-{secrets.token_hex(2)}"):
+            # Secrets created (on stdin), never applied: that would need reading them.
+            _kubectl(cfg, "create" if item["kind"] == "Secret" else "apply", "-f", "-", stdin=json.dumps(item))
+    for route in route_manifests(cfg, name, owner, names, filtered=cfg.session_sign_in):
         _kubectl(cfg, "apply", "-f", "-", stdin=json.dumps(route))
 
     record = {
         "name": name, "target": "agent-sandbox", "namespace": cfg.namespace, "claim": claim, "hosts": names,
         "password": password, "repo_url": git.redact_url(cfg.repo_url), "egress": cfg.egress,
-        "started": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "lifetime": limit,
+        "started": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "lifetime": limit,
         "idle": idle_after, "root": bool(cfg.container_root),
-        "agent": agent, "allow": allowed, "link": link,
+        "agent": agent, "allow": allowed, "link": link, "sign_in": cfg.session_sign_in,
     }
     if terminal:
         record["terminal"] = {"token": token, "path": terminal_session(claude)}
@@ -495,10 +584,15 @@ def urls(record: dict[str, Any]) -> dict[str, str]:
 
 def describe(record: dict[str, Any]) -> str:
     where = urls(record)
+    signed = bool(record.get("sign_in"))  # the cluster signs you in, and adds the UI's own login
     if record.get("agent") == "claude-code":
-        lines = [f"  UI:        {where['ui']}  (Claude Code, in a terminal)", f"  token:     {record['terminal']['token']}"]
+        lines = [f"  UI:        {where['ui']}  (Claude Code, in a terminal)"]
+        lines += [] if signed else [f"  token:     {record['terminal']['token']}"]
     else:
-        lines = [f"  UI:        {where['ui']}", f"  user:      {UI_USER}", f"  password:  {record['password']}"]
+        lines = [f"  UI:        {where['ui']}"]
+        lines += [] if signed else [f"  user:      {UI_USER}", f"  password:  {record['password']}"]
+    if signed:
+        lines.append("  sign-in:   the cluster's; no password or token needed")
     if record.get("allow"):
         lines.append(f"  allows:    {', '.join(record['allow'])} (as well as the defaults)")
     if record.get("idle"):
@@ -506,7 +600,7 @@ def describe(record: dict[str, Any]) -> str:
     if record.get("lifetime"):
         lines.append(f"  deleted:   {record['lifetime']}s after it was first claimed")
     if (terminal := record.get("terminal")) and record.get("agent") != "claude-code":
-        lines += [f"  terminal:  {where['terminal']}", f"  token:     {terminal['token']}"]
+        lines += [f"  terminal:  {where['terminal']}", *([] if signed else [f"  token:     {terminal['token']}"])]
     return "\n".join(lines)
 
 

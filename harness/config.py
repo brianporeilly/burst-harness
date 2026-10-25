@@ -200,6 +200,11 @@ class HarnessConfig:
     session_route_parent: str = ""
     session_route_backend: str = "burst-gateway:8080"
     session_route_annotations: tuple[str, ...] = ()
+    # The cluster signs people in on the session routes (an Envoy Gateway
+    # SecurityPolicy that selects them by label): the harness then has Envoy
+    # add each UI's own password or token, so the browser needs neither. A
+    # session is refused unless such a policy is there. See cluster_session.py.
+    session_sign_in: bool = False
     # Keep the claim or started container after a terminal state (to inspect it).
     keep_claim: bool = False
 

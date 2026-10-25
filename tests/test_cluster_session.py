@@ -56,8 +56,14 @@ FAKE_KUBECTL = textwrap.dedent('''\
         if state.get("terminating"):  # a suspended pod, in its grace period
             pod["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
         print(json.dumps(pod))
+    elif verb == "get" and args[1] == "securitypolicies":
+        print(json.dumps({{"items": list(state.get("securitypolicy", {{}}).values())}}))
+    elif verb == "create" and (thing := json.loads(sys.stdin.read()))["kind"] == "Secret":
+        if thing["metadata"]["name"] in state.setdefault("secret", {{}}):
+            sys.exit("Error from server (AlreadyExists)")
+        state["secret"][thing["metadata"]["name"]] = thing
     elif verb == "create":
-        claim = json.loads(sys.stdin.read())
+        claim = thing
         name = claim["metadata"]["name"]
         claim["metadata"]["uid"] = "uid-" + name
         claim["status"] = {{"sandbox": {{"name": "pool-abc12"}}}}
@@ -80,7 +86,7 @@ FAKE_KUBECTL = textwrap.dedent('''\
     elif verb == "delete":
         claim = state.get("sandboxclaim", {{}}).pop(args[2], None)
         if claim:  # the routes and the record are the claim's
-            for kind in ("httproute", "configmap"):
+            for kind in ("httproute", "configmap", "secret", "httproutefilter"):
                 state[kind] = {{k: r for k, r in state.get(kind, {{}}).items()
                                if r["metadata"]["ownerReferences"][0]["name"] != args[2]}}
     else:
@@ -120,7 +126,10 @@ def pod(monkeypatch):
     def fake_exec(target, argv, *, env=None, detach=False, workdir="/workspace"):
         ran.append({"argv": argv, "env": env or {}, "detach": detach, "workdir": workdir})
         out = ""
-        if len(argv) > 2 and "curl" in argv[2]:  # opencode's API, as _opencode_api calls it
+        if len(argv) > 2 and "/command/login" in argv[2]:  # zellij's web login, as _terminal_cookie makes it
+            assert env["ZELLIJ_TOKEN"] == "token-1" and "token-1" not in argv[2]
+            out = "HTTP/1.1 200 OK\r\nset-cookie: session_token=zj-cookie-1; HttpOnly; Path=/\r\n\r\n{}"
+        elif len(argv) > 2 and "curl" in argv[2]:  # opencode's API, as _opencode_api calls it
             method, path = argv[3], argv[4]
             if method == "POST":
                 sessions.append({"id": f"ses_{len(sessions) + 1}", "directory": path.split("directory=")[1],
@@ -479,3 +488,88 @@ def test_an_entry_is_added_to_a_sessions_own_allowlist(tmp_path, cluster, pod):
     assert cluster_session.load_record(cfg, "demo")["allow"] == ["pypi.org"]
     with pytest.raises(SessionError, match="No session named nope"):
         cluster_session.add_allow(_cfg(tmp_path, kubectl), "nope", "x.com")
+
+
+SIGN_IN_POLICY = {"metadata": {"name": "burst-sessions"}, "spec": {
+    "targetSelectors": [{"group": "gateway.networking.k8s.io", "kind": "HTTPRoute",
+                         "matchLabels": {"app.kubernetes.io/managed-by": "burst-harness"}}],
+    "oidc": {"provider": {"issuer": "https://auth.example.com/application/o/burst-sessions/"}}}}
+
+
+def _policies(state, *policies):
+    state.path.write_text(json.dumps({**state.state, "securitypolicy": {p["metadata"]["name"]: p for p in policies}}))
+
+
+@pytest.mark.parametrize("policies", [
+    (),
+    ({**SIGN_IN_POLICY, "spec": {**SIGN_IN_POLICY["spec"], "oidc": None, "cors": {"allowOrigins": ["*"]}}},),
+    ({**SIGN_IN_POLICY, "spec": {**SIGN_IN_POLICY["spec"], "targetSelectors": [
+        {"kind": "HTTPRoute", "matchLabels": {"app.kubernetes.io/name": "grocy"}}]}},),
+    ({**SIGN_IN_POLICY, "spec": {**SIGN_IN_POLICY["spec"], "targetSelectors": [{"kind": "HTTPRoute"}]}},),
+], ids=["none", "no-sign-in", "other-routes", "no-labels"])
+def test_sign_in_is_refused_before_claiming_without_a_policy_that_signs_people_in(tmp_path, cluster, pod, policies):
+    state, kubectl = cluster
+    _policies(state, *policies)
+    with pytest.raises(SessionError, match="no SecurityPolicy in agent-sandbox-system signs people in"):
+        cluster_session.start(_cfg(tmp_path, kubectl, session_sign_in=True), "demo", terminal=True)
+    assert "sandboxclaim" not in state.state
+
+
+def test_signed_in_sessions_have_envoy_add_each_uis_own_login(tmp_path, cluster, pod):
+    import base64
+
+    state, kubectl = cluster
+    _policies(state, SIGN_IN_POLICY)
+    out = cluster_session.start(_cfg(tmp_path, kubectl, session_sign_in=True), "demo", terminal=True)
+    record = cluster_session.load_record(_cfg(tmp_path, kubectl), "demo")
+    assert record["sign_in"] is True
+
+    filters, secrets = state.state["httproutefilter"], state.state["secret"]
+    assert sorted(filters) == ["session-demo", "session-demo-term"]
+    for route, header in (("session-demo", "Authorization"), ("session-demo-term", "Cookie")):
+        injection = filters[route]["spec"]["credentialInjection"]
+        assert injection["header"] == header and injection["overwrite"] is True
+        secret = secrets[injection["credential"]["valueRef"]["name"]]
+        assert secret["metadata"]["ownerReferences"][0]["name"] == "session-demo"  # goes with the claim
+        assert state.state["httproute"][route]["spec"]["rules"][0]["filters"] == [{"type": "ExtensionRef", "extensionRef": {
+            "group": "gateway.envoyproxy.io", "kind": "HTTPRouteFilter", "name": route}}]
+    ui = secrets[filters["session-demo"]["spec"]["credentialInjection"]["credential"]["valueRef"]["name"]]
+    assert ui["stringData"]["credential"] == "Basic " + base64.b64encode(f"opencode:{record['password']}".encode()).decode()
+    term = secrets[filters["session-demo-term"]["spec"]["credentialInjection"]["credential"]["valueRef"]["name"]]
+    assert term["stringData"]["credential"] == "session_token=zj-cookie-1"
+
+    # Created on stdin, never on a command line; and nothing to show the user.
+    assert not any(record["password"] in " ".join(call) for call in state.state["calls"])
+    assert record["password"] not in out and "token-1" not in out and "no password or token needed" in out
+
+    # Each start has new credentials (Secrets are never read or changed), named for it.
+    cluster_session.start(_cfg(tmp_path, kubectl, session_sign_in=True), "demo")
+    assert len(state.state["secret"]) == 4
+    cluster_session.remove(_cfg(tmp_path, kubectl), "demo")
+    assert not state.state["secret"] and not state.state["httproutefilter"]
+
+
+def test_a_signed_in_claude_code_session_has_its_terminals_cookie_added(tmp_path, cluster, pod):
+    state, kubectl = cluster
+    _policies(state, SIGN_IN_POLICY)
+    out = cluster_session.start(_cfg(tmp_path, kubectl, session_sign_in=True), "demo", agent="claude-code")
+    (only,) = state.state["httproutefilter"].values()
+    assert only["metadata"]["name"] == "session-demo" and only["spec"]["credentialInjection"]["header"] == "Cookie"
+    assert "token-1" not in out
+
+
+def test_routes_have_no_filters_without_sign_in(tmp_path, cluster, pod):
+    state, kubectl = cluster
+    cluster_session.start(_cfg(tmp_path, kubectl), "demo", terminal=True)
+    assert all("filters" not in r["spec"]["rules"][0] for r in state.state["httproute"].values())
+    assert "secret" not in state.state and "httproutefilter" not in state.state
+    assert not any("securitypolicies" in call for call in state.state["calls"])
+
+
+def test_a_terminal_login_that_fails_says_so(tmp_path, cluster, pod, monkeypatch):
+    state, kubectl = cluster
+    _policies(state, SIGN_IN_POLICY)
+    monkeypatch.setattr(cluster_session, "_exec", lambda target, argv, **kw: subprocess.CompletedProcess(
+        argv, 0, "HTTP/1.1 401 Unauthorized\r\n\r\n" if "/command/login" in argv[-1] else "[]", ""))
+    with pytest.raises(SessionError, match="Could not log in to the terminal for the browser: HTTP/1.1 401"):
+        cluster_session.start(_cfg(tmp_path, kubectl, session_sign_in=True), "demo", terminal=True)

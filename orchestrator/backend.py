@@ -227,8 +227,10 @@ class PodmanBackend:
             }
             if record and status == "running":
                 item["urls"] = self.harness.urls(record)
-                item["password"] = record.get("password") if item["agent"] == "opencode" else ""
-                item["token"] = (record.get("terminal") or {}).get("token", "")
+                # Signed in by the cluster, which adds them: nothing to show (cluster_session.py).
+                signed = bool(record.get("sign_in"))
+                item["password"] = record.get("password") if item["agent"] == "opencode" and not signed else ""
+                item["token"] = "" if signed else (record.get("terminal") or {}).get("token", "")
             found.append(item)
         return found
 

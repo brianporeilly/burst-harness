@@ -324,6 +324,22 @@ def test_approving_a_cluster_sessions_refusal(cluster):
         backend.approve("g-4", "session")
 
 
+def test_a_signed_in_cluster_session_shows_no_password_or_token(cluster):
+    from harness import session
+
+    backend, _, base = cluster
+    record = {"name": "demo", "allow": [], "agent": "opencode", "password": "pw", "link": "",
+              "hosts": {"session-demo.example.com": 4096, "session-demo-term.example.com": 8083},
+              "terminal": {"token": "tok", "path": "shell"}}
+    session.save_record(base, "demo", record)
+    (row,) = [r for r in backend.sessions() if r["name"] == "demo"]
+    assert (row["password"], row["token"]) == ("pw", "tok")
+    session.save_record(base, "demo", {**record, "sign_in": True})
+    (row,) = [r for r in backend.sessions() if r["name"] == "demo"]
+    assert (row["password"], row["token"]) == ("", "")
+    assert row["urls"]["terminal"] == "https://session-demo-term.example.com/shell"
+
+
 def test_a_cluster_sessions_events_follow_the_gateway(cluster):
     import asyncio
 
