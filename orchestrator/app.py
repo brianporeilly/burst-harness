@@ -31,17 +31,18 @@ from harness.exec_target import ExecError
 
 from .backend import Backend, SessionSpec, SpecError
 from .jobs import JobRunner, JobsError
+from .tasks import TaskRunner, TasksError
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
-               JobsError)
+               JobsError, TasksError)
 
 
-def create_app(backend: Backend, jobs: JobRunner | None = None, *, hosts: tuple[str, ...] = (),
-               user_header: str = "") -> FastAPI:
+def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
+               hosts: tuple[str, ...] = (), user_header: str = "") -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
 
@@ -157,5 +158,50 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, hosts: tuple[
     @app.get("/api/jobs/{name}/runs/{run_id}")
     def run_detail(name: str, run_id: str) -> dict[str, Any]:
         return runner().run_detail(name, run_id)
+
+    # --- tasks ---
+
+    def task_runner() -> TaskRunner:
+        if tasks is None:
+            raise TasksError("Tasks are not on in this orchestrator.")
+        return tasks
+
+    async def body(request: Request) -> dict[str, Any]:
+        try:
+            raw = await request.json()
+        except ValueError as err:
+            raise HTTPException(400, "The body must be JSON.") from err
+        if not isinstance(raw, dict):
+            raise HTTPException(400, "The body must be a JSON object.")
+        return raw
+
+    @app.get("/api/tasks")
+    def list_tasks() -> dict[str, Any]:
+        if tasks is None:
+            return {"on": False, "tasks": []}
+        return {"on": True, "limit": tasks.limit, "tasks": tasks.tasks()}
+
+    @app.post("/api/tasks", status_code=202)
+    async def create_task(request: Request) -> dict[str, Any]:
+        user = request.headers.get(user_header, "").strip() if user_header else ""
+        return await run_in_threadpool(task_runner().create, await body(request), user=user)
+
+    @app.get("/api/tasks/{slug}")
+    def task_detail(slug: str) -> dict[str, Any]:
+        return task_runner().task(slug)
+
+    @app.post("/api/tasks/{slug}/continue", status_code=202)
+    async def continue_task(slug: str, request: Request) -> dict[str, Any]:
+        raw = await body(request) if await request.body() else {}
+        return await run_in_threadpool(task_runner().resume, slug, str(raw.get("message") or ""))
+
+    @app.post("/api/tasks/{slug}/cancel")
+    def cancel_task(slug: str) -> dict[str, Any]:
+        return task_runner().cancel(slug)
+
+    @app.delete("/api/tasks/{slug}")
+    def remove_task(slug: str) -> dict[str, str]:
+        task_runner().remove(slug)
+        return {"message": f"Removed {slug}; its branch and PR are left as they are."}
 
     return app

@@ -255,7 +255,7 @@ OpenHands, removed from home-ops on 2026-10-25 (step 4).
 Jobs (2026-10-20): a Jobs tab, given `--jobs DIR`, lists jobs and their last
 outcome, runs one on demand, and shows each run's report, output and network
 summary, from the run log the harness now keeps (`harness job runs`).
-Scheduling, when it comes, is likely to live here (or in launchd/CronJobs).
+Scheduling lives here too (2026-10-25, phase 8 step 2).
 
 On Kubernetes, in steps:
 
@@ -409,6 +409,52 @@ server's URL, and adds a key from the driver's `<NAME>_API_KEY` as a bearer
 token. The first use is Context7 in sessions, for current library docs
 instead of web searches. Running MCP servers ourselves (stdio ones, inside the
 sandbox) is not planned.
+
+### 9. Tasks from anywhere
+
+Added 2026-10-28. Choose a repo, give a prompt, and walk away: the work goes on
+on a machine that stays up (the cluster, or a server reached over SSH) until
+there is a PR, with nobody watching a terminal. Sessions stay for working
+alongside the agent; tasks are for handing work off. Started from the
+orchestrator's page, its API, and later Slack.
+
+**Steps:**
+
+1. A Tasks tab and API in the orchestrator: done (2026-10-28). A task is a repo
+   and a prompt, run in bursts of `harness run` as subprocesses, with the
+   orchestrator's credentials and target. A burst ends in a PR, a pause with
+   questions, an abandon or a failure; continuing (with a reply, or without)
+   is another burst from the pushed branch, so nothing waits in memory. Tasks
+   queue beyond a limit (default 1: llama-server crashes with two clients at
+   once), and the queue is in the records, so it survives a restart; a burst
+   a restart cut short is started again, up to twice. A burst that fails or
+   is stopped with work not yet pushed keeps its sandbox, and the next burst
+   carries on in it. The base branch is the repo's own unless one is given,
+   and asking for it checks the orchestrator can read the repo.
+   Checked on podman with a public repo (no model key, so each burst stopped
+   at the model): the clone, the branch, a failed burst keeping its sandbox,
+   continuing in it, Stop, and Remove releasing it.
+   On the cluster, this needs a git token in the orchestrator's environment
+   (sessions use one only through the gateway) and egress from its pod to
+   GitHub, since the driver opens the PR.
+2. Callers other than the browser. Today the API trusts only the header the
+   signing-in proxy sets. Scripts and webhooks need a token of their own (the
+   orchestrator's, or Authentik's). Slack first on the personal workspace, in
+   Socket Mode, so the orchestrator needs no public URL (a laptop or a work
+   network will do): `/task owner/repo do the thing`, with replies in a
+   thread as the task starts, pauses with a question (answered in the thread),
+   and ends with its PR.
+3. Packaging, for the work machine (macOS with OrbStack) and a server: a
+   `pyproject.toml` with `harness` and `orchestrator` commands, and a compose
+   file running the orchestrator image with the host's docker or podman
+   socket, a state volume and an env file. To check on docker: the gateway
+   has no transparent redirect there (proxy variables instead), sessions'
+   inbound ports are podman only, and with the socket mounted into a
+   container, any path the harness bind-mounts has to mean the same on the
+   host.
+4. Maybe: on a cluster, each burst as a Kubernetes Job of the driver image
+   instead of a subprocess of the orchestrator, so its memory is the burst's
+   and an orchestrator rollout does not cut it short.
 
 ## Open
 

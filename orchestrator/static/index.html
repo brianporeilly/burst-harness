@@ -75,10 +75,39 @@
 <body>
 <header>
   <div class="row"><h1>Burst Orchestrator</h1>
-    <nav class="tabs"><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button></nav>
+    <nav class="tabs"><button data-tab="tasks">Tasks</button><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button></nav>
   </div>
   <div class="row" id="creds"></div>
 </header>
+<main id="tasks-view" class="hidden">
+  <section class="panel">
+    <div class="row spread"><h2>Tasks</h2><button class="primary" id="new-task">New task</button></div>
+    <div id="tasks"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="panel" id="task-detail">
+    <p class="muted">Choose a task, or start one.</p>
+  </section>
+  <section class="panel hidden" id="task-create">
+    <div class="row spread"><h2>New task</h2><button id="task-cancel">Cancel</button></div>
+    <form id="task-form" autocomplete="off">
+      <label>Repository <input type="text" name="repo" required placeholder="owner/repo, or https://host/owner/repo.git"></label>
+      <label>What to do <textarea name="prompt" required style="min-height:140px" placeholder="Fix the flaky test in tests/test_api.py and open a PR."></textarea></label>
+      <div class="grid2">
+        <label>Engine
+          <select name="engine"><option value="strands">Strands (the harness's own agent)</option>
+            <option value="claude-code">Claude Code</option></select>
+        </label>
+        <label>Model <input type="text" name="model" placeholder="default"></label>
+      </div>
+      <div class="grid2">
+        <label>Base branch <input type="text" name="base_branch" placeholder="default"></label>
+        <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
+      </div>
+      <label class="inline"><input type="checkbox" name="draft"> Open the PR as a draft</label>
+      <div class="row"><button class="primary" type="submit">Start</button><span class="error" id="task-form-error"></span></div>
+    </form>
+  </section>
+</main>
 <main id="jobs-view" class="hidden">
   <section class="panel">
     <h2>Jobs</h2>
@@ -491,21 +520,136 @@ async function renderRun(name, id) {
   if (openOutput) box.querySelector("details[data-output]").open = true;
 }
 
+// --- tasks ---
+
+let selectedTask = null;
+const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", running: "warn", queued: "warn", paused: "warn",
+  waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn" }[state] || "") },
+  { pr: "PR", pushed_no_pr: "pushed, no PR", waiting: "needs input" }[state] || state);
+const taskForm = document.getElementById("task-form");
+
+async function refreshTasks() {
+  let data;
+  try { data = await api("/api/tasks"); } catch { return; }
+  const list = document.getElementById("tasks");
+  document.getElementById("new-task").disabled = !data.on;
+  if (!data.on) { list.replaceChildren(el("p", { class: "muted" }, "Tasks are off in this orchestrator (--no-tasks).")); return; }
+  if (!data.tasks.length) list.replaceChildren(el("p", { class: "muted" }, "No tasks yet."));
+  else list.replaceChildren(...data.tasks.map((t) => el("div", {
+      class: "session" + (t.slug === selectedTask ? " selected" : ""), onclick: () => selectTask(t.slug) },
+    el("div", { class: "row spread" }, el("span", { class: "name" }, t.slug), taskChip(t.state)),
+    el("div", { class: "muted" }, [t.repo.replace(/^https:\/\/(github\.com\/)?/, "").replace(/\.git$/, ""),
+                                    t.engine, when(t.created)].join(" · ")))));
+  if (selectedTask) renderTask();
+}
+
+function selectTask(slug) {
+  selectedTask = slug;
+  document.getElementById("task-create").classList.add("hidden");
+  document.getElementById("task-detail").classList.remove("hidden");
+  refreshTasks();
+}
+
+async function taskAct(label, work) {
+  try { await work(); } catch (err) { alert(`${label}: ${err.message}`); }
+  refreshTasks();
+}
+
+async function renderTask() {
+  const box = document.getElementById("task-detail");
+  let t;
+  try { t = await api(`/api/tasks/${selectedTask}`); }
+  catch (err) { box.replaceChildren(el("p", { class: "muted" }, "Gone.")); delete box.dataset.key; return; }
+  if (selectedTask !== t.slug) return;
+  const output = box.querySelector("pre[data-output]");
+  const key = JSON.stringify([t.slug, t.state, t.pr, t.bursts.length, t.cancelling, t.sandbox]);
+  if (box.dataset.key === key) {
+    // Only the output moves while a burst runs; keep it scrolled to the end if it was.
+    if (output && output.textContent !== (t.output || "")) {
+      const atEnd = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
+      output.textContent = t.output || "";
+      if (atEnd) output.scrollTop = output.scrollHeight;
+    }
+    return;
+  }
+  box.dataset.key = key;
+  const idle = !["queued", "running"].includes(t.state);
+  const reply = el("textarea", { placeholder: t.state === "pr" ? "Changes to make on the PR's branch" : "Your answer, or leave empty to carry on" });
+  const actions = [
+    !idle ? el("button", { class: "danger", onclick: () => taskAct("Cancel", () =>
+      api(`/api/tasks/${t.slug}/cancel`, { method: "POST" })) }, t.state === "queued" ? "Cancel" : "Stop") : null,
+    idle ? el("button", { class: "danger", onclick: () => confirm(`Remove ${t.slug}? Its branch and PR stay.`) &&
+      taskAct("Remove", () => api(`/api/tasks/${t.slug}`, { method: "DELETE" })) }, "Remove") : null,
+  ];
+  const bursts = t.bursts.map((b, i) => el("tr", {},
+    el("td", {}, String(i + 1)), el("td", {}, new Date(b.started).toLocaleString()),
+    el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
+    el("td", { class: "muted" }, b.message || (i ? "carry on" : "the prompt"))));
+  box.replaceChildren(
+    el("div", { class: "row spread" }, el("h2", {}, t.slug), el("div", { class: "row" }, ...actions)),
+    el("p", {}, taskChip(t.state), " ", t.pr ? el("a", { href: t.pr, target: "_blank", rel: "noopener" }, t.pr) : null,
+      el("span", { class: "muted" }, ` ${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""} · ${t.engine}`
+        + (t.model ? ` ${t.model}` : "") + (t.created_by ? ` · by ${t.created_by}` : ""))),
+    t.state === "paused" ? el("p", { class: "muted" }, "Paused: the work is pushed, with where it stands and any questions "
+      + "in the task document on the branch (and at the end of the output).") : null,
+    t.sandbox ? el("p", { class: "muted" }, "Its sandbox is kept, with work not yet pushed: continuing carries on there. "
+      + "It is removed once the work is pushed, or with the task.") : null,
+    t.restarts ? el("p", { class: "muted" }, `Restarted ${t.restarts} time(s) after the orchestrator stopped mid-burst.`) : null,
+    el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, t.prompt)),
+    idle ? el("form", { onsubmit: (event) => { event.preventDefault();
+      taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
+      el("label", {}, "Continue", reply),
+      el("div", { class: "row" }, el("button", { class: "primary", type: "submit" }, "Continue"))) : null,
+    el("h3", {}, "Bursts"),
+    bursts.length ? el("table", {}, bursts) : el("p", { class: "muted" }, "Waiting for a free slot."),
+    el("h3", {}, "Output"),
+    el("pre", { class: "text", "data-output": "" }, t.output || ""),
+  );
+  const shown = box.querySelector("pre[data-output]");
+  shown.scrollTop = shown.scrollHeight;
+}
+
+document.getElementById("new-task").onclick = () => {
+  selectedTask = null;
+  document.getElementById("task-detail").classList.add("hidden");
+  document.getElementById("task-create").classList.remove("hidden");
+  refreshTasks();
+};
+document.getElementById("task-cancel").onclick = () => {
+  document.getElementById("task-create").classList.add("hidden");
+  document.getElementById("task-detail").classList.remove("hidden");
+};
+taskForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("task-form-error");
+  error.textContent = "";
+  const data = Object.fromEntries(new FormData(taskForm));
+  data.draft = taskForm.draft.checked;
+  try {
+    const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
+    taskForm.reset();
+    selectTask(created.slug);
+  } catch (err) { error.textContent = err.message; }
+};
+
+const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs };
+
 function showTab(name) {
   tab = name;
   for (const button of document.querySelectorAll(".tabs button")) button.classList.toggle("active", button.dataset.tab === name);
   document.getElementById("sessions-view").classList.toggle("hidden", name !== "sessions");
   document.getElementById("jobs-view").classList.toggle("hidden", name !== "jobs");
+  document.getElementById("tasks-view").classList.toggle("hidden", name !== "tasks");
   try { localStorage.setItem("tab", name); } catch {}
-  if (name === "jobs") refreshJobs(); else refresh();
+  views[name]();
 }
 for (const button of document.querySelectorAll(".tabs button")) button.onclick = () => showTab(button.dataset.tab);
 
 loadInfo().catch(() => {});
 let savedTab = "sessions";
 try { savedTab = localStorage.getItem("tab") || "sessions"; } catch {}
-showTab(savedTab === "jobs" ? "jobs" : "sessions");
-setInterval(() => (tab === "jobs" ? refreshJobs() : refresh()), 3000);
+showTab(savedTab in views ? savedTab : "sessions");
+setInterval(() => views[tab](), 3000);
 </script>
 </body>
 </html>

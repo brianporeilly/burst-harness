@@ -60,6 +60,23 @@ def basic_credential() -> str:
     return base64.b64encode(f"x-access-token:{secret}".encode()).decode() if secret else ""
 
 
+def default_branch(url: str) -> str:
+    """A remote repo's default branch, asked from the driver with its token. Raises GitError if
+    the repo cannot be read (missing, private without a token, or not reachable)."""
+    try:
+        # Only the token: no credential helper or password dialog to wait on.
+        proc = subprocess.run(["git", "-c", "credential.helper=", *auth_args(url), "ls-remote", "--symref", url, "HEAD"],
+                              check=False, capture_output=True, text=True, timeout=30,
+                              env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": ""})
+    except (OSError, subprocess.TimeoutExpired) as err:
+        raise GitError(f"could not ask {url} for its default branch: {err}") from err
+    if proc.returncode != 0:
+        raise GitError(_redact(f"cannot read {url}: {proc.stderr.strip() or 'git ls-remote failed'}"))
+    if found := re.search(r"^ref: refs/heads/(\S+)\s+HEAD$", proc.stdout, re.MULTILINE):
+        return found.group(1)
+    raise GitError(f"{url} has no default branch (an empty repo?).")
+
+
 def _redact(text: str) -> str:
     """Strip the token (raw or encoded) from anything that may reach the model."""
     secret = token()
@@ -218,5 +235,8 @@ def open_pr(*, repo: str, head: str, title: str, body: str, base: str, draft: bo
     except FileNotFoundError as err:
         raise GitError("gh is not installed on the driver.") from err
     if proc.returncode != 0:
+        # A later burst of a task with a PR open: the push updated it, so it is the PR.
+        if "already exists" in proc.stderr and (found := re.search(r"https://\S+/pull/[0-9]+", proc.stderr)):
+            return found.group(0)
         raise GitError(_redact(f"gh pr create failed: {(proc.stderr or proc.stdout).strip()}"))
     return proc.stdout.strip()

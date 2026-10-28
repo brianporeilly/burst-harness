@@ -558,6 +558,40 @@ python -m orchestrator --jobs ~/jobs --schedule --timezone America/Anchorage --c
 - A run's record says what started it: `"trigger": "schedule"` with
   `scheduled_for`, or `"manual"`.
 
+**Tasks.** The Tasks tab (or `POST /api/tasks`) takes a repo and a prompt and
+works on it until there is a PR, without anyone watching:
+
+```bash
+curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-Type: application/json' \
+  -d '{"repo": "you/proj", "prompt": "Fix the flaky test in tests/test_api.py"}'
+```
+
+- `repo` is `owner/repo` on GitHub, or a repo's https URL. Optional fields:
+  `slug` (the branch is `harness/SLUG`; by default from the prompt's first
+  words), `engine` (`strands` or `claude-code`), `model`, `base_branch` (by
+  default the repo's own, which the orchestrator reads with its git token, so
+  a repo it cannot read is refused right away), and `draft`.
+- Each burst is `harness run SLUG --task PROMPT --repo-url URL` as a
+  subprocess, with the orchestrator's environment: its git token and model
+  key, and its target. On a cluster that's a claimed sandbox
+  (`--task-ttl`, default `4h`, is how long the claim lives); here it's a fresh
+  podman container behind a gateway, never this machine itself.
+- A burst ends in a PR, a pause (the work pushed, with what it needs from you
+  in the task document on the branch), an abandon, or a failure. **Continue**
+  (`POST /api/tasks/SLUG/continue`, with an optional `{"message": ...}`) is
+  another burst, `harness run SLUG --message ...`, from the pushed branch.
+  Continuing a task with a PR adds to the PR.
+- A burst that fails or is stopped with work not yet pushed keeps its
+  sandbox. The next burst carries on in it, and the orchestrator removes it
+  once a burst pushes or gives up, or the task is removed.
+- `--task-limit` (`ORCHESTRATOR_TASK_LIMIT`, default 1) tasks run at once; the
+  rest wait their turn. The queue is in the tasks' records (`tasks/SLUG/` in
+  the state directory), so it survives a restart, and a burst a restart cut
+  short is started again, up to twice.
+- **Stop** sends the burst Ctrl-C, so the harness cleans up after itself;
+  **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
+  off.
+
 With `target = "agent-sandbox"` and a cluster session's settings (On a cluster,
 above), its sessions are on that cluster instead: claimed, suspended and
 removed as `harness session` does there, with events and refusals read from

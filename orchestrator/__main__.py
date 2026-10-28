@@ -21,6 +21,12 @@ default 1h) is run late, once; one missed for longer is skipped. With
 --start-paused (ORCHESTRATOR_START_PAUSED=1), a job starts paused until it is
 resumed in the Jobs tab. See jobs.py.
 
+Tasks (tasks.py): a repo and a prompt, worked on in a sandbox until there is a
+PR, with this orchestrator's credentials and target (podman here, never this
+machine itself). --task-limit (ORCHESTRATOR_TASK_LIMIT, default 1) of them run
+at once, the rest queued; --task-ttl (ORCHESTRATOR_TASK_TTL, default 4h) is how
+long a burst's sandbox claim lives on a cluster. --no-tasks turns them off.
+
 Behind a proxy that signs people in (in a cluster): --listen 0.0.0.0 to take
 connections from it, --host NAME (repeatable) for the name it is reached by,
 and --user-header HEADER for the header the proxy sets to who signed in;
@@ -44,6 +50,7 @@ from harness.session import SessionError, seconds
 from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
+from .tasks import TaskRunner
 
 
 def main() -> None:
@@ -65,14 +72,21 @@ def main() -> None:
                         help="How late a missed time is still run (default 1h).")
     parser.add_argument("--start-paused", action="store_true", default=_flag("ORCHESTRATOR_START_PAUSED"),
                         help="A job starts paused until it is resumed.")
+    parser.add_argument("--tasks", action=argparse.BooleanOptionalAction, default=not _flag("ORCHESTRATOR_NO_TASKS"),
+                        help="Take tasks: a repo and a prompt, worked on until there is a PR (default on).")
+    parser.add_argument("--task-limit", type=int, default=int(os.environ.get("ORCHESTRATOR_TASK_LIMIT") or 1),
+                        metavar="N", help="How many tasks run at once; the rest wait (default 1).")
+    parser.add_argument("--task-ttl", default=os.environ.get("ORCHESTRATOR_TASK_TTL", "4h"), metavar="DURATION",
+                        help="How long a task's sandbox claim lives, on a cluster (default 4h).")
     args = parser.parse_args()
     if args.listen not in ("127.0.0.1", "localhost", "::1") and not args.user_header:
         parser.error("--listen beyond this machine needs --user-header: there is no login of its own (see app.py).")
     try:
         zone = ZoneInfo(args.timezone) if args.timezone else _local_zone()
         catch_up = timedelta(seconds=seconds(args.catch_up))
+        task_ttl = seconds(args.task_ttl)
     except (ZoneInfoNotFoundError, ValueError, SessionError) as err:
-        parser.error(f"--timezone / --catch-up: {err}")
+        parser.error(f"--timezone / --catch-up / --task-ttl: {err}")
     directories = [*args.jobs, *filter(None, os.environ.get("ORCHESTRATOR_JOBS", "").split(os.pathsep))]
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
                      start_paused=args.start_paused) if directories else None
@@ -90,7 +104,13 @@ def main() -> None:
             print(f"Scheduled in {zone}, missed times run up to {args.catch_up} late"
                   + (", new jobs paused" if args.start_paused else ""))
         jobs.start()
-    app = create_app(backend, jobs, hosts=tuple(args.host), user_header=args.user_header)
+    tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl) if args.tasks else None
+    if tasks:
+        print(f"Tasks in {tasks.root}, {tasks.limit} at a time")
+        for line in tasks.recover():
+            print(f"tasks: {line}")
+        tasks.dispatch()
+    app = create_app(backend, jobs, tasks=tasks, hosts=tuple(args.host), user_header=args.user_header)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
 
 

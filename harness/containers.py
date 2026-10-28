@@ -317,7 +317,7 @@ def start_egress(
                  subnet, address, str(PROXY_PORT), str(REDIRECT_PORT), str(DNS_PORT))
         ip = address or _run(binary, "inspect", proxy, "--format",
                              "{{(index .NetworkSettings.Networks \"%s\").IPAddress}}" % network)
-    except ContainerError:
+    except BaseException:  # Ctrl-C too: an unattended run is stopped that way
         subprocess.run([binary, "rm", "-f", "-t", "0", proxy], capture_output=True)
         subprocess.run([binary, "network", "rm", network], capture_output=True)
         raise
@@ -378,13 +378,17 @@ def acquire(
                                                     allow=allow, inject=inject, read_only=read_only,
                                                     upstream_ca=upstream_ca)
     env = env or {}
-    proc = subprocess.run(
-        run_argv(cfg, binary=binary, name=name, slug=slug,
-                 network_args=[*network_args, *(arg for key in env for arg in ("-e", key))]),
-        capture_output=True, text=True, env={**os.environ, **env} if env else None,
-    )
     target = DockerTarget(repo=repo, container=name, binary=binary, owned=True, proxy=proxy, network=network,
                           events=events_path(cfg, name) if proxy else "")
+    try:
+        proc = subprocess.run(
+            run_argv(cfg, binary=binary, name=name, slug=slug,
+                     network_args=[*network_args, *(arg for key in env for arg in ("-e", key))]),
+            capture_output=True, text=True, env={**os.environ, **env} if env else None,
+        )
+    except BaseException:
+        target.release()
+        raise
     if proc.returncode != 0:
         target.release()
         raise ContainerError(f"{binary} run {cfg.image} failed: {proc.stderr.strip()}")
@@ -397,7 +401,7 @@ def acquire(
             )
         if proxy and (cfg.egress_inject or inject or read_only is not None or mcp.inject_rules(cfg)):
             trust_gateway(binary, proxy=proxy, name=name)
-    except Exception:
+    except BaseException:
         target.release()
         raise
     return target

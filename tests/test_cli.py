@@ -57,6 +57,26 @@ def test_exit_codes(origin, tmp_path, capsys, terminal, waiting, code):
     assert '"state": "%s"' % (terminal or ("waiting" if waiting else "none")) in capsys.readouterr().out
 
 
+def test_a_run_that_dies_still_says_whether_it_kept_its_sandbox(origin, tmp_path, capsys, monkeypatch):
+    import json
+
+    monkeypatch.setattr(cli, "_open", lambda args: cli.HarnessContext(
+        target=cli.LocalTarget(repo=str(tmp_path)), cfg=cli.HarnessConfig(), slug="t", branch="harness/t", state_key="k"))
+
+    def close(ctx):
+        ctx.kept = True
+
+    def dies(ctx):
+        raise RuntimeError("no key")
+
+    monkeypatch.setattr(cli, "_close", close)
+    with pytest.raises(RuntimeError):
+        cli._session(_args(), dies)
+    line = [x for x in capsys.readouterr().out.splitlines() if x.startswith("HARNESS_RESULT ")][-1]
+    result = json.loads(line.split(" ", 1)[1])
+    assert (result["state"], result["kept"], result["slug"]) == ("error", True, "t")
+
+
 def test_git_auth_is_left_to_the_gateway_when_it_injects(monkeypatch):
     monkeypatch.setenv("HARNESS_GIT_TOKEN", "sekret")
     from harness.config import HarnessConfig

@@ -30,4 +30,6 @@ class HarnessContext:
     # Set when an interactive session was detached and is still running in the
     # target, so the target must be kept for reattaching.
     detached: bool = False
+    # Set when the target was kept at the end (see cli._close), for whatever runs the next burst.
+    kept: bool = False
     notes: list[str] = field(default_factory=list)

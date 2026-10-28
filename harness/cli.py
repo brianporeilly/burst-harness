@@ -240,9 +240,11 @@ def _close(ctx: HarnessContext) -> None:
     hint = f"Reattach with: harness {target.attach_hint()} ... {ctx.slug}"
     if cfg.keep_claim:
         print(f"Kept {target.describe()} (--keep-claim). {hint}")
+        ctx.kept = True
         return
     if ctx.detached:
         print(f"Kept {target.describe()}: a session is still running in it. {hint}")
+        ctx.kept = True
         return
     try:
         dirty = git.is_dirty(target)
@@ -250,6 +252,7 @@ def _close(ctx: HarnessContext) -> None:
         dirty = False  # the target is gone or broken; nothing left to save
     if dirty and not ctx.terminal:
         print(f"Kept {target.describe()}: it has uncommitted work. {hint}")
+        ctx.kept = True
         return
     print(target.release())
 
@@ -270,15 +273,19 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
         print("Ended with no terminal state recorded.")
     if report:
         print(report)
-    state_name = ctx.terminal or ("waiting" if ctx.waiting else "none")
-    # One machine-readable line for whatever launched this (a Job, a GUI).
-    print("HARNESS_RESULT " + json.dumps({
-        "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
-        "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None,
-    }))
+    _result_line(ctx, ctx.terminal or ("waiting" if ctx.waiting else "none"))
     if ctx.terminal:
         return EXIT_DONE
     return EXIT_NEEDS_INPUT if ctx.waiting else EXIT_NO_TERMINAL_STATE
+
+
+def _result_line(ctx: HarnessContext, state_name: str) -> None:
+    """One machine-readable line for whatever launched this (a Job, the orchestrator). `target`
+    reattaches a later run to this one's sandbox, which is still there if `kept`."""
+    print("HARNESS_RESULT " + json.dumps({
+        "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
+        "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
+    }))
 
 
 def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | None]) -> int:
@@ -287,8 +294,12 @@ def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | No
     try:
         print(f"Working in: {ctx.target.describe()} (engine: {ctx.cfg.engine})")
         report = body(ctx)
-    finally:
+    except BaseException:
         _close(ctx)
+        # Said even when the run dies, so a launcher knows whether the sandbox was kept.
+        _result_line(ctx, ctx.terminal or "error")
+        raise
+    _close(ctx)
     return _finish(report, ctx)
 
 
