@@ -56,7 +56,12 @@ _PRICES = {
 }
 
 
-def _report(agent: Any, model_id: str) -> str:
+# Providers whose input count leaves cache reads out. The OpenAI-style ones
+# (llama.cpp, OpenAI, Gemini) count the cached prefix in the prompt's tokens.
+CACHE_OUTSIDE_INPUT = frozenset(("anthropic", "bedrock"))
+
+
+def _report(agent: Any, model_id: str, provider: str = "anthropic") -> str:
     raw = agent.event_loop_metrics.accumulated_usage
     usage = dict(raw) if not isinstance(raw, dict) else raw
     inp = usage.get("inputTokens", 0)
@@ -64,6 +69,8 @@ def _report(agent: Any, model_id: str) -> str:
     cache_read = usage.get("cacheReadInputTokens", 0) or 0
     cache_write = usage.get("cacheWriteInputTokens", 0) or 0
     lines = [f"  input {inp:,}  output {out:,}  cache read {cache_read:,}  cache write {cache_write:,}"]
+    if provider not in CACHE_OUTSIDE_INPUT:
+        inp = max(inp - cache_read, 0)  # the uncached part, as the others report it
     billable_in = inp + cache_write
     if cache_read:
         share = cache_read / (cache_read + billable_in) * 100 if (cache_read + billable_in) else 0
@@ -322,7 +329,7 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
             else "No snapshot; resuming from the task document."
         )
     _run(agent, ctx, prompt, interactive=False)
-    return _report(agent, ctx.cfg.model_id)
+    return _report(agent, ctx.cfg.model_id, ctx.cfg.provider)
 
 
 def _start(ctx: HarnessContext, task: str) -> str | None:
@@ -400,7 +407,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             if line in {"/quit", "/exit"}:
                 break
             _run(agent, ctx, line, interactive=True)
-        return _report(agent, ctx.cfg.model_id)
+        return _report(agent, ctx.cfg.model_id, ctx.cfg.provider)
 
     return _session(args, body)
 

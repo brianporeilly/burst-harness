@@ -7,6 +7,8 @@ is why there is exactly one construction path.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.session import SnapshotSessionManager
@@ -20,6 +22,9 @@ from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
 from .models import build_model, retry_strategy
 from .tools import HarnessContext, make_tools
+
+if TYPE_CHECKING:
+    from .config import HarnessConfig
 
 # Fixed so a resumed run addresses the same snapshot; the session id is the slug.
 AGENT_ID = "harness"
@@ -53,6 +58,37 @@ SANDBOX_OFFLOAD_DIR = "/tmp/burst-harness-offload"
 def offload_storage(target: ExecTarget, state_dir: str) -> LocalFileStorage:
     """Storage for ContextOffloader: state_dir for a local target, else a path in the target."""
     return LocalFileStorage(state_dir if isinstance(target, LocalTarget) else SANDBOX_OFFLOAD_DIR)
+
+
+class ChunkedWindow(SlidingWindowConversationManager):
+    """The sliding window, trimmed in chunks rather than a message at a time.
+
+    Upstream trims back to exactly `window_size` before every model call once a
+    run is past it, so the oldest message changes on every call. Prompt caching
+    is a prefix match, so every call then re-reads the whole conversation:
+    llama-server re-processes it, Anthropic bills it as uncached input. Measured
+    on long local runs, that was 55-78% of wall time. Cutting back to half the
+    window (or half the conversation, when proactive compression fires before
+    the window is full) keeps the prefix stable until the next cut. A context
+    overflow (`e` set) is left to upstream, which truncates tool results first.
+    """
+
+    def reduce_context(self, agent: Agent, e: Exception | None = None, **kwargs: Any) -> None:
+        if e is not None or self.window_size == 0:
+            return super().reduce_context(agent, e, **kwargs)
+        full = self.window_size
+        self.window_size = max(min(full, len(agent.messages)) // 2, 2)
+        try:
+            super().reduce_context(agent, **kwargs)
+        finally:
+            self.window_size = full
+        return None
+
+
+def conversation_manager(cfg: HarnessConfig) -> ChunkedWindow:
+    """The one conversation manager, for tasks and jobs alike."""
+    return ChunkedWindow(window_size=cfg.window_size, per_turn=True, pin_first=cfg.pin_first,
+                         proactive_compression=cfg.proactive_compression)
 
 
 def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
@@ -107,11 +143,6 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg)],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
-        conversation_manager=SlidingWindowConversationManager(
-            window_size=cfg.window_size,
-            per_turn=True,
-            pin_first=cfg.pin_first,
-            proactive_compression=cfg.proactive_compression,
-        ),
+        conversation_manager=conversation_manager(cfg),
     )
     return agent, session

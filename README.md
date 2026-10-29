@@ -830,6 +830,16 @@ not know (it forwards only its own list): `chat_template_kwargs`
 (`{"enable_thinking": false}`), `n_predict`, `reasoning_format`, `dry_multiplier`
 and the rest. Those are named once in the log when first sent.
 
+Keep `window_size` (messages kept, default 200) large. Prompt caching is a
+prefix match: whenever old messages are cut, the next call re-reads everything
+after the cut. So the harness cuts back to half the window at once, not one
+message per call, and the prefix holds until the next cut. With the old
+default of 40, cut one message at a time, re-reading the prompt took 55-78% of
+the wall time on long local runs. With a large window it took 15-17%, and the
+cache served up to 97% of input. The same applies to Anthropic's prompt cache,
+where re-read input is billed at the uncached rate. `context_window_limit` still
+bounds the size: past 70% of it, the conversation is halved the same way.
+
 The server must run with `--jinja` for tool calls, and the model has to be able to
 close a multi-step tool loop — small instruct models often cannot.
 
@@ -919,6 +929,9 @@ it changed, zero cache hits ($0.030) — 10x for one env var.
 - **Changing the tool set, model, or effort invalidates the prompt cache** for an
   existing session, because caching is a prefix match. Keep them stable across a
   task's bursts.
+- **A small `window_size` defeats prompt caching**: each cut changes the prefix.
+  The harness cuts in chunks (back to half the window), but a window of a few
+  dozen messages still cuts often on a long run.
 - `agent-sandbox` has been run live through claim, contract check, clone, branch,
   list, and release against agent-sandbox v1.0.4. A full model-driven burst
   through push and PR against a live cluster has not been run yet.

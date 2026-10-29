@@ -95,3 +95,18 @@ def test_session_needs_a_name_and_podman_or_agent_sandbox(monkeypatch):
         cli.main(["--target", "podman", "session", "reap"])
     with pytest.raises(SystemExit, match="needs gateway_control"):
         cli.main(["--target", "agent-sandbox", "--namespace", "s", "session", "reap"])
+
+
+def _usage(**usage):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(event_loop_metrics=SimpleNamespace(accumulated_usage=usage))
+
+
+def test_cache_share_counts_cached_tokens_once_whichever_provider():
+    # Anthropic leaves cache reads out of input; llama.cpp counts them in it.
+    anthropic = _usage(inputTokens=100, outputTokens=1, cacheReadInputTokens=900)
+    assert "90% of input served from cache" in cli._report(anthropic, "m", "anthropic")
+    llama = _usage(inputTokens=1000, outputTokens=1, cacheReadInputTokens=900)
+    assert "90% of input served from cache" in cli._report(llama, "m", "llamacpp")
+    assert "input 1,000 " in cli._report(llama, "m", "llamacpp")  # as the server counts it

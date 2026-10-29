@@ -462,12 +462,11 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     needs no gateway rule. The run ends when the model calls finish_report.
     """
     from strands import Agent, tool
-    from strands.agent.conversation_manager import SlidingWindowConversationManager
     from strands.storage import LocalFileStorage
     from strands.vended_plugins.context_offloader import ContextOffloader
     from strands.vended_tools import file_editor, shell
 
-    from .agent import offload_storage
+    from .agent import conversation_manager, offload_storage
     from .cli import _report
     from .models import build_model, retry_strategy
 
@@ -502,17 +501,14 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         plugins=[ContextOffloader(storage=offload_storage(target, str(state_dir)),
                                   max_result_tokens=cfg.offload_max_result_tokens,
                                   preview_tokens=cfg.offload_preview_tokens)],
-        conversation_manager=SlidingWindowConversationManager(
-            window_size=cfg.window_size, per_turn=True, pin_first=cfg.pin_first,
-            proactive_compression=cfg.proactive_compression,
-        ),
+        conversation_manager=conversation_manager(cfg),
     )
     agent(spec.prompt)
     for attempt in range(cfg.max_fixup_attempts):
         if "report" in finished:
             break
         agent(NO_FINISH)
-    print("\n" + _report(agent, cfg.model_id))
+    print("\n" + _report(agent, cfg.model_id, cfg.provider))
     if "report" in finished:
         return finished["report"], ""
     # A model that wrote the file instead of calling the tool still gets its report out.

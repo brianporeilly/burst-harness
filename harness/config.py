@@ -243,7 +243,8 @@ class HarnessConfig:
     # --- context / tokens ---
     offload_max_result_tokens: int = 2500
     offload_preview_tokens: int = 1000
-    window_size: int = 40
+    # Messages kept; past it the oldest are cut back to half (see agent.ChunkedWindow).
+    window_size: int = 200
     pin_first: int = 2
     proactive_compression: bool = True
     cache_ttl: str = "1h"
