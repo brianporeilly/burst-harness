@@ -267,10 +267,12 @@ def _close(ctx: HarnessContext) -> None:
         return
     try:
         dirty = git.is_dirty(target)
+        ahead = 0 if dirty or ctx.terminal else git.unpushed(target, cfg.remote)
     except git.GitError:
-        dirty = False  # the target is gone or broken; nothing left to save
-    if dirty and not ctx.terminal:
-        print(f"Kept {target.describe()}: it has uncommitted work. {hint}")
+        dirty, ahead = False, 0  # the target is gone or broken; nothing left to save
+    if (dirty or ahead) and not ctx.terminal:
+        what = "uncommitted work" if dirty else f"{ahead} commit(s) not pushed"
+        print(f"Kept {target.describe()}: it has {what}. {hint}")
         ctx.kept = True
         return
     print(target.release())

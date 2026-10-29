@@ -122,6 +122,13 @@ def dirty_summary(target: ExecTarget, limit: int = 20) -> str:
     return shown
 
 
+def unpushed(target: ExecTarget, remote: str) -> int:
+    """How many commits HEAD has that no branch of `remote` has (as last fetched or pushed). 0 when it
+    cannot tell: no commits yet, or not a repo."""
+    count = run(target, "rev-list", "--count", "HEAD", "--not", f"--remotes={remote}", check=False)
+    return int(count) if count.isdigit() else 0
+
+
 def has_identity(target: ExecTarget) -> bool:
     """True if git can already resolve a committer identity."""
     return bool(run(target, "config", "--get", "user.email", check=False))

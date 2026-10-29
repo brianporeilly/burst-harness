@@ -136,3 +136,33 @@ def test_a_burst_whose_replies_keep_hitting_the_output_limit_ends_as_max_tokens(
     assert code == cli.EXIT_NO_TERMINAL_STATE and result["state"] == "max_tokens"
     assert agent.calls == 3 and [m["role"] for m in agent.messages] == ["user"]  # each cut-off reply dropped
     assert "hit the output limit 3 times in a row" in out.err
+
+
+def test_a_sandbox_with_commits_not_pushed_is_kept(origin, tmp_path, capsys):
+    work = tmp_path / "work"
+    sh_git(tmp_path, "clone", "-q", str(origin), str(work))
+
+    class Owned(cli.LocalTarget):
+        owned = True
+        released = False
+
+        def release(self):
+            self.released = True
+            return "released"
+
+    def close(target, terminal=None):
+        ctx = cli.HarnessContext(target=target, cfg=cli.HarnessConfig(), slug="t", branch="harness/t", state_key="k")
+        ctx.terminal = terminal
+        cli._close(ctx)
+        return ctx
+
+    pushed = Owned(repo=str(work))
+    assert not close(pushed).kept and pushed.released  # nothing that is not on the remote
+    (work / "new.txt").write_text("work\n")
+    sh_git(work, "add", "-A")
+    sh_git(work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "work")
+    ahead = Owned(repo=str(work))
+    assert close(ahead).kept and not ahead.released
+    assert "1 commit(s) not pushed" in capsys.readouterr().out
+    abandoned = Owned(repo=str(work))
+    assert not close(abandoned, "abandoned").kept and abandoned.released  # given up: let it go

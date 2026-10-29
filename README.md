@@ -138,8 +138,8 @@ switching user; nothing over the network stack or the system) and
 root in the container is your own unprivileged user outside it (for sessions
 on a cluster, see `root_pool` below). What is
 installed lasts as long as the container. For a session, `--root` is fixed when
-it is created, since its volumes' files are owned accordingly. A container with uncommitted work and no terminal state is
-kept; `harness list` shows it and `harness --target podman --docker-container
+it is created, since its volumes' files are owned accordingly. A container with uncommitted work, or commits not
+pushed, and no terminal state is kept; `harness list` shows it and `harness --target podman --docker-container
 NAME release` removes it.
 
 **Optional gateway** (`--egress log` or `--egress allowlist`; default `open`).
