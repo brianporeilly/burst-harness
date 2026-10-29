@@ -93,7 +93,12 @@ def _config_keys(model_cls: Any) -> set[str]:
     return set()
 
 
-def model_kwargs(cfg: HarnessConfig, model_cls: Any, *, messages_api: bool = False) -> dict[str, Any]:
+# Request params that cap one reply's length, for providers that take it there rather than as a setting.
+OUTPUT_CAPS = ("max_tokens", "max_completion_tokens", "n_predict")
+
+
+def model_kwargs(cfg: HarnessConfig, model_cls: Any, *, messages_api: bool = False,
+                 cap_in_params: bool = False) -> dict[str, Any]:
     """Build provider kwargs against that provider's own schema.
 
     ``messages_api`` says the endpoint speaks the Anthropic Messages API, which
@@ -104,6 +109,12 @@ def model_kwargs(cfg: HarnessConfig, model_cls: Any, *, messages_api: bool = Fal
     only *warns* about unknown keys and then ignores them, so passing one blanket
     set of kwargs silently drops settings. Anything unsupported is reported here
     rather than vanishing.
+
+    ``cap_in_params`` says the endpoint takes ``max_tokens`` as a request param
+    (OpenAI-compatible servers, llama-server), which Strands has no setting for:
+    it goes there, at most half the context window, unless model_params caps
+    replies itself. Without a cap, a model looping in its reasoning runs on
+    until the server's own limit, if it has one.
     """
     keys = _config_keys(model_cls)
     overrides = _json_overrides(cfg)
@@ -112,6 +123,9 @@ def model_kwargs(cfg: HarnessConfig, model_cls: Any, *, messages_api: bool = Fal
         kwargs["context_window_limit"] = cfg.context_window_limit
     if "max_tokens" in keys:
         kwargs["max_tokens"] = cfg.max_tokens
+    elif cap_in_params and cfg.max_tokens:
+        if not set(OUTPUT_CAPS) & set(overrides):
+            overrides = {"max_tokens": min(cfg.max_tokens, cfg.context_window_limit // 2), **overrides}
     elif cfg.max_tokens and "max_tokens" not in overrides:
         logger.warning(
             "%s has no max_tokens setting; if this provider caps output, set it via "
@@ -167,7 +181,7 @@ def _openai(cfg: HarnessConfig) -> "Model":
     client_args: dict[str, Any] = {"api_key": api_key or "not-needed"}
     if base_url:
         client_args["base_url"] = base_url
-    return OpenAIModel(client_args=client_args, **model_kwargs(cfg, OpenAIModel))
+    return OpenAIModel(client_args=client_args, **model_kwargs(cfg, OpenAIModel, cap_in_params=True))
 
 
 def _bedrock(cfg: HarnessConfig) -> "Model":
@@ -183,7 +197,7 @@ def _llamacpp(cfg: HarnessConfig) -> "Model":
     LlamaCppModel = _require("strands.models.llamacpp", "LlamaCppModel", "llamacpp")
     base_url = cfg.base_url or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")
     return _passing_through(LlamaCppModel)(base_url=base_url, timeout=cfg.model_timeout,
-                                           **model_kwargs(cfg, LlamaCppModel))
+                                           **model_kwargs(cfg, LlamaCppModel, cap_in_params=True))
 
 
 def _passing_through(LlamaCppModel: Any) -> Any:

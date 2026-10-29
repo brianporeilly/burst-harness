@@ -602,7 +602,8 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   (`--task-ttl`, default `4h`, is how long the claim lives); here it's a fresh
   podman container behind a gateway, never this machine itself.
 - A burst ends in a PR, a pause (the work pushed, with what it needs from you
-  in the task document on the branch), an abandon, or a failure. **Continue**
+  in the task document on the branch), an abandon, `max_tokens` (the model's
+  replies kept hitting the output limit, see llama.cpp below), or a failure. **Continue**
   (`POST /api/tasks/SLUG/continue`, with an optional `{"message": ...}`) is
   another burst, `harness run SLUG --message ...`, from the pushed branch.
   Continuing a task with a PR adds to the PR.
@@ -836,7 +837,8 @@ base_url = "http://llm.example.lan:8080"
 model_id = "qwen3-coder-30b"          # a label: llama-server serves whatever it loaded
 context_window_limit = 65536          # = llama-server --ctx-size; the default 1M
                                       #   would stop context management ever firing
-model_params = '{"max_tokens": 8192}' # llama.cpp has no top-level max_tokens
+model_params = '{"max_tokens": 8192}' # one reply's cap; by default max_tokens,
+                                      #   at most half the window, is sent here
 model_timeout = 900                   # seconds; LlamaCppModel's own default is 30s,
                                       #   far shorter than a long prefill
 ```
@@ -849,6 +851,20 @@ once). A server that goes away -- the reply cut off, connections refused, then
 503 while it loads the model again, which is what a crashed llama-server under
 `--restart=always` looks like -- is backed off and retried for up to about eight
 minutes (4s, 8s, 16s ... 240s), as are rate limits. Each retry is logged.
+
+**Replies are capped and a cut-off one is recovered from.** Strands has no
+`max_tokens` setting for llama.cpp or OpenAI-compatible servers. So the harness
+sends `max_tokens` in the request as a param, the smaller of `max_tokens` and
+half of `context_window_limit`, unless `model_params` already sets
+`max_tokens`, `max_completion_tokens` or `n_predict`. Without a cap, a model
+that loops in its reasoning keeps going until the server's own limit, if there
+is one. When a reply is cut off at the limit, it is dropped from the
+conversation (a model shown its own cut-off reasoning tends to carry on with
+it), and the model is told why and asked to take the next step with a tool
+call. This happens up to twice in a row; the count starts again after a reply
+that finishes. A third cut-off in a row stops the run: `HARNESS_RESULT` state
+`max_tokens`, exit status 1, with any work that was not pushed kept in the
+sandbox. For a job, it is a run with no report.
 
 Every key in `model_params` reaches llama-server, including those Strands does
 not know (it forwards only its own list): `chat_template_kwargs`

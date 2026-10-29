@@ -276,6 +276,17 @@ def test_a_kept_sandbox_is_where_the_next_burst_carries_on_until_the_work_is_pus
     assert "releasing the kept sandbox" in runner.task("t")["output"]
 
 
+def test_a_burst_stopped_by_the_output_limit_keeps_its_sandbox_for_the_next(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t"})
+    hint = "--target podman --docker-container burst-t-abc123"
+    harness.started[0][1].finish(1, state="max_tokens", target=hint, kept=True)
+    done = _settled(runner, "t", "max_tokens")
+    assert done["sandbox"] == hint
+    runner.resume("t")
+    assert hint in " ".join(harness.argv())
+
+
 def test_only_the_harness_shapes_of_a_kept_sandbox_are_taken(tmp_path, harness, monkeypatch):
     released = []
     monkeypatch.setattr(tasks_module.subprocess, "run", lambda argv, **kwargs: released.append(argv))

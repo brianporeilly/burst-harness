@@ -47,13 +47,27 @@ def test_llamacpp_params_never_replace_what_strands_builds():
     assert request["stream"] is True and request["messages"]
 
 
-def test_max_tokens_in_model_params_is_not_warned_about(caplog):
+def test_replies_are_capped_as_a_request_param_where_strands_has_no_setting(caplog):
+    from typing import TypedDict
+
+    from harness.models import model_kwargs
+
+    class OpenAIModel:  # as Strands' (the openai package is optional): params, and no max_tokens
+        class OpenAIConfig(TypedDict, total=False):
+            model_id: str
+            params: dict
+
     with caplog.at_level("WARNING"):
-        _llamacpp('{"max_tokens": 8192}')
+        model = build_model(HarnessConfig(provider="llamacpp", base_url="http://l:8080", context_window_limit=40000))
+        openai = model_kwargs(HarnessConfig(max_tokens=8192), OpenAIModel, cap_in_params=True)
+    assert model.config["params"] == {"max_tokens": 20000}  # half the window, under max_tokens
+    assert openai["params"] == {"max_tokens": 8192}
     assert not [r for r in caplog.records if "max_tokens" in r.getMessage()]
-    with caplog.at_level("WARNING"):
-        _llamacpp("")
-    assert [r for r in caplog.records if "has no max_tokens setting" in r.getMessage()]
+    # model_params' own cap wins, in whichever name the server takes it.
+    assert _llamacpp('{"max_tokens": 8192}').config["params"] == {"max_tokens": 8192}
+    assert _llamacpp('{"n_predict": 64}').config["params"] == {"n_predict": 64}
+    assert model_kwargs(HarnessConfig(model_params='{"max_completion_tokens": 900}'), OpenAIModel,
+                        cap_in_params=True)["params"] == {"max_completion_tokens": 900}
 
 
 def _after(exception):

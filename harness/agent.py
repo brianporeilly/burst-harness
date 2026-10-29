@@ -7,12 +7,14 @@ is why there is exactly one construction path.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from strands import Agent
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
+from strands.types.exceptions import MaxTokensReachedException
 from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import file_editor, handoff_to_user, shell
@@ -25,6 +27,8 @@ from .tools import HarnessContext, make_tools
 
 if TYPE_CHECKING:
     from .config import HarnessConfig
+
+logger = logging.getLogger(__name__)
 
 # Fixed so a resumed run addresses the same snapshot; the session id is the slug.
 AGENT_ID = "harness"
@@ -83,6 +87,47 @@ class ChunkedWindow(SlidingWindowConversationManager):
         finally:
             self.window_size = full
         return None
+
+
+# How many replies in a row may be cut off at the output limit before the run gives up.
+CUT_OFF_RETRIES = 2
+CUT_OFF = ("[harness] Your last reply hit the output limit and was discarded, unfinished. Do not reason at "
+           "length: take the next step with a tool call, or say less in one reply.")
+
+
+class OutputLimit(RuntimeError):
+    """The model's replies kept being cut off at the output limit."""
+
+
+def call(agent: Agent, prompt: Any = None) -> Any:
+    """`agent(prompt)`, carrying on when a reply is cut off at the output limit.
+
+    Strands raises then, with the partial reply in the history. That reply is
+    dropped (a model shown its own cut-off reasoning tends to resume the loop it
+    was in), the model is told why, and the run goes on: up to CUT_OFF_RETRIES
+    times in a row, the count starting again once a reply is finished. Past
+    that, OutputLimit.
+    """
+    cut, mark = 0, -1
+    while True:
+        try:
+            return agent(prompt)
+        except MaxTokensReachedException:
+            if agent.messages and agent.messages[-1].get("role") == "assistant":
+                agent.messages.pop()
+            cut = 1 if len(agent.messages) > mark else cut + 1  # finished replies since the last cut start it again
+            if cut > CUT_OFF_RETRIES:
+                raise OutputLimit(f"the model's replies hit the output limit {cut} times in a row") from None
+            logger.warning("A reply hit the output limit and was discarded; telling the model (%d of %d).",
+                           cut, CUT_OFF_RETRIES)
+            last = agent.messages[-1] if agent.messages else None
+            if last is not None and last.get("role") == "user":
+                # In the same user turn (a prompt, or tool results): two user messages in a row are refused by some.
+                last["content"] = [*last["content"], {"text": CUT_OFF}]
+                prompt = None
+            else:
+                prompt = CUT_OFF
+            mark = len(agent.messages) + (prompt is not None)  # the history as the retry starts
 
 
 def conversation_manager(cfg: HarnessConfig) -> ChunkedWindow:

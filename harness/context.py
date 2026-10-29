@@ -32,4 +32,6 @@ class HarnessContext:
     detached: bool = False
     # Set when the target was kept at the end (see cli._close), for whatever runs the next burst.
     kept: bool = False
+    # Set when a run stopped short of a terminal state for a reason of its own ("max_tokens").
+    stopped: str = ""
     notes: list[str] = field(default_factory=list)

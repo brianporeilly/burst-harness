@@ -62,7 +62,7 @@ RESTARTS = 2
 # How long a cancelled burst gets to release its sandbox before it is killed.
 CANCEL_GRACE = 30
 # States in which nothing is running or waiting to run.
-IDLE = ("pr", "pushed_no_pr", "paused", "abandoned", "waiting", "failed", "interrupted", "cancelled")
+IDLE = ("pr", "pushed_no_pr", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled")
 
 
 class TasksError(ValueError):
@@ -338,7 +338,7 @@ class TaskRunner:
 def _state(code: int, result: dict[str, Any]) -> str:
     """What a burst ended in: its HARNESS_RESULT's terminal state, or failed when it has none."""
     state = result.get("state")
-    if state in (*FINISHED, "waiting"):
+    if state in (*FINISHED, "waiting", "max_tokens"):
         return state
     return "failed"
 

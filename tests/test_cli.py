@@ -110,3 +110,29 @@ def test_cache_share_counts_cached_tokens_once_whichever_provider():
     llama = _usage(inputTokens=1000, outputTokens=1, cacheReadInputTokens=900)
     assert "90% of input served from cache" in cli._report(llama, "m", "llamacpp")
     assert "input 1,000 " in cli._report(llama, "m", "llamacpp")  # as the server counts it
+
+
+def test_a_burst_whose_replies_keep_hitting_the_output_limit_ends_as_max_tokens(tmp_path, capsys, monkeypatch):
+    import json
+
+    from strands.types.exceptions import MaxTokensReachedException
+
+    class CutOff:
+        def __init__(self):
+            self.messages, self.calls = [{"role": "user", "content": [{"text": "go"}]}], 0
+
+        def __call__(self, prompt=None):
+            self.calls += 1
+            self.messages.append({"role": "assistant", "content": [{"text": "thinking..."}]})
+            raise MaxTokensReachedException("cut")
+
+    agent = CutOff()
+    monkeypatch.setattr(cli, "_open", lambda args: cli.HarnessContext(
+        target=cli.LocalTarget(repo=str(tmp_path)), cfg=cli.HarnessConfig(), slug="t", branch="harness/t", state_key="k"))
+    monkeypatch.setattr(cli, "_close", lambda ctx: None)
+    code = cli._session(_args(), lambda ctx: cli._run(agent, ctx, "go", interactive=False))
+    out = capsys.readouterr()
+    result = json.loads([x for x in out.out.splitlines() if x.startswith("HARNESS_RESULT ")][-1].split(" ", 1)[1])
+    assert code == cli.EXIT_NO_TERMINAL_STATE and result["state"] == "max_tokens"
+    assert agent.calls == 3 and [m["role"] for m in agent.messages] == ["user"]  # each cut-off reply dropped
+    assert "hit the output limit 3 times in a row" in out.err

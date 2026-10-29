@@ -466,7 +466,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     from strands.vended_plugins.context_offloader import ContextOffloader
     from strands.vended_tools import file_editor, shell
 
-    from .agent import conversation_manager, offload_storage
+    from .agent import OutputLimit, call, conversation_manager, offload_storage
     from .cli import _report
     from .models import build_model, retry_strategy
 
@@ -503,11 +503,15 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
                                   preview_tokens=cfg.offload_preview_tokens)],
         conversation_manager=conversation_manager(cfg),
     )
-    agent(spec.prompt)
-    for attempt in range(cfg.max_fixup_attempts):
-        if "report" in finished:
-            break
-        agent(NO_FINISH)
+    try:
+        call(agent, spec.prompt)
+        for attempt in range(cfg.max_fixup_attempts):
+            if "report" in finished:
+                break
+            call(agent, NO_FINISH)
+    except OutputLimit as err:
+        print("\n" + _report(agent, cfg.model_id, cfg.provider))
+        return None, f"max_tokens: {err}"
     print("\n" + _report(agent, cfg.model_id, cfg.provider))
     if "report" in finished:
         return finished["report"], ""

@@ -547,8 +547,8 @@ async function renderRun(name, id) {
 
 let selectedTask = null;
 const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", running: "warn", queued: "warn", paused: "warn",
-  waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn" }[state] || "") },
-  { pr: "PR", pushed_no_pr: "pushed, no PR", waiting: "needs input" }[state] || state);
+  waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn", max_tokens: "bad" }[state] || "") },
+  { pr: "PR", pushed_no_pr: "pushed, no PR", waiting: "needs input", max_tokens: "output limit" }[state] || state);
 const taskForm = document.getElementById("task-form");
 
 async function refreshTasks() {
@@ -623,6 +623,8 @@ async function renderTask() {
         + ((t.uses || t).base_url ? ` at ${(t.uses || t).base_url}` : "") + (t.created_by ? ` · by ${t.created_by}` : ""))),
     t.state === "paused" ? el("p", { class: "muted" }, "Paused: the work is pushed, with where it stands and any questions "
       + "in the task document on the branch (and at the end of the output).") : null,
+    t.state === "max_tokens" ? el("p", { class: "muted" }, "Stopped: the model's replies kept hitting the output limit "
+      + "(each cut-off reply was discarded and the model told why, twice). Continuing carries on from where it stopped.") : null,
     t.sandbox ? el("p", { class: "muted" }, "Its sandbox is kept, with work not yet pushed: continuing carries on there. "
       + "It is removed once the work is pushed, or with the task.") : null,
     t.restarts ? el("p", { class: "muted" }, `Restarted ${t.restarts} time(s) after the orchestrator stopped mid-burst.`) : null,

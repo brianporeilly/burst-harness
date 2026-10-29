@@ -1,11 +1,14 @@
 """A stand-in llama.cpp server: /v1/chat/completions, streamed, from a script.
 
 Each turn of the script is what the model says next: {"tool": NAME, "args": {...}}
-for a tool call, or {"text": "..."}. The turn is picked by how many assistant
+for a tool call, {"text": "..."}, or {"cut": "..."} for a reply cut off at the
+output limit (finish_reason "length"). The turn is picked by how many assistant
 messages the request already has, so the conversation drives it; a request
 with no tools gets a plain reply and does not advance it. In string
 arguments, "{last_tool}" becomes the content of the last tool result -- which
-shows that a tool's output made it back to the model.
+shows that a tool's output made it back to the model. A cut-off reply is
+served once: the next request at that turn gets the step after it, as if the
+model, told it was cut off, did something else.
 
     python -m tests.fake_llama SCRIPT.json [PORT]     # for a live run
 """
@@ -38,6 +41,8 @@ def _fill(value: Any, last_tool: str) -> Any:
 
 
 def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]]) -> type[BaseHTTPRequestHandler]:
+    skipped = [0]  # cut-off steps already served, which the turn count does not see
+
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -49,7 +54,9 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]]) -
             tools = [m for m in messages if m.get("role") == "tool"]
             last_tool = _text(tools[-1].get("content")) if tools else ""
             # A request offering no tools is a side call (opencode titles its sessions this way).
-            step = script[min(turn, len(script) - 1)] if body.get("tools") else {"text": "Side reply"}
+            step = script[min(turn + skipped[0], len(script) - 1)] if body.get("tools") else {"text": "Side reply"}
+            if "cut" in step:
+                skipped[0] += 1
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -63,6 +70,9 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]]) -
                     "function": {"name": step["tool"], "arguments": json.dumps(_fill(step.get("args", {}), last_tool))},
                 }]}}]})
                 send({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
+            elif "cut" in step:
+                send({"choices": [{"delta": {"content": step["cut"]}}]})
+                send({"choices": [{"delta": {}, "finish_reason": "length"}]})
             else:
                 send({"choices": [{"delta": {"content": _fill(step.get("text", ""), last_tool)}}]})
                 send({"choices": [{"delta": {}, "finish_reason": "stop"}]})

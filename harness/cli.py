@@ -20,7 +20,7 @@ from . import (
     session,
     state,
 )
-from .agent import build_agent
+from .agent import OutputLimit, build_agent, call
 from .claude_code import ClaudeCodeEngine
 from .config import CONFIG_FILENAME, HarnessConfig
 from .context import HarnessContext
@@ -88,8 +88,20 @@ def _report(agent: Any, model_id: str, provider: str = "anthropic") -> str:
 
 
 def _run(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -> Any:
-    """Run the agent, resolving interrupts and refusing to leave work stranded."""
-    result = agent(prompt)
+    """Run the agent, resolving interrupts and refusing to leave work stranded. A model whose
+    replies keep hitting the output limit stops the run, as max_tokens."""
+    try:
+        return _turns(agent, ctx, prompt, interactive=interactive)
+    except OutputLimit as err:
+        print(f"\n! Stopped: {err}. Work not pushed stays in the sandbox; continuing carries on there "
+              "(a lower effort or another model may help).", file=sys.stderr)
+        if not interactive:
+            ctx.stopped = "max_tokens"
+        return None
+
+
+def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -> Any:
+    result = call(agent, prompt)
     fixups = 0
     while True:
         if result.stop_reason == "interrupt":
@@ -103,7 +115,7 @@ def _run(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -> 
             for itr in result.interrupts:
                 print(f"\n[agent asks] {getattr(itr, 'reason', '(no detail)')}")
                 responses.append({"interruptResponse": {"interruptId": itr.id, "response": input("answer> ")}})
-            result = agent(responses)
+            result = call(agent, responses)
             continue
         if ctx.terminal or not ctx.cfg.require_clean_tree:
             return result
@@ -117,7 +129,7 @@ def _run(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -> 
             )
             return result
         fixups += 1
-        result = agent(NO_STRANDED_WORK.format(status=git.dirty_summary(ctx.target)))
+        result = call(agent, NO_STRANDED_WORK.format(status=git.dirty_summary(ctx.target)))
 
 
 def _overrides(args: argparse.Namespace) -> dict[str, Any]:
@@ -276,11 +288,13 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
         print("Abandoned.")
     elif ctx.waiting:
         print("Waiting for an answer from the user.")
+    elif ctx.stopped == "max_tokens":
+        print("Stopped: the model's replies kept hitting the output limit.")
     else:
         print("Ended with no terminal state recorded.")
     if report:
         print(report)
-    _result_line(ctx, ctx.terminal or ("waiting" if ctx.waiting else "none"))
+    _result_line(ctx, ctx.terminal or ("waiting" if ctx.waiting else ctx.stopped or "none"))
     if ctx.terminal:
         return EXIT_DONE
     return EXIT_NEEDS_INPUT if ctx.waiting else EXIT_NO_TERMINAL_STATE

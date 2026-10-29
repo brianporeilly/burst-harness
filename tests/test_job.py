@@ -334,6 +334,36 @@ def test_strands_that_never_finishes_fails(tmp_path, llama, capsys):
     assert "produced no report: the model ended without calling finish_report" in capsys.readouterr().out
 
 
+def test_a_reply_cut_off_at_the_output_limit_is_dropped_and_the_model_told(tmp_path, llama, capsys):
+    base, requests = llama([
+        {"cut": "Let me think. Let me think. Let me think."},
+        {"tool": "finish_report", "args": {"report": "done after all"}},
+    ])
+    spec = _strands_job(tmp_path, base)
+    assert job.run(spec, job.config(spec), acquire=_local(tmp_path)) == 0
+    assert "done after all" in capsys.readouterr().out
+    retry = requests[1]["messages"]
+    assert "hit the output limit" in fake_llama._text(retry[-1]["content"])
+    assert not any("Let me think" in fake_llama._text(m.get("content")) for m in retry)
+    assert sum(m["role"] == "user" for m in retry) == 1  # told in the same user turn, not a second one
+
+
+def test_cut_offs_count_again_after_a_finished_reply(tmp_path, llama, capsys):
+    base, _ = llama([{"cut": "a"}, {"tool": "shell", "args": {"command": "true"}}, {"cut": "b"}, {"cut": "c"},
+                     {"tool": "finish_report", "args": {"report": "made it"}}])
+    spec = _strands_job(tmp_path, base)
+    assert job.run(spec, job.config(spec), acquire=_local(tmp_path)) == 0
+
+
+def test_replies_cut_off_again_and_again_end_the_run_as_max_tokens(tmp_path, llama, capsys):
+    base, requests = llama([{"cut": "a"}, {"cut": "b"}, {"cut": "c"}, {"tool": "finish_report", "args": {"report": "x"}}])
+    spec = _strands_job(tmp_path, base)
+    assert job.run(spec, job.config(spec), acquire=_local(tmp_path)) == 1
+    out = capsys.readouterr().out
+    assert "max_tokens: the model's replies hit the output limit 3 times in a row" in out and "Traceback" not in out
+    assert len(requests) == 3
+
+
 def test_strands_with_an_unreachable_model_is_reported(tmp_path, capsys):
     spec = _strands_job(tmp_path, "http://127.0.0.1:9")
     assert job.run(spec, job.config(spec), acquire=_local(tmp_path)) == 1
