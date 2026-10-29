@@ -75,7 +75,7 @@
 <body>
 <header>
   <div class="row"><h1>Burst Orchestrator</h1>
-    <nav class="tabs"><button data-tab="tasks">Tasks</button><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button></nav>
+    <nav class="tabs"><button data-tab="tasks">Tasks</button><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button><button data-tab="tokens">Tokens</button></nav>
   </div>
   <div class="row" id="creds"></div>
 </header>
@@ -129,6 +129,23 @@
   </section>
   <section class="panel" id="job-detail">
     <p class="muted">Choose a job.</p>
+  </section>
+</main>
+<main id="tokens-view" class="hidden">
+  <section class="panel">
+    <h2>API tokens</h2>
+    <p class="muted">A token lets a script, another machine or a bot use the Tasks API, and nothing else:
+      <code>curl -H "Authorization: Bearer orch_..." .../api/tasks</code>. Tasks it starts say they were made by
+      you, via the token's name.</p>
+    <div id="tokens"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="panel">
+    <h2>New token</h2>
+    <form id="token-form" autocomplete="off">
+      <label>Name (what will use it) <input type="text" name="name" required maxlength="48" placeholder="laptop script"></label>
+      <div class="row"><button class="primary" type="submit">Make token</button><span class="error" id="token-form-error"></span></div>
+    </form>
+    <div id="token-made"></div>
   </section>
 </main>
 <main id="sessions-view">
@@ -686,7 +703,48 @@ taskForm.onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
-const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs };
+// --- tokens ---
+
+async function refreshTokens() {
+  let found;
+  try { found = await api("/api/tokens"); } catch (err) {
+    document.getElementById("tokens").replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const box = document.getElementById("tokens");
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  if (!found.length) { box.replaceChildren(el("p", { class: "muted" }, "No tokens yet.")); return; }
+  box.replaceChildren(el("table", {},
+    el("tr", {}, el("th", {}, "Name"), el("th", {}, "Made"), el("th", {}, "Last used"), el("th", {}, "")),
+    ...found.map((t) => el("tr", {},
+      el("td", {}, t.name, el("span", { class: "muted" }, ` orch_${t.id}_…`)),
+      el("td", {}, when(t.created) + (t.created_by ? ` by ${t.created_by}` : "")),
+      el("td", {}, t.last_used ? when(t.last_used) : "never"),
+      el("td", {}, el("button", { class: "danger", onclick: async () => {
+        if (!confirm(`Revoke ${t.name}? Whatever uses it stops working.`)) return;
+        try { await api(`/api/tokens/${t.id}`, { method: "DELETE" }); } catch (err) { alert(`Revoke: ${err.message}`); }
+        refreshTokens();
+      } }, "Revoke"))))));
+}
+
+document.getElementById("token-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = event.target, error = document.getElementById("token-form-error");
+  error.textContent = "";
+  try {
+    const made = await api("/api/tokens", { method: "POST", body: JSON.stringify({ name: form.name.value }) });
+    form.reset();
+    const shown = el("pre", { class: "text" }, made.token);
+    document.getElementById("token-made").replaceChildren(
+      el("p", {}, `${made.name}: copy it now, it is not shown again.`), shown,
+      el("div", { class: "row" }, el("button", { onclick: () => navigator.clipboard.writeText(made.token) }, "Copy"),
+        el("button", { onclick: () => document.getElementById("token-made").replaceChildren() }, "Done")));
+    refreshTokens();
+  } catch (err) { error.textContent = err.message; }
+};
+
+const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs, tokens: refreshTokens };
 
 function showTab(name) {
   tab = name;
@@ -694,6 +752,7 @@ function showTab(name) {
   document.getElementById("sessions-view").classList.toggle("hidden", name !== "sessions");
   document.getElementById("jobs-view").classList.toggle("hidden", name !== "jobs");
   document.getElementById("tasks-view").classList.toggle("hidden", name !== "tasks");
+  document.getElementById("tokens-view").classList.toggle("hidden", name !== "tokens");
   try { localStorage.setItem("tab", name); } catch {}
   views[name]();
 }

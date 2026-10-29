@@ -618,6 +618,31 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
   off.
 
+**API tokens.** For scripts, other machines and bots, make a token in the Tokens
+tab (`POST /api/tokens` with `{"name": ...}`). It is shown once, and the
+orchestrator keeps only its SHA-256 (`tokens.json` in the state directory,
+mode 600). Revoke it there.
+
+```bash
+curl -H "Authorization: Bearer orch_..." -H 'Content-Type: application/json' \
+  http://orchestrator:8700/api/tasks -d '{"repo": "you/proj", "prompt": "..."}'
+```
+
+- A token reaches `/api/tasks` and below, and nothing else: not sessions, jobs,
+  the page, or tokens, which only someone signed in (or on this machine) can
+  make or revoke. A task it starts shows `created_by` as "you via NAME".
+- With a token, requests skip the Host check and the `X-Orchestrator` header.
+  Both of those stop a web page from using your browser's way in, and a
+  browser never sends a token by itself.
+- `--listen 0.0.0.0` without `--user-header` serves the page to this machine
+  only, and the Tasks API to any machine with a token. That's plain HTTP, so
+  use it on a network you trust, or put TLS in front. An SSH tunnel is still
+  the way to reach the page from elsewhere.
+- On a cluster behind a signing-in proxy, the proxy sends anyone it hasn't
+  signed in to log in first, so a token request never arrives. A route for
+  `/api/tasks` that skips the sign-in (and lets the token do the checking) is
+  that cluster's own configuration.
+
 With `target = "agent-sandbox"` and a cluster session's settings (On a cluster,
 above), its sessions are on that cluster instead: claimed, suspended and
 removed as `harness session` does there, with events and refusals read from

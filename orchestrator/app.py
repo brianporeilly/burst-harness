@@ -14,6 +14,11 @@ OIDC, in home-ops): `hosts` adds the name it is reached by to the Host check,
 and `user_header` names the header the proxy sets to who signed in. A request
 without that header is refused, and the header is only as good as the network
 policy that lets nothing but the proxy reach this app.
+
+Scripts, other machines and bots use an API token instead (tokens.py), which
+reaches /api/tasks only. With `local_browser` (listening beyond this machine
+with no signing-in proxy), the browser's way in is for this machine alone, and
+anyone else needs a token.
 """
 
 from __future__ import annotations
@@ -32,22 +37,39 @@ from harness.exec_target import ExecError
 from .backend import Backend, SessionSpec, SpecError
 from .jobs import JobRunner, JobsError
 from .tasks import TaskRunner, TasksError
+from .tokens import TokenError, TokenStore, user_of
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
-               JobsError, TasksError)
+               JobsError, TasksError, TokenError)
+LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
-               hosts: tuple[str, ...] = (), user_header: str = "") -> FastAPI:
+               tokens: TokenStore | None = None, hosts: tuple[str, ...] = (), user_header: str = "",
+               local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Any) -> Any:
+        scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer":
+            record = tokens.check(presented) if tokens is not None else None
+            if record is None:
+                return JSONResponse({"error": "That token is not valid (revoked, or mistyped)."}, status_code=401)
+            path = request.url.path
+            if path != "/api/tasks" and not path.startswith("/api/tasks/"):
+                return JSONResponse({"error": "A token reaches /api/tasks only."}, status_code=403)
+            request.state.user = user_of(record)
+            return await call_next(request)
+        if local_browser and (request.client is None or request.client.host not in LOOPBACK):
+            return JSONResponse({"error": "From another machine, use an API token (Authorization: Bearer ...)."},
+                                status_code=401)
+        request.state.user = request.headers.get(user_header, "").strip() if user_header else ""
         host = request.headers.get("host", "").rsplit(":", 1)[0] if not request.headers.get("host", "").startswith("[") \
             else request.headers.get("host", "").split("]")[0] + "]"
         if host.lower() not in allowed:
@@ -70,7 +92,7 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
 
     @app.get("/api/info")
     def info(request: Request) -> dict[str, Any]:
-        return {**backend.info(), "user": request.headers.get(user_header, "").strip() if user_header else ""}
+        return {**backend.info(), "user": request.state.user}
 
     @app.get("/api/sessions")
     def sessions() -> list[dict[str, Any]]:
@@ -183,8 +205,7 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
 
     @app.post("/api/tasks", status_code=202)
     async def create_task(request: Request) -> dict[str, Any]:
-        user = request.headers.get(user_header, "").strip() if user_header else ""
-        return await run_in_threadpool(task_runner().create, await body(request), user=user)
+        return await run_in_threadpool(task_runner().create, await body(request), user=request.state.user)
 
     @app.get("/api/tasks/{slug}")
     def task_detail(slug: str) -> dict[str, Any]:
@@ -203,5 +224,26 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     def remove_task(slug: str) -> dict[str, str]:
         task_runner().remove(slug)
         return {"message": f"Removed {slug}; its branch and PR are left as they are."}
+
+    # --- API tokens (never with a token: see the guard) ---
+
+    def token_store() -> TokenStore:
+        if tokens is None:
+            raise TokenError("API tokens are not on in this orchestrator.")
+        return tokens
+
+    @app.get("/api/tokens")
+    def list_tokens() -> list[dict[str, Any]]:
+        return token_store().tokens()
+
+    @app.post("/api/tokens", status_code=201)
+    async def create_token(request: Request) -> dict[str, Any]:
+        record, token = token_store().create(str((await body(request)).get("name") or ""), user=request.state.user)
+        return {**record, "token": token}
+
+    @app.delete("/api/tokens/{ident}")
+    def revoke_token(ident: str) -> dict[str, str]:
+        record = token_store().revoke(ident)
+        return {"message": f"Revoked {record['name']}."}
 
     return app

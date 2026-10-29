@@ -27,6 +27,12 @@ machine itself). --task-limit (ORCHESTRATOR_TASK_LIMIT, default 1) of them run
 at once, the rest queued; --task-ttl (ORCHESTRATOR_TASK_TTL, default 4h) is how
 long a burst's sandbox claim lives on a cluster. --no-tasks turns them off.
 
+API tokens (tokens.py, made in the Tokens tab) let scripts, other machines and
+bots use the Tasks API: `Authorization: Bearer orch_...`. --listen 0.0.0.0
+with no --user-header serves the browser to this machine alone and the Tasks
+API to anyone with a token. That is plain HTTP, so only on a network you
+trust (or put TLS in front).
+
 Behind a proxy that signs people in (in a cluster): --listen 0.0.0.0 to take
 connections from it, --host NAME (repeatable) for the name it is reached by,
 and --user-header HEADER for the header the proxy sets to who signed in;
@@ -51,13 +57,14 @@ from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
 from .tasks import TaskRunner
+from .tokens import TokenStore
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m orchestrator", description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", type=int, default=8700)
     parser.add_argument("--listen", default="127.0.0.1", metavar="ADDRESS",
-                        help="Where to take connections (default 127.0.0.1). Anything else needs --user-header.")
+                        help="Where to take connections (default 127.0.0.1). Beyond this machine, without --user-header, others need an API token.")
     parser.add_argument("--host", action="append", default=[], metavar="NAME",
                         help="A name it is reached by, besides this machine's. Repeatable.")
     parser.add_argument("--user-header", default="", metavar="HEADER",
@@ -79,8 +86,7 @@ def main() -> None:
     parser.add_argument("--task-ttl", default=os.environ.get("ORCHESTRATOR_TASK_TTL", "4h"), metavar="DURATION",
                         help="How long a task's sandbox claim lives, on a cluster (default 4h).")
     args = parser.parse_args()
-    if args.listen not in ("127.0.0.1", "localhost", "::1") and not args.user_header:
-        parser.error("--listen beyond this machine needs --user-header: there is no login of its own (see app.py).")
+    local_browser = args.listen not in ("127.0.0.1", "localhost", "::1") and not args.user_header
     try:
         zone = ZoneInfo(args.timezone) if args.timezone else _local_zone()
         catch_up = timedelta(seconds=seconds(args.catch_up))
@@ -96,6 +102,9 @@ def main() -> None:
     if args.user_header:
         names = ", ".join(args.host) or "this machine"
         print(f"Orchestrator on {args.listen}:{args.port} for {names}, signed in by {args.user_header}, {where}")
+    elif local_browser:
+        print(f"Orchestrator on {args.listen}:{args.port}: the browser from this machine only "
+              f"(http://127.0.0.1:{args.port}/), the Tasks API from anywhere with a token (plain HTTP), {where}")
     else:
         print(f"Orchestrator on http://127.0.0.1:{args.port}/ (this machine only), {where}")
     if jobs:
@@ -110,7 +119,9 @@ def main() -> None:
         for line in tasks.recover():
             print(f"tasks: {line}")
         tasks.dispatch()
-    app = create_app(backend, jobs, tasks=tasks, hosts=tuple(args.host), user_header=args.user_header)
+    tokens = TokenStore(Path(base.state_dir).expanduser() / "tokens.json")
+    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, hosts=tuple(args.host), user_header=args.user_header,
+                     local_browser=local_browser)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
 
 

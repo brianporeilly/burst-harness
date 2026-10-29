@@ -437,9 +437,13 @@ orchestrator's page, its API, and later Slack.
    On the cluster, this needs a git token in the orchestrator's environment
    (sessions use one only through the gateway) and egress from its pod to
    GitHub, since the driver opens the PR.
-2. Callers other than the browser. Today the API trusts only the header the
-   signing-in proxy sets. Scripts and webhooks need a token of their own (the
-   orchestrator's, or Authentik's). Slack first on the personal workspace, in
+2. Callers other than the browser. API tokens: done (2026-10-29). The
+   orchestrator makes them (the Tokens tab), keeps only a hash, and a token
+   reaches the Tasks API alone; tasks it starts are "you via NAME". Without a
+   signing-in proxy, `--listen` beyond this machine serves the page locally
+   and the Tasks API to token holders. On the cluster, a token needs a route
+   to /api/tasks that skips the OIDC sign-in (home-ops). Slack first on the
+   personal workspace, in
    Socket Mode, so the orchestrator needs no public URL (a laptop or a work
    network will do): `/task owner/repo do the thing`, with replies in a
    thread as the task starts, pauses with a question (answered in the thread),
