@@ -451,7 +451,7 @@ orchestrator's page, its API, and later Slack.
 3. Packaging, for the work machine (macOS with OrbStack) and a server: a
    `pyproject.toml` with `harness` and `orchestrator` commands, managed with
    uv (a lockfile, `uv sync`/`uv run`, uv in the images) in place of pip and
-   the requirements files, and a compose
+   the requirements files: done (2026-10-29). Then a compose
    file running the orchestrator image with the host's docker or podman
    socket, a state volume and an env file. To check on docker: the gateway
    has no transparent redirect there (proxy variables instead), sessions'

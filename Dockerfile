@@ -28,17 +28,27 @@ RUN arch="$(dpkg --print-architecture)" \
       | sha256sum -c - \
  && chmod 755 /usr/local/bin/kubectl
 
+# Dependencies from uv.lock, exactly, into /opt/harness/.venv: first on their own,
+# so a source change does not reinstall them, then the project itself, editable,
+# so the code stays at /opt/harness/harness as the orchestrator expects (jobs.REPO).
+COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /usr/local/bin/uv
 WORKDIR /opt/harness
-COPY requirements.txt .
-COPY orchestrator/requirements.txt ./orchestrator/requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt -r orchestrator/requirements.txt
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/harness/.venv
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project --extra openai --no-cache
 COPY harness/ ./harness/
 # The orchestrator, for a Deployment: `python -m orchestrator` in place of the entrypoint.
 COPY orchestrator/ ./orchestrator/
+RUN uv sync --frozen --no-dev --extra openai --no-cache
 
 # Snapshots and offloaded blobs. Mount a volume here to make resume survive the pod.
+# The venv's python first, so `python -m harness` and `python -m orchestrator` are its.
 ENV HARNESS_STATE_DIR=/state \
-    PYTHONPATH=/opt/harness \
+    PATH=/opt/harness/.venv/bin:$PATH \
+    VIRTUAL_ENV=/opt/harness/.venv \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 RUN mkdir -p /state /workspace && useradd -m -u 1000 agent \

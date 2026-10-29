@@ -67,7 +67,7 @@ class CommandSandbox(PosixShellSandbox):
         cwd: str | None = None,
         env: dict[str, str] | None = None,
         **kwargs: Any,
-    ) -> AsyncGenerator[StreamChunk | ExecutionResult, None]:
+    ) -> AsyncGenerator[StreamChunk | ExecutionResult]:
         """Execute a command in the target, streaming output."""
         args = [*self.prefix[1:], "sh", "-c", self._shell(command, cwd=cwd, env=env)]
         async for chunk in _stream_process(

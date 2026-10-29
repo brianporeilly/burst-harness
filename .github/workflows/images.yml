@@ -16,11 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.13"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: python -m pytest -q tests
+          version: "0.11.25"
+      # The Python in .python-version, and exactly what uv.lock says.
+      - run: uv sync --frozen --extra openai
+      - run: uv run --frozen pytest -q -n 4 tests
         env:
           GIT_AUTHOR_NAME: ci
           GIT_AUTHOR_EMAIL: ci@example.com

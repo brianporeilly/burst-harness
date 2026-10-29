@@ -5,6 +5,21 @@ on a correct branch, records what it did in a committed document, and stops in a
 defined state. Work in bursts; a fresh session picks up from the document instead
 of re-reading the codebase.
 
+## Install
+
+With [uv](https://docs.astral.sh/uv/), from a checkout:
+
+```bash
+uv sync                    # Python 3.13 and exactly what uv.lock says, in .venv
+uv sync --extra openai     # also the SDK for provider = "openai" (and --extra gemini)
+uv run harness --help      # or: source .venv/bin/activate; harness --help
+uv run orchestrator        # http://127.0.0.1:8700/
+```
+
+Or as tools on your PATH, from anywhere: `uv tool install --editable .`. Below,
+`python -m harness` and `harness` are the same thing (likewise the
+orchestrator).
+
 ## Usage
 
 ```bash
@@ -512,8 +527,7 @@ open its UI, watch its gateway's events live, and approve what it refused —
 once, for this run, for two hours, or always.
 
 ```bash
-pip install -r orchestrator/requirements.txt
-python -m orchestrator            # http://127.0.0.1:8700/
+uv run orchestrator               # http://127.0.0.1:8700/ (or python -m orchestrator in the venv)
 ```
 
 It drives the same `harness session` and `harness egress` code, so sessions it
@@ -973,9 +987,12 @@ Everything else is an environment variable, so nothing needs baking into the ima
 ## Tests
 
 ```bash
-podman run --rm -v "$PWD":/src:Z -w /src --entrypoint sh burst-harness:dev \
-  -c 'pip install -q --user -r requirements-dev.txt && python -m pytest -q tests'
+uv run pytest -q -n 8      # the dev group (pytest, pytest-xdist) comes with uv sync
 ```
+
+Dependencies are pinned in `pyproject.toml` and locked in `uv.lock`; change
+them with `uv add`/`uv lock --upgrade-package NAME`, and commit the lock. The
+image installs from the lock too (`uv sync --frozen`), with the `openai` extra.
 
 ### Keep model and effort stable across a task's bursts
 

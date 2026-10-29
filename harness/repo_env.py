@@ -37,11 +37,11 @@ class RepoEnvironment(NotASandboxLocalEnvironment):
             kwargs["env"] = {**self._env, **(kwargs.get("env") or {})}
         return kwargs
 
-    async def execute_streaming(self, *args: Any, **kwargs: Any) -> AsyncGenerator[StreamChunk | ExecutionResult, None]:
+    async def execute_streaming(self, *args: Any, **kwargs: Any) -> AsyncGenerator[StreamChunk | ExecutionResult]:
         async for chunk in super().execute_streaming(*args, **self._defaults(kwargs)):
             yield chunk
 
-    async def execute_code_streaming(self, *args: Any, **kwargs: Any) -> AsyncGenerator[StreamChunk | ExecutionResult, None]:
+    async def execute_code_streaming(self, *args: Any, **kwargs: Any) -> AsyncGenerator[StreamChunk | ExecutionResult]:
         async for chunk in super().execute_code_streaming(*args, **self._defaults(kwargs)):
             yield chunk
 
