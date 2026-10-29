@@ -37,7 +37,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from harness import git
+from harness import credentials, git
 from harness.config import HarnessConfig
 
 from .jobs import OUTPUT, REPO, _iso, _tail, json_file
@@ -267,7 +267,8 @@ class TaskRunner:
             output.write((heading + (f": {record['message']}" if record.get("message") else "") + " ===\n").encode())
             output.flush()
             process = subprocess.Popen(
-                self._argv(record), cwd=REPO, env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                self._argv(record), cwd=REPO,
+                env=credentials.for_run(credentials.for_task(self.base), {"PYTHONUNBUFFERED": "1"}),
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
             )
         record["bursts"].append({"started": _now(), "message": record.get("message")})
@@ -308,7 +309,8 @@ class TaskRunner:
             output.write(f"\n=== releasing the kept sandbox ({sandbox}) ===\n".encode())
             output.flush()
             subprocess.run([sys.executable, "-m", "harness", *shlex.split(sandbox), "release"], cwd=REPO,
-                           env={**os.environ, "PYTHONUNBUFFERED": "1"}, stdin=subprocess.DEVNULL, stdout=output,
+                           env=credentials.for_run(credentials.for_task(self.base), {"PYTHONUNBUFFERED": "1"}),
+                           stdin=subprocess.DEVNULL, stdout=output,
                            stderr=subprocess.STDOUT, timeout=300, check=False)
 
 

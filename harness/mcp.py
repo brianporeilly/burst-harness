@@ -21,10 +21,11 @@ server is used without it.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+
+from . import credentials
 
 if TYPE_CHECKING:  # config checks the entries with servers(), so this module cannot import it
     from .config import HarnessConfig
@@ -60,7 +61,7 @@ def key_var(name: str) -> str:
 
 def headers(name: str) -> dict[str, str]:
     """The headers that carry a server's key, if the driver has one."""
-    key = os.environ.get(key_var(name), "").strip()
+    key = credentials.get(key_var(name))
     return {"Authorization": f"Bearer {key}"} if key else {}
 
 

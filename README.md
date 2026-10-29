@@ -521,6 +521,23 @@ makes are ordinary sessions; it remembers what each was created with, so
 starting one again means the same thing. Credentials it can hand on come from
 its own environment, as for the harness; the page shows which are there.
 
+**What each run is handed.** A task's burst and a job's run are subprocesses,
+and each gets the orchestrator's environment with every credential taken out
+and only its own put back (`harness/credentials.py`):
+
+- a task: the git token, the model's keys, the cluster gateway's token, and
+  its MCP servers' keys;
+- a job: the model's keys, the gateway's token, its MCP servers' keys, the
+  secrets its `job.toml` names, and Slack's only if it posts there.
+
+So a task never sees a job's Slack token or the cluster watcher's
+`KUBE_TOKEN`. A credential is anything named like one (`*_TOKEN`, `*_KEY`,
+`*_SECRET`, `*_PASSWORD`, ...) or listed in that file, except the harness's
+own settings. `ORCHESTRATOR_PASS_ENV` (comma-separated names) passes more to
+every run, such as a provider plugin's key. Everything that needs a credential
+reads it through one function, which per-user credentials will feed later
+without the callers changing.
+
 It shows jobs too (see Jobs, below), given where to find them:
 
 ```bash

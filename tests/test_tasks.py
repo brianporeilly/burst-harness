@@ -27,6 +27,7 @@ class Harness:
 
     def __call__(self, argv, **kwargs):
         process = FakeProcess(argv, kwargs["stdout"].name)
+        process.env = kwargs["env"]
         self.started.append((argv, process))
         return process
 
@@ -149,6 +150,16 @@ def test_a_repos_default_branch_is_asked_of_the_remote(monkeypatch):
     Done.returncode, Done.stderr = 128, "fatal: could not read Username for 'https://github.com'"
     with pytest.raises(git.GitError, match="cannot read"):
         git.default_branch("https://github.com/me/secret.git")
+
+
+def test_a_burst_gets_the_git_token_and_model_key_not_every_credential(tmp_path, harness, monkeypatch):
+    for name in ("GH_TOKEN", "ANTHROPIC_API_KEY", "KUBE_TOKEN", "SLACK_BOT_TOKEN"):
+        monkeypatch.setenv(name, name.lower())
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t"})
+    env = harness.started[0][1].env
+    assert env["GH_TOKEN"] == "gh_token" and env["ANTHROPIC_API_KEY"] == "anthropic_api_key"
+    assert "KUBE_TOKEN" not in env and "SLACK_BOT_TOKEN" not in env and env["PYTHONUNBUFFERED"] == "1"
 
 
 def test_on_a_cluster_the_target_is_the_orchestrators_own(tmp_path, harness):

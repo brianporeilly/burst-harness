@@ -66,7 +66,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
-from . import containers, git, mcp
+from . import containers, credentials, git, mcp
 from .agent_sandbox import REQUIRED_COMMANDS
 from .config import HarnessConfig
 from .containers import ContainerError
@@ -154,11 +154,11 @@ def seconds(text: str) -> int:
 def model_env(cfg: HarnessConfig) -> dict[str, str]:
     """Model credentials opencode gets in its environment: the driver's Anthropic
     key, or its placeholder when the gateway is the one that holds the key."""
-    if cfg.provider != "anthropic" or not os.environ.get("ANTHROPIC_API_KEY"):
+    if cfg.provider != "anthropic" or not credentials.get("ANTHROPIC_API_KEY"):
         return {}
     if "model" in cfg.egress_inject:
         return {"ANTHROPIC_API_KEY": containers.MODEL_CREDENTIALS["ANTHROPIC_API_KEY"][1]}
-    return {"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]}
+    return {"ANTHROPIC_API_KEY": credentials.get("ANTHROPIC_API_KEY")}
 
 
 def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
@@ -189,7 +189,7 @@ def opencode_config(cfg: HarnessConfig) -> dict[str, Any] | None:
         "provider": {"harness": {
             "npm": "@ai-sdk/openai-compatible",
             "name": cfg.provider,
-            "options": {"baseURL": base, "apiKey": os.environ.get("OPENAI_API_KEY") or "none"},
+            "options": {"baseURL": base, "apiKey": credentials.get("OPENAI_API_KEY") or "none"},
             "models": {model: {
                 "name": name,
                 "limit": {"context": cfg.context_window_limit,
@@ -363,7 +363,7 @@ def describe(record: dict[str, Any]) -> str:
 
 def claude_env(cfg: HarnessConfig) -> dict[str, str]:
     """What a Claude Code session's terminal gets in its environment."""
-    found = {name: os.environ[name] for name in CLAUDE_ENV if os.environ.get(name)}
+    found = {name: value for name in CLAUDE_ENV if (value := credentials.get(name))}
     if "model" in cfg.egress_inject:
         found = {name: containers.MODEL_CREDENTIALS[name][1] if name in containers.MODEL_CREDENTIALS else value
                  for name, value in found.items()}

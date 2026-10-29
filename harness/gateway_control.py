@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import atexit
 import json
-import os
 import re
 import subprocess
 import urllib.error
@@ -29,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import credentials
 from .config import HarnessConfig
 
 TOKEN_ENV = "HARNESS_GATEWAY_TOKEN"
@@ -51,7 +51,7 @@ class Gateway:
         """The configured gateway, or None when sandboxes have none."""
         if not cfg.gateway_control:
             return None
-        token = os.environ.get(TOKEN_ENV, "").strip()
+        token = credentials.get(TOKEN_ENV)
         if not token and cfg.gateway_token_file:
             try:
                 token = Path(cfg.gateway_token_file).expanduser().read_text().strip()

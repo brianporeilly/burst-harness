@@ -21,11 +21,12 @@ import shlex
 import subprocess
 from pathlib import PurePosixPath
 
+from . import credentials
 from .exec_target import ExecError, ExecTarget
 
 # Checked in order. GH_TOKEN/GITHUB_TOKEN are what gh itself reads, so a driver
 # already set up for gh needs nothing extra.
-TOKEN_ENV_VARS = ("HARNESS_GIT_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+TOKEN_ENV_VARS = credentials.GIT
 
 Auth = tuple[str, ...]
 
@@ -35,10 +36,7 @@ class GitError(RuntimeError):
 
 
 def token() -> str:
-    for name in TOKEN_ENV_VARS:
-        if value := os.environ.get(name, "").strip():
-            return value
-    return ""
+    return credentials.first(TOKEN_ENV_VARS)
 
 
 def auth_args(url: str) -> Auth:

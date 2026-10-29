@@ -213,6 +213,9 @@ def test_a_run_whose_process_is_gone_is_interrupted(jobs_client):
 def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
     from orchestrator import jobs as jobs_module
 
+    monkeypatch.setenv("GH_TOKEN", "orchestrators")
+    monkeypatch.setenv("KUBE_TOKEN", "watchers")
+
     started = []
 
     class FakeProcess:
@@ -232,9 +235,32 @@ def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
     run_id = response.json()["run"]
     (argv, env), = started
     assert argv[-3:] == ["job", "run", str(jobs_client.runner.discover()["watcher"])]
+    assert "GH_TOKEN" not in env and "KUBE_TOKEN" not in env  # nothing it was not granted
     assert env[jobs_client.job.RUN_ID_ENV] == run_id
     assert jobs_client.post("/api/jobs/watcher/run", headers=CHANGE).status_code == 400  # already running
     assert jobs_client.get("/api/jobs/watcher").json()["runs"][0] == {"id": run_id, "job": "watcher", "state": "starting"}
+
+
+def test_a_job_run_gets_the_secrets_its_job_names(jobs_client, monkeypatch):
+    from orchestrator import jobs as jobs_module
+
+    started = []
+
+    class FakeProcess:
+        def __init__(self, argv, **kwargs):
+            started.append(kwargs["env"])
+
+        def wait(self):
+            pass
+
+    monkeypatch.setattr(jobs_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setenv("GITHUB_TOKEN", "digests")
+    monkeypatch.setenv("HARNESS_GIT_TOKEN", "tasks")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "slack")
+    assert jobs_client.post("/api/jobs/digest/run", headers=CHANGE).status_code == 202
+    env, = started
+    assert env["GITHUB_TOKEN"] == "digests"  # digest's job.toml names it
+    assert "HARNESS_GIT_TOKEN" not in env and "SLACK_BOT_TOKEN" not in env  # stdout only: no Slack
 
 
 def _scheduled(tmp_path, monkeypatch, **options):

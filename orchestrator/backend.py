@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import threading
 import time
@@ -21,7 +20,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness import cluster_session, containers, egress, git, mcp, session
+from harness import cluster_session, containers, credentials, egress, git, mcp, session
 from harness.config import HarnessConfig
 from harness.gateway_control import Gateway, GatewayError
 
@@ -193,8 +192,8 @@ class PodmanBackend:
             "backend": self.name,
             "credentials": {
                 "git": bool(git.token()),
-                "anthropic_api_key": bool(os.environ.get("ANTHROPIC_API_KEY")),
-                "claude_oauth_token": bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")),
+                "anthropic_api_key": bool(credentials.get("ANTHROPIC_API_KEY")),
+                "claude_oauth_token": bool(credentials.get("CLAUDE_CODE_OAUTH_TOKEN")),
             },
             "defaults": {"provider": cfg.provider, "base_url": cfg.base_url, "model": cfg.model_id,
                          "allow": list(cfg.egress_allow), "allowed_for_good": containers.approved(cfg),

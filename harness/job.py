@@ -83,7 +83,7 @@ from urllib.parse import urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers, cron, mcp
+from . import agent_sandbox, containers, credentials, cron, mcp
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -148,7 +148,7 @@ class Secret:
 
     def rule(self) -> dict[str, object]:
         """The gateway rule that adds it, on every request to its host."""
-        rule: dict[str, object] = {"host": self.hostname, "headers": {self.header: self.value.format(os.environ[self.env])}}
+        rule: dict[str, object] = {"host": self.hostname, "headers": {self.header: self.value.format(credentials.get(self.env))}}
         if self.port != 443:
             rule["port"] = self.port
         return rule
@@ -360,11 +360,11 @@ def config(spec: JobSpec, overrides: dict[str, Any] | None = None) -> HarnessCon
 
 def check(spec: JobSpec) -> None:
     """Fail before starting anything if a credential or output's setting is missing from the driver."""
-    missing = [s.env for s in spec.secrets if not os.environ.get(s.env)]
+    missing = [s.env for s in spec.secrets if not credentials.get(s.env)]
     for item in spec.outputs:
-        if item == "slack" and not os.environ.get("SLACK_WEBHOOK_URL"):
+        if item == "slack" and not credentials.get("SLACK_WEBHOOK_URL"):
             missing.append("SLACK_WEBHOOK_URL")
-        elif item.startswith("slack:") and not os.environ.get("SLACK_BOT_TOKEN"):
+        elif item.startswith("slack:") and not credentials.get("SLACK_BOT_TOKEN"):
             missing.append("SLACK_BOT_TOKEN")
     if missing:
         raise JobError(f"Job {spec.name} needs {', '.join(dict.fromkeys(missing))} in the driver's environment.")
@@ -581,7 +581,7 @@ def _acquire(cfg: HarnessConfig, spec: JobSpec) -> SubprocessTarget:
     return containers.acquire(
         cfg, binary=cfg.target, repo=WORKDIR, slug=f"job-{spec.name}",
         allow=_hosts(spec), inject=tuple(s.rule() for s in spec.secrets if s.host),
-        env={s.sandbox_env: s.placeholder() if s.host else os.environ[s.env] for s in spec.secrets if s.sandbox_env},
+        env={s.sandbox_env: s.placeholder() if s.host else credentials.get(s.env) for s in spec.secrets if s.sandbox_env},
         read_only=write_rules(spec, cfg),
         upstream_ca=tuple(ca for s in spec.secrets if (ca := s.upstream_ca())),
     )
@@ -736,9 +736,9 @@ def post_slack(text: str, *, channel: str = "") -> None:
         text = text[:SLACK_LIMIT] + "\n_(truncated)_"
     if channel:
         url, body = SLACK_API, {"channel": channel, "text": text}
-        headers = {"Authorization": f"Bearer {os.environ['SLACK_BOT_TOKEN']}"}
+        headers = {"Authorization": f"Bearer {credentials.get('SLACK_BOT_TOKEN')}"}
     else:
-        url, body, headers = os.environ["SLACK_WEBHOOK_URL"], {"text": text}, {}
+        url, body, headers = credentials.get("SLACK_WEBHOOK_URL"), {"text": text}, {}
     request = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                      headers={"Content-Type": "application/json; charset=utf-8", **headers})
     try:

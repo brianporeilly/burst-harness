@@ -452,6 +452,14 @@ orchestrator's page, its API, and later Slack.
    inbound ports are podman only, and with the socket mounted into a
    container, any path the harness bind-mounts has to mean the same on the
    host.
+Credentials (2026-10-28): each run is handed only what it is granted (a task:
+git, model, gateway and MCP keys; a job: what its job.toml names), and
+everything reads credentials through `harness/credentials.py`, whose overlay
+is where per-user credentials go. Not yet: storing them per user (Kubernetes
+Secrets on a cluster, the Keychain or a file locally), signing in with GitHub
+so a task acts as whoever started it, and a GitHub App instead of a personal
+token on the cluster. Those wait for a second user.
+
 4. Maybe: on a cluster, each burst as a Kubernetes Job of the driver image
    instead of a subprocess of the orchestrator, so its memory is the burst's
    and an orchestrator rollout does not cut it short.

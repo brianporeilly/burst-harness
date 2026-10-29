@@ -36,15 +36,14 @@ on requests to the API (see containers.py).
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
-from . import git, git_policy, mcp, state, terminal
-from .containers import MODEL_CREDENTIALS
+from . import credentials, git, git_policy, mcp, state, terminal
 from .agent_sandbox import label_value
+from .containers import MODEL_CREDENTIALS
 from .context import HarnessContext
 from .exec_target import LocalTarget, SubprocessTarget
 
@@ -115,7 +114,7 @@ class ClaudeCodeEngine:
         self._upload(f"{REMOTE_DIR}/git_policy.py", Path(git_policy.__file__).read_text())
         self.hook_path = f"{REMOTE_DIR}/git_policy.py"
 
-        creds = {name: os.environ[name] for name in CREDENTIAL_VARS if os.environ.get(name)}
+        creds = {name: value for name in CREDENTIAL_VARS if (value := credentials.get(name))}
         if "model" in cfg.egress_inject:
             # The gateway holds the real ones and swaps them in for these.
             creds = {name: MODEL_CREDENTIALS[name][1] if name in MODEL_CREDENTIALS else value

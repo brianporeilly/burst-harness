@@ -37,8 +37,14 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import git, mcp
-from .agent_sandbox import LABEL_MANAGED_BY, LABEL_TASK, MANAGED_BY, REQUIRED_COMMANDS, label_value
+from . import credentials, git, mcp
+from .agent_sandbox import (
+    LABEL_MANAGED_BY,
+    LABEL_TASK,
+    MANAGED_BY,
+    REQUIRED_COMMANDS,
+    label_value,
+)
 
 # On the containers of a `harness session`: the session's name.
 LABEL_SESSION = "burst-harness/session"
@@ -184,8 +190,8 @@ def model_rule(cfg: HarnessConfig) -> dict[str, object]:
     api = urlsplit(os.environ.get("ANTHROPIC_BASE_URL") or DEFAULT_MODEL_API)
     if api.scheme != "https" or not api.hostname or (api.port or 443) != 443:
         raise ContainerError(f"--egress-inject model needs ANTHROPIC_BASE_URL to be https:// on port 443 (got {api.geturl()}).")
-    swap = [{"header": header, "placeholder": placeholder, "value": os.environ[name]}
-            for name, (header, placeholder) in MODEL_CREDENTIALS.items() if os.environ.get(name)]
+    swap = [{"header": header, "placeholder": placeholder, "value": credentials.get(name)}
+            for name, (header, placeholder) in MODEL_CREDENTIALS.items() if credentials.get(name)]
     if not swap:
         raise ContainerError(
             f"--egress-inject model needs a credential on the driver: one of {', '.join(MODEL_CREDENTIALS)}."

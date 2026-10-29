@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:  # pragma: no cover
     from strands.models.model import Model
 
+from . import credentials as secrets_
 from .auth import credentials
 from .config import HarnessConfig
 
@@ -153,8 +154,8 @@ def _anthropic(cfg: HarnessConfig) -> "Model":
         client_args["base_url"] = cfg.base_url
     if provider := credentials(cfg):
         client_args["credentials"] = provider
-    elif os.environ.get("ANTHROPIC_API_KEY"):
-        client_args["api_key"] = os.environ["ANTHROPIC_API_KEY"]
+    elif key := secrets_.get("ANTHROPIC_API_KEY"):
+        client_args["api_key"] = key
     return AnthropicModel(client_args=client_args, **model_kwargs(cfg, AnthropicModel, messages_api=True))
 
 
@@ -162,7 +163,7 @@ def _openai(cfg: HarnessConfig) -> "Model":
     """Any OpenAI-compatible endpoint: OpenAI, vLLM, LM Studio, llama-server's /v1."""
     OpenAIModel = _require("strands.models.openai", "OpenAIModel", "openai")
     base_url = cfg.base_url or os.environ.get("OPENAI_BASE_URL", "")
-    api_key = os.environ.get("OPENAI_API_KEY", "")
+    api_key = secrets_.get("OPENAI_API_KEY")
     client_args: dict[str, Any] = {"api_key": api_key or "not-needed"}
     if base_url:
         client_args["base_url"] = base_url
@@ -221,7 +222,7 @@ def _ollama(cfg: HarnessConfig) -> "Model":
 def _gemini(cfg: HarnessConfig) -> "Model":
     GeminiModel = _require("strands.models.gemini", "GeminiModel", "gemini")
     client_args: dict[str, Any] = {}
-    if key := os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"):
+    if key := secrets_.first(("GOOGLE_API_KEY", "GEMINI_API_KEY")):
         client_args["api_key"] = key
     return GeminiModel(client_args=client_args, **model_kwargs(cfg, GeminiModel))
 

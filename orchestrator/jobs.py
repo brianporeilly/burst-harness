@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from harness import cron, job
+from harness import credentials, cron, job
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 OUTPUT = "output.log"
@@ -90,7 +90,7 @@ class JobRunner:
         if spec is None:
             return item
         runs = job.list_runs(cfg, name, limit=20)
-        missing = [s.env for s in spec.secrets if not os.environ.get(s.env)]
+        missing = [s.env for s in spec.secrets if not credentials.get(s.env)]
         item.update(
             trigger=spec.trigger, mode=spec.mode, engine=cfg.engine, model=f"{cfg.provider} {cfg.model_id}",
             outputs=list(spec.outputs), missing=missing,
@@ -185,7 +185,7 @@ class JobRunner:
         spec, cfg, error = self._loaded(path)
         if spec is None:
             raise JobsError(error)
-        if missing := [s.env for s in spec.secrets if not os.environ.get(s.env)]:
+        if missing := [s.env for s in spec.secrets if not credentials.get(s.env)]:
             raise JobsError(f"The orchestrator's environment is missing {', '.join(missing)}, which {name} needs. "
                             "Set it where the orchestrator is started.")
         with self.lock:
@@ -194,12 +194,15 @@ class JobRunner:
             run_id = job.new_run_id()
             directory = job.runs_dir(cfg, name) / run_id
             directory.mkdir(parents=True, exist_ok=True)
+            # Only what this job is granted, not every credential the orchestrator holds.
+            granted = credentials.for_job(cfg, [s.env for s in spec.secrets], spec.outputs)
+            env = credentials.for_run(granted, {
+                job.RUN_ID_ENV: run_id, "PYTHONUNBUFFERED": "1",
+                job.TRIGGER_ENV: "schedule" if scheduled_for else "manual",
+                **({job.SCHEDULED_FOR_ENV: _iso(scheduled_for)} if scheduled_for else {})})
             with open(directory / OUTPUT, "wb") as output:
                 process = subprocess.Popen(
-                    [sys.executable, "-m", "harness", "job", "run", str(path)],
-                    cwd=REPO, env={**os.environ, job.RUN_ID_ENV: run_id, "PYTHONUNBUFFERED": "1",
-                                   job.TRIGGER_ENV: "schedule" if scheduled_for else "manual",
-                                   **({job.SCHEDULED_FOR_ENV: _iso(scheduled_for)} if scheduled_for else {})},
+                    [sys.executable, "-m", "harness", "job", "run", str(path)], cwd=REPO, env=env,
                     stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
                 )
             self.running[name] = (run_id, process)
