@@ -106,7 +106,7 @@ def test_a_task_is_checked_then_run_as_harness_run_in_a_container(tmp_path, harn
     assert argv[argv.index("--repo-url") + 1] == "https://github.com/me/proj.git"
     assert ["--target", "podman", "--egress", "allowlist"] == argv[argv.index("--target"):argv.index("--target") + 4]
     assert "--draft-pr" in argv and argv[argv.index("--base-branch") + 1] == "dev"
-    assert argv[argv.index("--model") + 1] == "claude-opus-5-5"
+    assert harness.started[0][1].env["HARNESS_MODEL_ID"] == "claude-opus-5-5"
     assert argv[-4:] == ["run", made["slug"], "--task", "Fix the flaky test, please!"]
     with pytest.raises(TasksError, match="already"):
         runner.create({"repo": "me/proj", "prompt": "again", "slug": made["slug"]})
@@ -160,6 +160,38 @@ def test_a_burst_gets_the_git_token_and_model_key_not_every_credential(tmp_path,
     env = harness.started[0][1].env
     assert env["GH_TOKEN"] == "gh_token" and env["ANTHROPIC_API_KEY"] == "anthropic_api_key"
     assert "KUBE_TOKEN" not in env and "SLACK_BOT_TOKEN" not in env and env["PYTHONUNBUFFERED"] == "1"
+
+
+def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch):
+    runner = _runner(tmp_path, limit=10)
+    runner.base = replace(runner.base, provider="llamacpp", base_url="http://typhon:8080", model_id="raon",
+                          context_window_limit=65536)
+    monkeypatch.setenv("HARNESS_BASE_URL", "http://typhon:8080")  # as a deployment sets it
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "same"})
+    env = harness.started[-1][1].env  # nothing chosen: the orchestrator's own settings
+    assert env["HARNESS_BASE_URL"] == "http://typhon:8080"
+    assert not {"HARNESS_PROVIDER", "HARNESS_MODEL_ID", "HARNESS_CONTEXT_WINDOW_LIMIT"} & set(env)
+    # Anthropic: none of llama.cpp's URL, label or window goes with it.
+    made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "claude", "provider": "anthropic"})
+    env = harness.started[-1][1].env
+    assert (env["HARNESS_PROVIDER"], env["HARNESS_BASE_URL"], env["HARNESS_MODEL_ID"]) == ("anthropic", "", "claude-opus-5-5")
+    assert env["HARNESS_CONTEXT_WINDOW_LIMIT"] == "1000000" and made["provider"] == "anthropic"
+    assert made["uses"] == {"provider": "anthropic", "model": "claude-opus-5-5", "base_url": ""}
+    assert runner.task("same")["uses"] == {"provider": "llamacpp", "model": "raon", "base_url": "http://typhon:8080"}
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "other", "provider": "openai",
+                   "base_url": "http://other:8000/v1", "model": "qwen3", "context_window": 32768})
+    env = harness.started[-1][1].env
+    assert (env["HARNESS_BASE_URL"], env["HARNESS_MODEL_ID"], env["HARNESS_CONTEXT_WINDOW_LIMIT"]) == (
+        "http://other:8000/v1", "qwen3", "32768")
+    # Claude Code is Anthropic's, whatever the orchestrator's provider.
+    made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "cc", "engine": "claude-code"})
+    assert made["provider"] == "anthropic" and harness.started[-1][1].env["HARNESS_BASE_URL"] == ""
+    for raw, message in [({"provider": "openai"}, "needs a base URL"), ({"provider": "vertex"}, "provider is one of"),
+                         ({"base_url": "file:///etc"}, "not a base URL"), ({"model": "a b"}, "not a model id"),
+                         ({"context_window": "lots"}, "number of tokens"),
+                         ({"engine": "claude-code", "provider": "llamacpp"}, "always uses Anthropic")]:
+        with pytest.raises(TasksError, match=message):
+            runner.create({"repo": "me/proj", "prompt": "x", "slug": "bad", **raw})
 
 
 def test_on_a_cluster_the_target_is_the_orchestrators_own(tmp_path, harness):

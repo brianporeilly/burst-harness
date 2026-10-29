@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from harness.config import HarnessConfig
 from harness.gateway_control import GatewayError
 from orchestrator.app import create_app  # noqa: E402
 from orchestrator.backend import SessionSpec, SpecError  # noqa: E402
@@ -80,7 +81,7 @@ def test_create_checks_the_spec_and_starts_it(client):
     ({"name": "x", "allow": "http://example.com"}, "allowlist entry"),
     ({"name": "x", "inject": ["ssh"]}, "inject takes"),
     ({"name": "x", "repo_url": "git@github.com:o/r.git"}, "https://"),
-    ({"name": "x", "provider": "llamacpp"}, "base URL"),
+    ({"name": "x", "provider": "llamacpp", "base_url": "llm.lan"}, "not a base URL"),
     ({"name": "x", "idle": "soon"}, "duration"),
 ])
 def test_bad_specs_are_refused_with_a_reason(client, spec, message):
@@ -124,18 +125,24 @@ def test_pending_approve_and_events(client):
 
 
 def test_spec_overrides_only_what_was_chosen():
-    spec = SessionSpec.parse({"name": "box", "provider": "llamacpp", "base_url": "http://llm.lan:8080", "model": "qwen"})
-    assert spec.overrides() == {"repo_url": "", "egress": "allowlist", "egress_inject": (), "container_root": False,
-                                "provider": "llamacpp", "base_url": "http://llm.lan:8080", "model_id": "qwen"}
+    base = HarnessConfig(provider="llamacpp", base_url="http://typhon:8080", model_id="raon")
+    spec = SessionSpec.parse({"name": "box", "provider": "llamacpp", "model": "qwen"})
+    assert spec.overrides(base) == {"repo_url": "", "egress": "allowlist", "egress_inject": (), "container_root": False,
+                                    "model_id": "qwen"}
+    # Another provider starts from its own defaults, not the orchestrator's URL and model.
+    other = SessionSpec.parse({"name": "box", "provider": "anthropic"}).overrides(base)
+    assert (other["provider"], other["base_url"], other["model_id"]) == ("anthropic", "", HarnessConfig().model_id)
+    with pytest.raises(SpecError, match="needs a base URL"):
+        SessionSpec.parse({"name": "box", "provider": "openai"}).overrides(base)
 
 
 def test_mcp_servers_in_a_spec_are_checked_and_kept():
     spec = SessionSpec.parse({"name": "box", "mcp": "context7=https://mcp.context7.com/mcp\n\n"})
     assert spec.mcp == ("context7=https://mcp.context7.com/mcp",)
-    assert spec.overrides()["mcp"] == spec.mcp
+    assert spec.overrides(HarnessConfig())["mcp"] == spec.mcp
     # An empty field is none at all; no field at all is the orchestrator's own setting.
-    assert SessionSpec.parse({"name": "box", "mcp": ""}).overrides()["mcp"] == ()
-    assert "mcp" not in SessionSpec.parse({"name": "box"}).overrides()
+    assert SessionSpec.parse({"name": "box", "mcp": ""}).overrides(HarnessConfig())["mcp"] == ()
+    assert "mcp" not in SessionSpec.parse({"name": "box"}).overrides(HarnessConfig())
     with pytest.raises(SpecError, match="only passes HTTPS"):
         SessionSpec.parse({"name": "box", "mcp": "c7=http://mcp.context7.com/mcp"})
 

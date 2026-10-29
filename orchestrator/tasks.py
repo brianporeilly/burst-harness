@@ -40,6 +40,7 @@ from typing import Any
 from harness import credentials, git
 from harness.config import HarnessConfig
 
+from .backend import SpecError, check_model, model_choice
 from .jobs import OUTPUT, REPO, _iso, _tail, json_file
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
@@ -155,11 +156,27 @@ class TaskRunner:
                 base_branch = git.default_branch(url)
             except git.GitError as err:
                 raise TasksError(f"{err} (the orchestrator reads it with its git token, if it has one)") from err
-        model = str(raw.get("model") or "").strip()
-        if model and not re.fullmatch(r"[A-Za-z0-9._:/@-]{1,100}", model):
-            raise TasksError(f"{model!r} is not a model id.")
+        provider, base_url, model = (str(raw.get(key) or "").strip() for key in ("provider", "base_url", "model"))
+        try:
+            context_window = int(raw.get("context_window") or 0)
+            if context_window < 0:
+                raise ValueError
+            if engine == "claude-code":
+                if provider not in ("", "anthropic"):
+                    raise SpecError("Claude Code always uses Anthropic (the orchestrator's Claude token or key): "
+                                    "leave the provider as it is, or use the Strands engine.")
+                provider = "anthropic"  # and not the orchestrator's other provider's URL or model
+            check_model(provider, base_url, model)
+            chosen = model_choice(self.base, provider, base_url, model, context_window)
+        except ValueError as err:  # SpecError is one
+            raise TasksError(str(err) if isinstance(err, SpecError) else "The context window is a number of tokens.") from err
         record = {
             "slug": slug, "repo": url, "prompt": prompt, "engine": engine, "model": model,
+            "provider": provider, "base_url": base_url, "context_window": context_window,
+            # What that comes to, the orchestrator's defaults filled in: for showing which model works on it.
+            "uses": {"provider": chosen.get("provider", self.base.provider),
+                     "model": chosen.get("model_id", self.base.model_id),
+                     "base_url": chosen.get("base_url", self.base.base_url)},
             "base_branch": base_branch, "draft": bool(raw.get("draft")),
             "branch": self.base.branch_prefix + slug, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
@@ -247,8 +264,6 @@ class TaskRunner:
         if self.base.target == "local":
             # Never on the orchestrator's own machine: in a container, through a gateway.
             argv += ["--target", "podman"] + (["--egress", "allowlist"] if self.base.egress == "open" else [])
-        if record.get("model"):
-            argv += ["--model", record["model"]]
         if record.get("base_branch"):
             argv += ["--base-branch", record["base_branch"]]
         if record.get("sandbox"):
@@ -257,6 +272,12 @@ class TaskRunner:
         if record.get("message"):
             argv += ["--message", record["message"]]
         return argv
+
+    def _model_env(self, record: dict[str, Any]) -> dict[str, str]:
+        """The task's provider and model as the burst's HARNESS_* settings, over the orchestrator's."""
+        chosen = model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
+                              record.get("model") or "", record.get("context_window") or 0)
+        return {f"HARNESS_{name.upper()}": str(value) for name, value in chosen.items()}
 
     def _start(self, record: dict[str, Any]) -> None:
         """Start a burst of a queued task. Called with the lock held."""
@@ -268,7 +289,7 @@ class TaskRunner:
             output.flush()
             process = subprocess.Popen(
                 self._argv(record), cwd=REPO,
-                env=credentials.for_run(credentials.for_task(self.base), {"PYTHONUNBUFFERED": "1"}),
+                env=credentials.for_run(credentials.for_task(self.base), {"PYTHONUNBUFFERED": "1", **self._model_env(record)}),
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
             )
         record["bursts"].append({"started": _now(), "message": record.get("message")})
@@ -339,7 +360,7 @@ def _result(output: Path) -> dict[str, Any]:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "model", "base_branch", "draft", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "uses", "base_branch", "draft", "branch", "created", "created_by",
         "state", "pr", "message", "restarts", "sandbox")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
 

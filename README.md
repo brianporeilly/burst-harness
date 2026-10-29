@@ -585,12 +585,20 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
 
 - `repo` is `owner/repo` on GitHub, or a repo's https URL. Optional fields:
   `slug` (the branch is `harness/SLUG`; by default from the prompt's first
-  words), `engine` (`strands` or `claude-code`), `model`, `base_branch` (by
+  words), `engine` (`strands` or `claude-code`), `base_branch` (by
   default the repo's own, which the orchestrator reads with its git token, so
   a repo it cannot read is refused right away), and `draft`.
+- The model: `provider` (`anthropic`, `llamacpp`, `openai`), `model`,
+  `base_url` and `context_window`, as for sessions. Empty means the
+  orchestrator's own. A different provider from the orchestrator's starts from
+  that provider's defaults, so a cluster's llama.cpp URL does not follow a
+  task to Anthropic. `llamacpp` and `openai` then need a `base_url`. Claude
+  Code is always Anthropic's, with the orchestrator's Claude token or
+  Anthropic key. Each task shows what it uses (`uses`: provider, model and
+  URL, the defaults filled in).
 - Each burst is `harness run SLUG --task PROMPT --repo-url URL` as a
   subprocess, with the orchestrator's environment: its git token and model
-  key, and its target. On a cluster that's a claimed sandbox
+  key, its target, and the task's model settings on top. On a cluster that's a claimed sandbox
   (`--task-ttl`, default `4h`, is how long the claim lives); here it's a fresh
   podman container behind a gateway, never this machine itself.
 - A burst ends in a PR, a pause (the work pushed, with what it needs from you

@@ -95,23 +95,49 @@ class SessionSpec:
             raise SpecError(f"agent is one of {', '.join(session.AGENTS)}.")
         if spec.egress not in EGRESS:
             raise SpecError(f"egress is one of {', '.join(EGRESS)}.")
-        if spec.provider and spec.provider not in PROVIDERS:
-            raise SpecError(f"provider is one of {', '.join(PROVIDERS)}.")
         if spec.repo_url and not spec.repo_url.startswith("https://"):
             raise SpecError("The repo must be an https:// URL: a session reaches the network only through its gateway.")
-        if spec.provider in ("llamacpp", "openai") and not spec.base_url:
-            raise SpecError(f"provider {spec.provider} needs a base URL.")
+        check_model(spec.provider, spec.base_url, spec.model)
         return spec
 
-    def overrides(self) -> dict[str, Any]:
-        """The harness configuration this spec stands for, on top of the user's own."""
+    def overrides(self, base: HarnessConfig) -> dict[str, Any]:
+        """The harness configuration this spec stands for, on top of `base` (the orchestrator's own)."""
         chosen: dict[str, Any] = {
             "repo_url": self.repo_url, "egress": self.egress, "egress_inject": self.inject,
-            "container_root": self.root, "provider": self.provider or None, "base_url": self.base_url or None,
-            "model_id": self.model or None, "context_window_limit": self.context_window or None,
-            "mcp": self.mcp,
+            "container_root": self.root, "mcp": self.mcp,
         }
-        return {key: value for key, value in chosen.items() if value is not None}
+        return {key: value for key, value in chosen.items() if value is not None} | model_choice(
+            base, self.provider, self.base_url, self.model, self.context_window)
+
+
+# The settings that go with one provider and mean nothing to another: a different provider starts
+# from the harness's defaults for them, not from the orchestrator's (typhon's URL is no Anthropic endpoint).
+PROVIDER_SETTINGS = ("base_url", "model_id", "context_window_limit", "model_params", "token_command", "token_file")
+
+
+def check_model(provider: str, base_url: str, model: str) -> None:
+    """A provider, base URL and model id as a form or the API gives them (empty: the default)."""
+    if provider and provider not in PROVIDERS:
+        raise SpecError(f"provider is one of {', '.join(PROVIDERS)}.")
+    if base_url and not re.fullmatch(r"https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?", base_url):
+        raise SpecError(f"{base_url!r} is not a base URL: http(s)://host[:port][/path].")
+    if model and not re.fullmatch(r"[A-Za-z0-9._:/@-]{1,100}", model):
+        raise SpecError(f"{model!r} is not a model id.")
+
+
+def model_choice(base: HarnessConfig, provider: str, base_url: str, model: str, context_window: int) -> dict[str, Any]:
+    """The harness settings for a chosen provider and model, on top of `base`. Empty means base's;
+    another provider than base's resets the settings that went with base's."""
+    chosen: dict[str, Any] = {}
+    if provider and provider != base.provider:
+        if provider in ("llamacpp", "openai") and not base_url:
+            raise SpecError(f"provider {provider} needs a base URL.")
+        defaults = HarnessConfig()
+        chosen = {"provider": provider, **{name: getattr(defaults, name) for name in PROVIDER_SETTINGS}}
+    for name, value in (("base_url", base_url), ("model_id", model), ("context_window_limit", context_window)):
+        if value:
+            chosen[name] = value
+    return chosen
 
 
 def servers(value: Any) -> tuple[str, ...] | None:
@@ -196,6 +222,7 @@ class PodmanBackend:
                 "claude_oauth_token": bool(credentials.get("CLAUDE_CODE_OAUTH_TOKEN")),
             },
             "defaults": {"provider": cfg.provider, "base_url": cfg.base_url, "model": cfg.model_id,
+                         "context_window": cfg.context_window_limit,
                          "allow": list(cfg.egress_allow), "allowed_for_good": containers.approved(cfg),
                          "mcp": list(cfg.mcp)},
             # Which servers' keys this process holds, for the gateway to add (never the keys).
@@ -257,7 +284,7 @@ class PodmanBackend:
     def create(self, spec: SessionSpec) -> None:
         if self.exists(spec.name):
             raise SpecError(f"There is already a session named {spec.name}; start it, or remove it first.")
-        cfg = self.config(spec.overrides())
+        cfg = self.config(spec.overrides(self.base))
         path = self.spec_path(spec.name)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(spec), indent=2) + "\n")
@@ -272,7 +299,7 @@ class PodmanBackend:
             raise SpecError(f"No session named {name}.")
         if spec := self.saved_spec(name):
             # The allowlist is the session's own record's: approvals since creation are in it.
-            cfg = self.config(spec.overrides())
+            cfg = self.config(spec.overrides(self.base))
         else:  # made outside the orchestrator: what its record says
             cfg = self.config({"egress": record.get("egress") or "allowlist", "container_root": bool(record.get("root")),
                                **({"repo_url": record["repo_url"]} if record.get("repo_url") else {})})

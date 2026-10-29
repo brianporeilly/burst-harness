@@ -97,7 +97,21 @@
           <select name="engine"><option value="strands">Strands (the harness's own agent)</option>
             <option value="claude-code">Claude Code</option></select>
         </label>
+        <label>Provider
+          <select name="provider">
+            <option value="">Default</option><option value="anthropic">Anthropic</option>
+            <option value="llamacpp">llama.cpp server</option><option value="openai">OpenAI-compatible</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid2">
         <label>Model <input type="text" name="model" placeholder="default"></label>
+        <label>Base URL <input type="text" name="base_url" placeholder="the default's"></label>
+      </div>
+      <p class="muted" id="task-model-note"></p>
+      <div class="grid2">
+        <label>Context window (tokens) <input type="number" name="context_window" min="0" placeholder="default"></label>
+        <span></span>
       </div>
       <div class="grid2">
         <label>Base branch <input type="text" name="base_branch" placeholder="default"></label>
@@ -239,7 +253,7 @@ const statusChip = (s) => el("span", { class: "chip " + ({ running: "ok", starti
 const duration = (seconds) => !seconds ? "" : seconds % 86400 === 0 ? `${seconds / 86400}d`
   : seconds % 3600 === 0 ? `${seconds / 3600}h` : seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
 
-let sessions = [], selected = null, stream = null, streaming = null;
+let sessions = [], selected = null, stream = null, streaming = null, defaults = null, credentialsHeld = {};
 
 async function loadInfo() {
   const info = await api("/api/info");
@@ -250,6 +264,15 @@ async function loadInfo() {
        (present ? "✓ " : "✗ ") + label[key])));
   if (info.user) creds.append(el("span", { class: "chip", title: "signed in" }, info.user));
   const d = info.defaults;
+  defaults = d;
+  const providerName = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" };
+  const where = (d.base_url || "").replace(/^https?:\/\//, "");
+  for (const select of document.querySelectorAll('select[name="provider"]'))
+    select.options[0].textContent = `Default (${[providerName[d.provider] || d.provider, where].filter(Boolean).join(" · ")})`;
+  for (const input of document.querySelectorAll('input[name="model"]')) input.placeholder = `default (${d.model})`;
+  for (const input of document.querySelectorAll('input[name="context_window"]')) input.placeholder = `default (${d.context_window})`;
+  credentialsHeld = info.credentials;
+  taskModelFields();
   form.mcp.defaultValue = form.mcp.value = (d.mcp || []).join("\n");
   const keys = Object.entries(info.mcp_keys || {});
   if (keys.length) document.getElementById("mcp-keys").textContent = "Keys the gateway adds: " +
@@ -539,9 +562,17 @@ async function refreshTasks() {
       class: "session" + (t.slug === selectedTask ? " selected" : ""), onclick: () => selectTask(t.slug) },
     el("div", { class: "row spread" }, el("span", { class: "name" }, t.slug), taskChip(t.state)),
     el("div", { class: "muted" }, [t.repo.replace(/^https:\/\/(github\.com\/)?/, "").replace(/\.git$/, ""),
-                                    t.engine, when(t.created)].join(" · ")))));
+                                    modelLabel(t), when(t.created)].join(" · ")))));
   if (selectedTask) renderTask();
 }
+
+// The engine, and the provider and model it ran with: the task's own, or the orchestrator's at the time.
+const modelLabel = (t) => {
+  const uses = t.uses || { provider: t.provider, model: t.model };  // tasks from before `uses`
+  if (t.engine === "claude-code") return "Claude Code" + (uses.model ? ` · ${uses.model}` : "");
+  const provider = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" }[uses.provider] || uses.provider || "default model";
+  return `Strands · ${provider}${uses.model ? ` ${uses.model}` : ""}`;
+};
 
 function selectTask(slug) {
   selectedTask = slug;
@@ -588,8 +619,8 @@ async function renderTask() {
   box.replaceChildren(
     el("div", { class: "row spread" }, el("h2", {}, t.slug), el("div", { class: "row" }, ...actions)),
     el("p", {}, taskChip(t.state), " ", t.pr ? el("a", { href: t.pr, target: "_blank", rel: "noopener" }, t.pr) : null,
-      el("span", { class: "muted" }, ` ${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""} · ${t.engine}`
-        + (t.model ? ` ${t.model}` : "") + (t.created_by ? ` · by ${t.created_by}` : ""))),
+      el("span", { class: "muted" }, ` ${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""} · ${modelLabel(t)}`
+        + ((t.uses || t).base_url ? ` at ${(t.uses || t).base_url}` : "") + (t.created_by ? ` · by ${t.created_by}` : ""))),
     t.state === "paused" ? el("p", { class: "muted" }, "Paused: the work is pushed, with where it stands and any questions "
       + "in the task document on the branch (and at the end of the output).") : null,
     t.sandbox ? el("p", { class: "muted" }, "Its sandbox is kept, with work not yet pushed: continuing carries on there. "
@@ -619,6 +650,26 @@ document.getElementById("task-cancel").onclick = () => {
   document.getElementById("task-create").classList.add("hidden");
   document.getElementById("task-detail").classList.remove("hidden");
 };
+// What an empty field means, for the provider chosen; Claude Code is Anthropic's whatever is chosen.
+function taskModelFields() {
+  if (!defaults) return;
+  const claude = taskForm.engine.value === "claude-code";
+  const provider = claude ? "anthropic" : taskForm.provider.value || defaults.provider;
+  const own = provider === defaults.provider && !(claude && defaults.provider !== "anthropic");
+  taskForm.provider.disabled = claude;
+  taskForm.base_url.disabled = claude;
+  taskForm.base_url.required = !own && provider !== "anthropic";
+  taskForm.base_url.placeholder = own ? (defaults.base_url ? `default (${defaults.base_url})` : "the provider's own") : provider === "anthropic" ? "Anthropic's own" : "http://llm.lan:8080";
+  taskForm.model.placeholder = own ? `default (${defaults.model})` : provider === "anthropic" ? "default (claude-opus-5-5)" : "the server's model";
+  taskForm.context_window.placeholder = own ? `default (${defaults.context_window})` : "default (1000000)";
+  const held = credentialsHeld;
+  const key = held.anthropic_api_key || (claude && held.claude_oauth_token);
+  document.getElementById("task-model-note").textContent = claude
+    ? `Claude Code uses Anthropic, with the orchestrator's ${held.claude_oauth_token ? "Claude token ✓" : held.anthropic_api_key ? "Anthropic key ✓" : "Claude token or Anthropic key, and it has neither ✗"}.`
+    : provider === "anthropic" ? `Anthropic, with the orchestrator's key${key ? " ✓" : ": it has none ✗"}.`
+    : provider === "llamacpp" && !own ? "Set the context window to the server's --ctx-size." : "";
+}
+taskForm.engine.onchange = taskForm.provider.onchange = taskModelFields;
 taskForm.onsubmit = async (event) => {
   event.preventDefault();
   const error = document.getElementById("task-form-error");
@@ -628,6 +679,7 @@ taskForm.onsubmit = async (event) => {
   try {
     const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     taskForm.reset();
+    taskModelFields();
     selectTask(created.slug);
   } catch (err) { error.textContent = err.message; }
 };
