@@ -278,6 +278,10 @@ def test_a_kept_sandbox_is_where_the_next_burst_carries_on_until_the_work_is_pus
     runner.resume("t")
     harness.started[2][1].finish(0, state="paused", kept=False, target=kept)
     assert _settled(runner, "t", "paused")["sandbox"] is None
+    for _ in range(200):  # the release comes just after the state is written, outside the lock
+        if released:
+            break
+        threading.Event().wait(0.02)
     assert released == [[*released[0][:3], "--target", "podman", "--docker-container", "burst-t-1a2b3c", "release"]]
     assert "releasing the kept sandbox" in runner.task("t")["output"]
 
