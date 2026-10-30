@@ -139,8 +139,10 @@ Also done: `--idle` and `--lifetime` (the gateway counts and exits; the
 sandbox follows), `--root` on rootless podman for tasks and sessions, and
 opencode's Anthropic key at the gateway (`--egress-inject model`).
 
-Phase 4 is complete on podman. Carried forward: sessions on anything but
-podman, and TLS for the UIs (they are plain HTTP behind a password or token).
+Phase 4 is complete on podman, and sessions run on docker too (2026-10-29: the
+sandbox gets a fixed address on its network there as well, just no route).
+Carried forward: TLS for the UIs (they are plain HTTP behind a password or
+token).
 
 - `opencode` engine; llama.cpp via its OpenAI-compatible endpoint.
 - `harness session`: start detached, list, reattach, stop. Optional repo.
@@ -451,13 +453,13 @@ orchestrator's page, its API, and later Slack.
 3. Packaging, for the work machine (macOS with OrbStack) and a server: a
    `pyproject.toml` with `harness` and `orchestrator` commands, managed with
    uv (a lockfile, `uv sync`/`uv run`, uv in the images) in place of pip and
-   the requirements files: done (2026-10-29). Then a compose
-   file running the orchestrator image with the host's docker or podman
-   socket, a state volume and an env file. To check on docker: the gateway
-   has no transparent redirect there (proxy variables instead), sessions'
-   inbound ports are podman only, and with the socket mounted into a
-   container, any path the harness bind-mounts has to mean the same on the
-   host.
+   the requirements files: done (2026-10-29). Docker as the local runtime
+   (`HARNESS_TARGET=docker`) for tasks, jobs and sessions, with the
+   orchestrator run natively on the Mac: done (2026-10-29), tested against a
+   real dockerd but not yet on a Mac. No compose file: a containerized
+   orchestrator would need docker's socket (root on the docker host) and the
+   host's loopback, where sessions' UIs are published. Not yet: arm64 images
+   (on Apple silicon the amd64 ones run under Rosetta).
 Credentials (2026-10-28): each run is handed only what it is granted (a task:
 git, model, gateway and MCP keys; a job: what its job.toml names), and
 everything reads credentials through `harness/credentials.py`, whose overlay

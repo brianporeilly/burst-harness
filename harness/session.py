@@ -41,8 +41,10 @@ except its gateway: the gateway listens on the host and passes connections in,
 recording each. opencode asks for a password, generated per session and kept in
 `state_dir`/sessions (0600) so `start` can show it again.
 
-podman only, for now: the gateway has to know the sandbox's address ahead of
-time, which needs a network podman lets us lay out.
+On podman, or on docker with `--target docker` (`use`). Either way the
+gateway is told the sandbox's address ahead of time, on a network with a subnet
+of its own. Only podman also routes what ignores the proxy into the gateway; on
+docker the sandbox has no route out at all.
 """
 
 from __future__ import annotations
@@ -72,7 +74,9 @@ from .config import HarnessConfig
 from .containers import ContainerError
 from .exec_target import DockerTarget
 
+# The container runtime sessions run on: podman unless `use` says docker.
 BINARY = "podman"
+RUNTIMES = ("podman", "docker")
 UI_PORT = 4096
 UI_USER = "opencode"
 # zellij's web server listens on loopback only (anything else needs a
@@ -285,6 +289,12 @@ def _opencode_api(base: str, password: str) -> Callable[[str, str, dict[str, Any
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response)
     return call
+
+
+def use(target: str) -> None:
+    """Run sessions on docker when that is the target, and on podman otherwise."""
+    global BINARY
+    BINARY = target if target in RUNTIMES else "podman"
 
 
 def _podman(*args: str, env: dict[str, str] | None = None, stdin: str | None = None) -> subprocess.CompletedProcess[str]:

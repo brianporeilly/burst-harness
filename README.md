@@ -20,6 +20,32 @@ Or as tools on your PATH, from anywhere: `uv tool install --editable .`. Below,
 `python -m harness` and `harness` are the same thing (likewise the
 orchestrator).
 
+### On a Mac, with docker (OrbStack or Docker Desktop)
+
+The harness and the orchestrator run on the Mac itself; sandboxes and their
+gateways are docker containers.
+
+```bash
+brew install uv gh                # git comes with the Xcode command line tools
+uv tool install --editable .      # harness and orchestrator on your PATH
+export HARNESS_TARGET=docker      # or target = "docker" in ~/.config/burst-harness/config.toml
+orchestrator                      # tasks, jobs and sessions, all in docker
+```
+
+What is different from podman:
+
+- **No transparent redirect.** A sandbox's only way out is its gateway's proxy.
+  Software that ignores `HTTPS_PROXY` gets nowhere, instead of being caught and
+  recorded by the gateway.
+- **No `--root`.** Root in a docker container is root on docker's VM, so the
+  harness refuses it.
+- **amd64 images.** On Apple silicon, OrbStack and Docker Desktop run them under
+  Rosetta. They behave the same, only slower.
+
+The orchestrator is not packaged as a container. It would need docker's socket,
+which is root on the docker host. It also checks sessions' UIs on the host's
+loopback, which a container doesn't share.
+
 ## Usage
 
 ```bash
@@ -133,7 +159,7 @@ pod, and the agent's tools become `sandbox_shell` / `sandbox_file_editor`, bound
 to it. The conversation snapshot stays harness-side under `state_dir` — a pod is
 disposable and the snapshot has to outlive it.
 
-### Local containers (`--target podman`)
+### Local containers (`--target podman` or `docker`)
 
 ```bash
 python -m harness --target podman --repo-url https://github.com/me/scratch.git \
@@ -162,7 +188,8 @@ The container is attached only to its own `--internal` network — no route out 
 and a gateway sidecar (`--gateway-image`, built from `gateway/`) is the only way
 out. Its proxy variables and its resolver point at the sidecar. On podman the
 sidecar is also the network's default route, so software that ignores the proxy
-variables lands there all the same.
+variables lands there all the same. On docker the container has no route at
+all, so such software fails.
 
 | `--egress` | Passes | Use |
 |---|---|---|
@@ -365,7 +392,8 @@ python -m harness session rm my-box        # delete the workspace too
 
 `start` prints the UI's address and a password (user `opencode`), and prints them
 again if the session is already running. `--repo-url` is optional: without it the
-workspace starts empty. On podman, or on a cluster (below).
+workspace starts empty. On podman, on docker (`--target docker`, with the differences
+above), or on a cluster (below).
 
 The address opens on an opencode session in the workspace (the repo's checkout,
 with `--repo-url`): the latest one there, or one `start` creates, titled after

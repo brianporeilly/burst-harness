@@ -1,9 +1,10 @@
 """python -m orchestrator [--port 8700]: the orchestrator, on this machine only
 unless told otherwise.
 
-Sessions run on this machine's podman, or, with target = agent-sandbox in the
-configuration (HARNESS_TARGET and the rest of a cluster session's settings:
-README "On a cluster"), on that cluster, behind its shared gateway.
+Sessions run on this machine's podman (docker with HARNESS_TARGET=docker), or,
+with target = agent-sandbox in the configuration (HARNESS_TARGET and the rest
+of a cluster session's settings: README "On a cluster"), on that cluster,
+behind its shared gateway.
 
 Credentials it can hand to sessions come from its own environment, as for the
 harness: HARNESS_GIT_TOKEN (or GH_TOKEN), ANTHROPIC_API_KEY,
@@ -22,10 +23,11 @@ default 1h) is run late, once; one missed for longer is skipped. With
 resumed in the Jobs tab. See jobs.py.
 
 Tasks (tasks.py): a repo and a prompt, worked on in a sandbox until there is a
-PR, with this orchestrator's credentials and target (podman here, never this
-machine itself). --task-limit (ORCHESTRATOR_TASK_LIMIT, default 1) of them run
-at once, the rest queued; --task-ttl (ORCHESTRATOR_TASK_TTL, default 4h) is how
-long a burst's sandbox claim lives on a cluster. --no-tasks turns them off.
+PR, with this orchestrator's credentials and target (podman or docker here,
+never this machine itself). --task-limit (ORCHESTRATOR_TASK_LIMIT, default 1)
+of them run at once, the rest queued; --task-ttl (ORCHESTRATOR_TASK_TTL,
+default 4h) is how long a burst's sandbox claim lives on a cluster. --no-tasks
+turns them off.
 
 API tokens (tokens.py, made in the Tokens tab) let scripts, other machines and
 bots use the Tasks API: `Authorization: Bearer orch_...`. --listen 0.0.0.0
@@ -98,7 +100,7 @@ def main() -> None:
                      start_paused=args.start_paused) if directories else None
     base = HarnessConfig.load(None, {})
     backend = ClusterBackend(base) if base.target == "agent-sandbox" else PodmanBackend(base)
-    where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else "sessions on podman"
+    where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
         names = ", ".join(args.host) or "this machine"
         print(f"Orchestrator on {args.listen}:{args.port} for {names}, signed in by {args.user_header}, {where}")

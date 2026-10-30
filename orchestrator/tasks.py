@@ -2,8 +2,8 @@
 
 A task is `harness run SLUG --task PROMPT` against a repo URL, as a subprocess,
 exactly what the command line would do, with the orchestrator's environment
-(its credentials, its target: podman here, agent-sandbox on a cluster). Each
-run of it is a burst. A burst ends in a PR, a pause (the work pushed, with
+(its credentials, its target: podman or docker here, agent-sandbox on a
+cluster). Each run of it is a burst. A burst ends in a PR, a pause (the work pushed, with
 questions in the task document), an abandon, or no terminal state at all.
 Continuing a task is another burst, `harness run SLUG --message REPLY`, which
 picks up from the pushed branch in a fresh sandbox, so nothing waits in memory.
@@ -261,9 +261,10 @@ class TaskRunner:
     def _argv(self, record: dict[str, Any]) -> list[str]:
         argv = [sys.executable, "-m", "harness", "--repo-url", record["repo"], "--engine", record["engine"],
                 "--claim-ttl", str(self.claim_ttl), "--draft-pr" if record.get("draft") else "--no-draft-pr"]
-        if self.base.target == "local":
+        if self.base.target in ("local", "podman", "docker"):
             # Never on the orchestrator's own machine: in a container, through a gateway.
-            argv += ["--target", "podman"] + (["--egress", "allowlist"] if self.base.egress == "open" else [])
+            runtime = "docker" if self.base.target == "docker" else "podman"
+            argv += ["--target", runtime] + (["--egress", "allowlist"] if self.base.egress == "open" else [])
         if record.get("base_branch"):
             argv += ["--base-branch", record["base_branch"]]
         if record.get("sandbox"):

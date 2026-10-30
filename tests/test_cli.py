@@ -84,10 +84,10 @@ def test_git_auth_is_left_to_the_gateway_when_it_injects(monkeypatch):
     assert cli._git_auth(HarnessConfig(egress_inject=("git",)), "https://github.com/o/r") == ()
 
 
-def test_session_needs_a_name_and_podman_or_agent_sandbox(monkeypatch):
+def test_session_needs_a_name_and_a_container_runtime_or_agent_sandbox(monkeypatch):
     with pytest.raises(SystemExit, match="needs a session name"):
         cli.main(["session", "stop"])
-    with pytest.raises(SystemExit, match="podman or agent-sandbox"):
+    with pytest.raises(SystemExit, match="podman, docker or agent-sandbox"):
         cli.main(["--target", "kubectl", "session", "start", "x"])
     with pytest.raises(SystemExit, match="needs pool, gateway_control, session_domain"):
         cli.main(["--target", "agent-sandbox", "--namespace", "s", "session", "start", "x"])

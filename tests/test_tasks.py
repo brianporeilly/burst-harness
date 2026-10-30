@@ -67,8 +67,8 @@ def harness(monkeypatch):
     return fake
 
 
-def _runner(tmp_path, **options):
-    base = replace(HarnessConfig.load(None, {}), state_dir=str(tmp_path / "state"), target="local", egress="open",
+def _runner(tmp_path, target="local", **options):
+    base = replace(HarnessConfig.load(None, {}), state_dir=str(tmp_path / "state"), target=target, egress="open",
                    engine="strands", branch_prefix="harness/")
     return TaskRunner(base, **options)
 
@@ -88,6 +88,12 @@ def test_repos_are_owner_slash_name_or_an_https_url():
     for bad in ("", "proj", "git@github.com:me/proj.git", "http://x/y", "https://x/../y", "me/proj --upload-pack=x"):
         with pytest.raises(TasksError):
             repo_url(bad)
+
+
+def test_a_task_runs_on_docker_when_that_is_the_target(tmp_path, harness):
+    _runner(tmp_path, target="docker").create({"repo": "me/proj", "prompt": "x"})
+    argv = harness.argv()
+    assert ["--target", "docker", "--egress", "allowlist"] == argv[argv.index("--target"):argv.index("--target") + 4]
 
 
 def test_a_task_is_checked_then_run_as_harness_run_in_a_container(tmp_path, harness):

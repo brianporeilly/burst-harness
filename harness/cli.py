@@ -470,8 +470,9 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_session(args: argparse.Namespace) -> int:
     """Long-lived interactive sandboxes: see session.py."""
     cfg = HarnessConfig.load(None, _overrides(args))
-    if cfg.target not in ("local", "podman", "agent-sandbox"):
-        raise SystemExit(f"harness session runs on podman or agent-sandbox (target is {cfg.target}).")
+    if cfg.target not in ("local", "podman", "docker", "agent-sandbox"):
+        raise SystemExit(f"harness session runs on podman, docker or agent-sandbox (target is {cfg.target}).")
+    session.use(cfg.target)
     # On a cluster: the same commands, on a claimed sandbox behind the shared gateway.
     sessions: Any = cluster_session if cfg.target == "agent-sandbox" else session
     try:

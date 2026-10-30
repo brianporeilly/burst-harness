@@ -185,14 +185,15 @@ class Job:
 
 
 class PodmanBackend:
-    """Sessions on this machine's podman, through the harness."""
+    """Sessions on this machine's podman (or docker: target = docker), through the harness."""
 
-    name = "podman"
     # Where list_sessions, load_record, urls, launch, stop and remove come from.
     harness: Any = session
 
     def __init__(self, base: HarnessConfig | None = None) -> None:
         self.base = base or HarnessConfig.load(None, {})
+        session.use(self.base.target)
+        self.name = session.BINARY
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
         # Starting pulls images, clones and waits for UIs: never on the request's thread.

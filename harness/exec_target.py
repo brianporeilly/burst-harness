@@ -193,6 +193,13 @@ class LocalTarget(SubprocessTarget):
         path.write_text(content)
 
 
+def force_remove(binary: str, *containers: str) -> subprocess.CompletedProcess[str]:
+    """Remove containers now, running or not: podman with no grace period
+    (`-t 0`, which docker does not take; its -f kills at once)."""
+    wait = ["-t", "0"] if binary == "podman" else []
+    return subprocess.run([binary, "rm", "-f", *wait, *containers], capture_output=True, text=True)
+
+
 @dataclass(frozen=True)
 class DockerTarget(SubprocessTarget):
     """Run inside a container via `docker exec` or `podman exec`."""
@@ -225,7 +232,9 @@ class DockerTarget(SubprocessTarget):
             return ""
         saved = self.save_events()
         removed = [name for name in (self.container, self.proxy) if name]
-        subprocess.run([self.binary, "rm", "-f", "-t", "0", *removed], capture_output=True)
+        proc = force_remove(self.binary, *removed)
+        if proc.returncode != 0:
+            return f"Could not remove {', '.join(removed)}: {proc.stderr.strip()}{saved}"
         if self.network:
             subprocess.run([self.binary, "network", "rm", self.network], capture_output=True)
             removed.append(f"network {self.network}")

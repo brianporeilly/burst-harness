@@ -37,7 +37,11 @@ def test_events_path_is_under_state_dir(tmp_path):
     assert containers.events_path(cfg, "burst-t-abc") == str(tmp_path / "egress" / "burst-t-abc.jsonl")
 
 
-def test_routed_network_recreates_with_a_route_to_its_gateway(monkeypatch):
+@pytest.mark.parametrize("binary,subnets,create,route", [
+    ("podman", ".Subnets", ("--internal", "--disable-dns"), ("--route", "0.0.0.0/0,10.89.3.254,500")),
+    ("docker", ".IPAM.Config", ("--internal",), ()),  # no routes on docker: only fixed addresses
+])
+def test_fixed_network_recreates_with_its_subnet(monkeypatch, binary, subnets, create, route):
     calls = []
 
     def fake_run(binary, *args):
@@ -45,10 +49,10 @@ def test_routed_network_recreates_with_a_route_to_its_gateway(monkeypatch):
         return "10.89.3.0/24" if args[:2] == ("network", "inspect") else ""
 
     monkeypatch.setattr(containers, "_run", fake_run)
-    assert containers._routed_network("podman", "n-net") == ("10.89.3.0/24", "10.89.3.254")
+    assert containers._fixed_network(binary, "n-net", route=binary == "podman") == ("10.89.3.0/24", "10.89.3.254")
+    assert subnets in calls[1][-1]
     assert calls[2] == ("network", "rm", "n-net")
-    assert calls[3] == ("network", "create", "--internal", "--disable-dns",
-                        "--subnet", "10.89.3.0/24", "--route", "0.0.0.0/0,10.89.3.254,500", "n-net")
+    assert calls[3] == ("network", "create", *create, "--subnet", "10.89.3.0/24", *route, "n-net")
 
 
 def test_inject_rules_scope_the_token_to_the_repo(monkeypatch):
@@ -127,3 +131,22 @@ def test_model_rule_is_allowed_for_a_sessions_opencode(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     (rule,) = containers.inject_rules(HarnessConfig(engine="opencode", egress_inject=("model",)))
     assert rule["host"] == "api.anthropic.com"
+
+
+@pytest.mark.parametrize("binary", ["podman", "docker"])
+def test_the_gateway_passes_connections_in_on_either_runtime(monkeypatch, binary):
+    calls = []
+
+    def fake_run(binary, *args, env=None):
+        calls.append(args)
+        return "10.89.3.0/24" if args[:2] == ("network", "inspect") else ""
+
+    monkeypatch.setattr(containers, "_run", fake_run)
+    _, _, flags = containers.start_egress(
+        HarnessConfig(egress="log", gateway_image="gw"), binary=binary, name="b", slug="s",
+        inbound=(("127.0.0.1", 5000, 4096),))
+    gateway = next(args for args in calls if args[:2] == ("run", "--detach"))
+    assert "127.0.0.1:5000:4096" in gateway and "EGRESS_INBOUND=4096=10.89.3.2:4096" in gateway
+    assert ("--cap-add=NET_ADMIN" in gateway) == (binary == "podman")  # the redirect: podman only
+    assert ("network", "connect", "--ip", "10.89.3.254", "b-net", "b-egress") in calls
+    assert flags[flags.index("--ip") + 1] == "10.89.3.2" and containers.gateway_address(flags) == "10.89.3.254"

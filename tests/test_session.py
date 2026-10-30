@@ -236,3 +236,12 @@ def test_zellij_lets_the_browser_into_the_harnesss_session(tmp_path, before, kep
     assert session.terminal_in(run) == "01234567-89ab-cdef-0123-456789abcdef"
     assert kdl.read_text() == (before if kept else session.ZELLIJ_CONFIG)
     assert kept or 'web_sharing "on"' in kdl.read_text()
+
+
+def test_sessions_run_on_docker_only_when_that_is_the_target(monkeypatch):
+    monkeypatch.setattr(session, "BINARY", "podman")
+    session.use("docker")
+    assert session.BINARY == "docker"
+    for target in ("local", "podman", "kubectl"):
+        session.use(target)
+        assert session.BINARY == "podman"

@@ -49,7 +49,7 @@ from .agent_sandbox import (
 # On the containers of a `harness session`: the session's name.
 LABEL_SESSION = "burst-harness/session"
 from .config import HarnessConfig
-from .exec_target import DockerTarget
+from .exec_target import DockerTarget, force_remove
 
 
 class ContainerError(RuntimeError):
@@ -225,17 +225,22 @@ def _run(binary: str, *args: str, env: dict[str, str] | None = None) -> str:
     return proc.stdout.strip()
 
 
-def _routed_network(binary: str, network: str) -> tuple[str, str]:
-    """Create `network` routing everything to one address on it. Returns (subnet, that address)."""
-    # The route is fixed at creation and needs an address in a subnet podman
-    # has not chosen yet: let it choose, then recreate the network with the route.
-    create = ["network", "create", "--internal", "--disable-dns"]
+def _fixed_network(binary: str, network: str, *, route: bool) -> tuple[str, str]:
+    """Create `network` with a subnet of its own, so addresses on it can be fixed.
+
+    Returns (subnet, the gateway's address on it). With `route` (podman only),
+    everything on the network is routed to that address.
+    """
+    # Fixed addresses and the route need a subnet the runtime has not chosen
+    # yet: let it choose, then recreate the network with that subnet.
+    create = ["network", "create", "--internal", *(["--disable-dns"] if binary == "podman" else [])]
     _run(binary, *create, network)
-    subnet = _run(binary, "network", "inspect", network, "--format", "{{range .Subnets}}{{.Subnet}}{{end}}")
+    subnets = "{{range .Subnets}}{{.Subnet}}{{end}}" if binary == "podman" else "{{range .IPAM.Config}}{{.Subnet}}{{end}}"
+    subnet = _run(binary, "network", "inspect", network, "--format", subnets)
     _run(binary, "network", "rm", network)
     gateway = str(ipaddress.ip_network(subnet)[-2])
     # A worse metric than the gateway's own default route, which it has to keep.
-    _run(binary, *create, "--subnet", subnet, "--route", f"0.0.0.0/0,{gateway},500", network)
+    _run(binary, *create, "--subnet", subnet, *(["--route", f"0.0.0.0/0,{gateway},500"] if route else []), network)
     return subnet, gateway
 
 
@@ -259,8 +264,6 @@ def start_egress(
 
     Returns (network, proxy, run flags that put a container behind them).
     """
-    if inbound and binary != "podman":
-        raise ContainerError("Passing connections in to a container needs podman (it has to have a fixed address).")
     if cfg.egress == "allowlist":
         hosts = allowlist(cfg, allow)
         policy, summary = ["-e", f"EGRESS_ALLOW={','.join(hosts)}"], f"allowlist: {', '.join(hosts)}"
@@ -291,20 +294,21 @@ def start_egress(
     # docker the sandbox has no route at all and only the proxy gets out.
     redirect = binary == "podman"
     subnet = address = fixed = ""
-    if redirect:
-        subnet, address = _routed_network(binary, network)
+    if redirect or inbound:
+        subnet, address = _fixed_network(binary, network, route=redirect)
         # The container's own address, fixed so the gateway can be told where to pass connections in.
         fixed = str(ipaddress.ip_network(subnet)[2])
         for host, host_port, port in inbound:
             policy += ["-p", f"{host}:{host_port}:{port}"]
         if inbound:
             policy += ["-e", "EGRESS_INBOUND=" + ",".join(f"{port}={fixed}:{port}" for _, _, port in inbound)]
+    else:
+        _run(binary, "network", "create", "--internal", network)
+    if redirect:
         # NET_ADMIN is for burst-gateway-netinit, run as root below; the
         # gateway's own process is unprivileged and never holds it. With
         # forwarding off, what the rules do not redirect goes nowhere.
         policy += ["--cap-add=NET_ADMIN", "--sysctl", "net.ipv4.ip_forward=0", "-e", f"EGRESS_REDIRECT={REDIRECT_PORT}"]
-    else:
-        _run(binary, "network", "create", "--internal", network)
     try:
         _run(
             binary, "run", "--detach", "--name", proxy, *_labels(slug), *labels,
@@ -324,7 +328,7 @@ def start_egress(
         ip = address or _run(binary, "inspect", proxy, "--format",
                              "{{(index .NetworkSettings.Networks \"%s\").IPAddress}}" % network)
     except BaseException:  # Ctrl-C too: an unattended run is stopped that way
-        subprocess.run([binary, "rm", "-f", "-t", "0", proxy], capture_output=True)
+        force_remove(binary, proxy)
         subprocess.run([binary, "network", "rm", network], capture_output=True)
         raise
     url = f"http://{ip}:{PROXY_PORT}"
