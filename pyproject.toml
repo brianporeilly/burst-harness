@@ -10,6 +10,8 @@ dependencies = [
     # The orchestrator's web app.
     "fastapi==0.143.0",
     "uvicorn==0.54.0",
+    # Its stored credentials (orchestrator/settings.py).
+    "cryptography==50.0.2",
 ]
 
 [project.optional-dependencies]

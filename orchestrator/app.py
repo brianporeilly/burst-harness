@@ -16,7 +16,8 @@ without that header is refused, and the header is only as good as the network
 policy that lets nothing but the proxy reach this app.
 
 Scripts, other machines and bots use an API token instead (tokens.py), which
-reaches /api/tasks only. With `local_browser` (listening beyond this machine
+reaches /api/tasks only: never the Settings (settings.py), where credentials
+are set. With `local_browser` (listening beyond this machine
 with no signing-in proxy), the browser's way in is for this machine alone, and
 anyone else needs a token.
 """
@@ -24,6 +25,7 @@ anyone else needs a token.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -31,11 +33,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from harness import containers, egress, git, session
+from harness import containers, credentials, egress, git, mcp, session
 from harness.exec_target import ExecError
 
 from .backend import Backend, SessionSpec, SpecError
 from .jobs import JobRunner, JobsError
+from .settings import CredentialStore, SettingsError
 from .tasks import TaskRunner, TasksError
 from .tokens import TokenError, TokenStore, user_of
 
@@ -44,13 +47,13 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
-               JobsError, TasksError, TokenError)
+               JobsError, TasksError, TokenError, SettingsError)
 LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
-               tokens: TokenStore | None = None, hosts: tuple[str, ...] = (), user_header: str = "",
-               local_browser: bool = False) -> FastAPI:
+               tokens: TokenStore | None = None, settings: CredentialStore | None = None,
+               hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
 
@@ -245,5 +248,33 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     def revoke_token(ident: str) -> dict[str, str]:
         record = token_store().revoke(ident)
         return {"message": f"Revoked {record['name']}."}
+
+    # --- Settings: credentials (never with a token: see the guard) ---
+
+    def credential_store() -> CredentialStore:
+        if settings is None:
+            raise SettingsError("Settings are not on in this orchestrator.")
+        return settings
+
+    @app.get("/api/settings/credentials")
+    def list_credentials() -> list[dict[str, Any]]:
+        # What this orchestrator's sessions, tasks and jobs would use: its MCP servers' keys, its jobs' secrets.
+        base = getattr(backend, "base", None)
+        names = [*(name for name in credentials.GIT if os.environ.get(name)),
+                 *(mcp.key_var(name) for name in (mcp.servers(base) if base else {})),
+                 *(jobs.secret_names() if jobs else [])]
+        return credential_store().listing(names)
+
+    @app.put("/api/settings/credentials/{name}")
+    async def set_credential(name: str, request: Request) -> dict[str, str]:
+        credential_store().set(name, str((await body(request)).get("value") or ""), user=request.state.user)
+        return {"message": f"Set {name}. What starts from now on uses it."}
+
+    @app.delete("/api/settings/credentials/{name}")
+    def clear_credential(name: str) -> dict[str, str]:
+        if not credential_store().clear(name):
+            raise SettingsError(f"{name} is not set here.")
+        back = "the environment's value" if credentials.source(name) else "nothing: it has no value now"
+        return {"message": f"Cleared {name}; from now on it is {back}."}
 
     return app

@@ -440,7 +440,7 @@ orchestrator's page, its API, and later Slack.
    (sessions use one only through the gateway) and egress from its pod to
    GitHub, since the driver opens the PR.
 2. Callers other than the browser. API tokens: done (2026-10-29). The
-   orchestrator makes them (the Tokens tab), keeps only a hash, and a token
+   orchestrator makes them (the Settings tab), keeps only a hash, and a token
    reaches the Tasks API alone; tasks it starts are "you via NAME". Without a
    signing-in proxy, `--listen` beyond this machine serves the page locally
    and the Tasks API to token holders. On the cluster, a token needs a route
@@ -463,7 +463,9 @@ orchestrator's page, its API, and later Slack.
 Credentials (2026-10-28): each run is handed only what it is granted (a task:
 git, model, gateway and MCP keys; a job: what its job.toml names), and
 everything reads credentials through `harness/credentials.py`, whose overlay
-is where per-user credentials go. Not yet: storing them per user (Kubernetes
+is where per-user credentials go. Settings (2026-10-30): credentials set in
+the page, write-only, kept encrypted (`ORCHESTRATOR_SECRETS_KEY`) and used in
+place of the environment's, for the orchestrator as a whole. Not yet: storing them per user (Kubernetes
 Secrets on a cluster, the Keychain or a file locally), signing in with GitHub
 so a task acts as whoever started it, and a GitHub App instead of a personal
 token on the cluster. Those wait for a second user.

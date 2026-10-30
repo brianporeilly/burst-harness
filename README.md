@@ -561,7 +561,26 @@ uv run orchestrator               # http://127.0.0.1:8700/ (or python -m orchest
 It drives the same `harness session` and `harness egress` code, so sessions it
 makes are ordinary sessions; it remembers what each was created with, so
 starting one again means the same thing. Credentials it can hand on come from
-its own environment, as for the harness; the page shows which are there.
+the Settings tab, or else its own environment, as for the harness; the page
+shows which are there.
+
+**Settings.** The Settings tab sets credentials in the page instead of the
+orchestrator's environment: a git token, `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, your MCP servers' and jobs' keys, or any name that
+looks like a credential. A value set there is used instead of the environment
+variable of the same name by everything started afterwards. Clearing it goes
+back to the environment's value.
+
+- Values are write-only. The page and `/api/settings/credentials` show where
+  each value comes from and who set it when, never the value itself. API
+  tokens can't reach it.
+- They're stored encrypted (Fernet) in `credentials.enc` in the state
+  directory, mode 600. The key is `ORCHESTRATOR_SECRETS_KEY`, or else
+  `secrets.key`, which the orchestrator makes beside it. Setting the variable
+  keeps the key away from the data; make one with `python -c "from
+  cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+- A key that doesn't open an existing `credentials.enc` stops the orchestrator
+  from starting. It won't run without the credentials or write over them.
 
 **What each run is handed.** A task's burst and a job's run are subprocesses,
 and each gets the orchestrator's environment with every credential taken out
@@ -660,7 +679,7 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
   off.
 
-**API tokens.** For scripts, other machines and bots, make a token in the Tokens
+**API tokens.** For scripts, other machines and bots, make a token in the Settings
 tab (`POST /api/tokens` with `{"name": ...}`). It is shown once, and the
 orchestrator keeps only its SHA-256 (`tokens.json` in the state directory,
 mode 600). Revoke it there.

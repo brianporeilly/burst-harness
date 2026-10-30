@@ -29,7 +29,11 @@ of them run at once, the rest queued; --task-ttl (ORCHESTRATOR_TASK_TTL,
 default 4h) is how long a burst's sandbox claim lives on a cluster. --no-tasks
 turns them off.
 
-API tokens (tokens.py, made in the Tokens tab) let scripts, other machines and
+Settings (settings.py, the Settings tab): credentials set in the page, used
+in place of the environment's, kept encrypted with ORCHESTRATOR_SECRETS_KEY (or
+a key it makes in the state directory).
+
+API tokens (tokens.py, made in the Settings tab) let scripts, other machines and
 bots use the Tasks API: `Authorization: Bearer orch_...`. --listen 0.0.0.0
 with no --user-header serves the browser to this machine alone and the Tasks
 API to anyone with a token. That is plain HTTP, so only on a network you
@@ -58,6 +62,7 @@ from harness.session import SessionError, seconds
 from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
+from .settings import CredentialStore, SettingsError, load_key
 from .tasks import TaskRunner
 from .tokens import TokenStore
 
@@ -95,10 +100,17 @@ def main() -> None:
         task_ttl = seconds(args.task_ttl)
     except (ZoneInfoNotFoundError, ValueError, SessionError) as err:
         parser.error(f"--timezone / --catch-up / --task-ttl: {err}")
+    base = HarnessConfig.load(None, {})
+    state = Path(base.state_dir).expanduser()
+    # Before anything that runs: tasks recovered and jobs scheduled read credentials from here.
+    try:
+        key, key_note = load_key(state)
+        settings = CredentialStore(state / "credentials.enc", key)
+    except SettingsError as err:
+        parser.error(str(err))
     directories = [*args.jobs, *filter(None, os.environ.get("ORCHESTRATOR_JOBS", "").split(os.pathsep))]
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
                      start_paused=args.start_paused) if directories else None
-    base = HarnessConfig.load(None, {})
     backend = ClusterBackend(base) if base.target == "agent-sandbox" else PodmanBackend(base)
     where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
@@ -109,6 +121,7 @@ def main() -> None:
               f"(http://127.0.0.1:{args.port}/), the Tasks API from anywhere with a token (plain HTTP), {where}")
     else:
         print(f"Orchestrator on http://127.0.0.1:{args.port}/ (this machine only), {where}")
+    print(f"Credentials set in Settings: {state / 'credentials.enc'}, {key_note}")
     if jobs:
         print(f"Jobs from {', '.join(str(d) for d in jobs.directories)}: {', '.join(jobs.discover()) or 'none found'}")
         if jobs.schedule:
@@ -121,9 +134,9 @@ def main() -> None:
         for line in tasks.recover():
             print(f"tasks: {line}")
         tasks.dispatch()
-    tokens = TokenStore(Path(base.state_dir).expanduser() / "tokens.json")
-    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, hosts=tuple(args.host), user_header=args.user_header,
-                     local_browser=local_browser)
+    tokens = TokenStore(state / "tokens.json")
+    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, hosts=tuple(args.host),
+                     user_header=args.user_header, local_browser=local_browser)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
 
 

@@ -84,6 +84,14 @@ class JobRunner:
         except job.JobError as err:
             return None, None, str(err)
 
+    def secret_names(self) -> list[str]:
+        """The variables the jobs' secrets are read from, for the Settings tab."""
+        names = []
+        for path in self.discover().values():
+            spec, _, _ = self._loaded(path)
+            names += [s.env for s in spec.secrets] if spec else []
+        return list(dict.fromkeys(names))
+
     def _summary(self, name: str, path: Path) -> dict[str, Any]:
         spec, cfg, error = self._loaded(path)
         item: dict[str, Any] = {"name": name, "path": str(path), "error": error, "running": name in self.running}

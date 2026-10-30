@@ -75,7 +75,7 @@
 <body>
 <header>
   <div class="row"><h1>Burst Orchestrator</h1>
-    <nav class="tabs"><button data-tab="tasks">Tasks</button><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button><button data-tab="tokens">Tokens</button></nav>
+    <nav class="tabs"><button data-tab="tasks">Tasks</button><button data-tab="sessions" class="active">Sessions</button><button data-tab="jobs">Jobs</button><button data-tab="settings">Settings</button></nav>
   </div>
   <div class="row" id="creds"></div>
 </header>
@@ -131,7 +131,24 @@
     <p class="muted">Choose a job.</p>
   </section>
 </main>
-<main id="tokens-view" class="hidden">
+<main id="settings-view" class="hidden">
+  <section class="panel">
+    <h2>Credentials</h2>
+    <p class="muted">A credential set here is used instead of the orchestrator's environment variable of the same
+      name, by sessions, tasks and jobs started from now on. Values are never shown again, here or by the API.
+      Clearing one goes back to the environment's.</p>
+    <div id="credentials"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="panel">
+    <h2>Set a credential</h2>
+    <form id="credential-form" autocomplete="off">
+      <label>Name <input type="text" name="name" required maxlength="64" list="credential-names"
+        pattern="[A-Z][A-Z0-9_]{1,63}" placeholder="ANTHROPIC_API_KEY"></label>
+      <datalist id="credential-names"></datalist>
+      <label>Value <input type="password" name="value" required autocomplete="new-password"></label>
+      <div class="row"><button class="primary" type="submit">Set</button><span class="error" id="credential-form-error"></span></div>
+    </form>
+  </section>
   <section class="panel">
     <h2>API tokens</h2>
     <p class="muted">A token lets a script, another machine or a bot use the Tasks API, and nothing else:
@@ -703,7 +720,48 @@ taskForm.onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
-// --- tokens ---
+// --- settings: credentials ---
+
+const SOURCES = { stored: "set here", environment: "from the environment", "": "not set" };
+
+async function refreshCredentials() {
+  let found;
+  try { found = await api("/api/settings/credentials"); } catch (err) {
+    document.getElementById("credentials").replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const box = document.getElementById("credentials");
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  document.getElementById("credential-names").replaceChildren(...found.map((c) => el("option", { value: c.name })));
+  box.replaceChildren(el("table", {},
+    el("tr", {}, el("th", {}, "Name"), el("th", {}, "Value"), el("th", {}, "Changed"), el("th", {}, "")),
+    ...found.map((c) => el("tr", {},
+      el("td", {}, el("code", {}, c.name), c.use ? el("div", { class: "muted" }, c.use) : ""),
+      el("td", {}, el("span", { class: "chip " + (c.source ? "ok" : "") }, SOURCES[c.source]),
+        c.environment_too ? el("div", { class: "muted" }, "over the environment's") : ""),
+      el("td", {}, c.updated ? when(c.updated) + (c.updated_by ? ` by ${c.updated_by}` : "") : ""),
+      el("td", {}, c.source === "stored" ? el("button", { class: "danger", onclick: async () => {
+        if (!confirm(`Clear ${c.name}? ${c.environment_too ? "The environment's value is used again."
+          : "It will have no value."}`)) return;
+        try { await api(`/api/settings/credentials/${c.name}`, { method: "DELETE" }); } catch (err) { alert(`Clear: ${err.message}`); }
+        refreshCredentials(); loadInfo().catch(() => {});
+      } }, "Clear") : "")))));
+}
+
+document.getElementById("credential-form").onsubmit = async (event) => {
+  event.preventDefault();
+  const form = event.target, error = document.getElementById("credential-form-error");
+  error.textContent = "";
+  try {
+    await api(`/api/settings/credentials/${encodeURIComponent(form.name.value.trim())}`,
+      { method: "PUT", body: JSON.stringify({ value: form.value.value }) });
+    form.reset();
+    refreshCredentials(); loadInfo().catch(() => {});
+  } catch (err) { error.textContent = err.message; }
+};
+
+// --- settings: tokens ---
 
 async function refreshTokens() {
   let found;
@@ -744,7 +802,8 @@ document.getElementById("token-form").onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
-const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs, tokens: refreshTokens };
+const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
+  settings: () => { refreshCredentials(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;
@@ -752,7 +811,7 @@ function showTab(name) {
   document.getElementById("sessions-view").classList.toggle("hidden", name !== "sessions");
   document.getElementById("jobs-view").classList.toggle("hidden", name !== "jobs");
   document.getElementById("tasks-view").classList.toggle("hidden", name !== "tasks");
-  document.getElementById("tokens-view").classList.toggle("hidden", name !== "tokens");
+  document.getElementById("settings-view").classList.toggle("hidden", name !== "settings");
   try { localStorage.setItem("tab", name); } catch {}
   views[name]();
 }
@@ -761,6 +820,7 @@ for (const button of document.querySelectorAll(".tabs button")) button.onclick =
 loadInfo().catch(() => {});
 let savedTab = "sessions";
 try { savedTab = localStorage.getItem("tab") || "sessions"; } catch {}
+if (savedTab === "tokens") savedTab = "settings";  // the Tokens tab is part of Settings now
 showTab(savedTab in views ? savedTab : "sessions");
 setInterval(() => views[tab](), 3000);
 </script>

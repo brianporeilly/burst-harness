@@ -1,10 +1,10 @@
 """Credentials: where the harness and the orchestrator get secrets, and what each run is handed.
 
 Everything that needs a token or key asks `get(NAME)`, never the environment
-directly. Today the answer comes from the process's environment, as it always
-has. `overlay()` puts other values in front of it for the code it wraps (a
-request, a run), which is where per-user credentials go once there are users:
-the callers do not change.
+directly. The answer is, in order: an `overlay()` around the code asking (a
+request, a run; where per-user credentials go once there are users), then
+what `use_stored()` was given (the orchestrator's Settings: values set in its
+page), then the process's environment. The callers do not change.
 
 A run the orchestrator starts (a task's burst, a job's run) is a subprocess.
 It gets `for_run(...)`: the orchestrator's environment with every credential
@@ -45,14 +45,31 @@ LOOKS_SECRET = re.compile(r"(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|CRED
 PASS_ENV = "ORCHESTRATOR_PASS_ENV"
 
 _overlay: ContextVar[Mapping[str, str]] = ContextVar("credentials_overlay", default={})
+# For the whole process, every thread: the orchestrator's stored credentials.
+_stored: Mapping[str, str] = {}
 
 
 def get(name: str) -> str:
-    """A credential's value, or "" if there is none: the overlay's, else the environment's."""
+    """A credential's value, or "" if there is none: the overlay's, else the stored, else the environment's."""
     layer = _overlay.get()
     if name in layer:
         return layer[name].strip()
+    if name in _stored:
+        return _stored[name].strip()
     return os.environ.get(name, "").strip()
+
+
+def source(name: str) -> str:
+    """Where get(name) finds a value: "stored", "environment", or "" for nowhere."""
+    if _stored.get(name, "").strip():
+        return "stored"
+    return "environment" if os.environ.get(name, "").strip() else ""
+
+
+def use_stored(values: Mapping[str, str]) -> None:
+    """Put these in front of the environment's values, for the whole process, replacing what was there."""
+    global _stored
+    _stored = dict(values)
 
 
 def first(names: Iterable[str]) -> str:
