@@ -895,6 +895,12 @@ a gateway (`--egress open`), the server is used without the key. The
 orchestrator's form lists its own servers, which you can change for each
 session, and shows which keys it holds.
 
+With `--engine strands` only, a server on the driver's loopback may be plain
+`http://` (`127.0.0.1`, `::1` or `localhost`), such as a local test server:
+`planner=http://127.0.0.1:8931/mcp`. MCPClient reaches it from the driver,
+with no gateway in between. The sandbox engines need `https://`, because the
+sandbox reaches the server through the gateway.
+
 ## Providers
 
 `--provider` / `HARNESS_PROVIDER`: `anthropic` (default), `openai` (any

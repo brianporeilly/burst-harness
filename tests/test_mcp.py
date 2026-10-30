@@ -42,6 +42,19 @@ def test_bad_entries_are_refused_when_the_config_loads(entry, message):
         HarnessConfig.load(None, {"mcp": (CONTEXT7, CONTEXT7)}, user_config=None)
 
 
+def test_plain_http_on_loopback_is_for_strands_alone():
+    local = ("planner=http://127.0.0.1:8931/mcp", "v6=http://[::1]:8931/mcp", "named=http://localhost:8931/mcp")
+    cfg = HarnessConfig.load(None, {"mcp": local}, user_config=None)  # engine=strands by default
+    assert mcp.servers(cfg)["planner"] == "http://127.0.0.1:8931/mcp" and len(mcp.servers(cfg)) == 3
+    assert mcp.hosts(cfg) == () and mcp.inject_rules(cfg) == []  # from the driver: nothing for the gateway
+    for entry in ("lan=http://10.0.0.5:8931/mcp", "lookalike=http://127.0.0.1.example.com/mcp"):
+        with pytest.raises(ValueError, match="only passes HTTPS"):
+            HarnessConfig.load(None, {"mcp": (entry,)}, user_config=None)
+    for engine in ("opencode", "claude-code"):
+        with pytest.raises(ValueError, match="only passes HTTPS"):
+            HarnessConfig.load(None, {"mcp": local[:1], "engine": engine}, user_config=None)
+
+
 def test_the_setting_comes_from_the_environment(monkeypatch):
     monkeypatch.setenv("HARNESS_MCP", f"{CONTEXT7},docs=https://docs.lan/mcp")
     assert list(mcp.servers(HarnessConfig.load(None, {}, user_config=None))) == ["context7", "docs"]

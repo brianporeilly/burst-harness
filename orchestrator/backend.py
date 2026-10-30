@@ -149,7 +149,7 @@ def servers(value: Any) -> tuple[str, ...] | None:
         raise SpecError("mcp must be a list of NAME=URL.")
     found = tuple(item.strip() for item in items if item.strip())
     try:
-        mcp.servers(replace(HarnessConfig(), mcp=found))
+        mcp.servers(replace(HarnessConfig(), engine="opencode", mcp=found))  # a session runs opencode
     except mcp.MCPError as err:
         raise SpecError(str(err)) from err
     return found

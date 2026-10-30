@@ -145,6 +145,8 @@ def test_mcp_servers_in_a_spec_are_checked_and_kept():
     assert "mcp" not in SessionSpec.parse({"name": "box"}).overrides(HarnessConfig())
     with pytest.raises(SpecError, match="only passes HTTPS"):
         SessionSpec.parse({"name": "box", "mcp": "c7=http://mcp.context7.com/mcp"})
+    with pytest.raises(SpecError, match="only passes HTTPS"):  # a session's opencode is in the sandbox
+        SessionSpec.parse({"name": "box", "mcp": "local=http://127.0.0.1:8931/mcp"})
 
 
 def test_a_saved_spec_keeps_its_mcp_servers(tmp_path):

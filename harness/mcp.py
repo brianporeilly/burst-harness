@@ -17,6 +17,11 @@ model. A key the driver holds as <NAME>_API_KEY (CONTEXT7_API_KEY) is sent as a
 bearer token: added by the gateway on the way out, so the sandbox never holds
 it, or sent by MCPClient itself for strands. Without a gateway (egress open) the
 server is used without it.
+
+For strands alone, a server on this machine's loopback may also be plain
+http:// (127.0.0.1, ::1, localhost): MCPClient reaches it from the driver, with
+no gateway between, so there is nothing for HTTPS to pass. A local test server,
+for one. The sandbox engines keep to https://.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ if TYPE_CHECKING:  # config checks the entries with servers(), so this module ca
     from .config import HarnessConfig
 
 NAME = re.compile(r"[A-Za-z0-9_-]+")
+LOOPBACK = ("127.0.0.1", "::1", "localhost")
 
 
 class MCPError(ValueError):
@@ -38,7 +44,8 @@ class MCPError(ValueError):
 
 
 def servers(cfg: HarnessConfig) -> dict[str, str]:
-    """`mcp` as {name: url}, checked: a plain name, an https:// URL, each name once."""
+    """`mcp` as {name: url}, checked: a plain name, an https:// URL (or for strands, http:// on loopback),
+    each name once."""
     found: dict[str, str] = {}
     for entry in cfg.mcp:
         name, sep, url = entry.partition("=")
@@ -46,8 +53,10 @@ def servers(cfg: HarnessConfig) -> dict[str, str]:
         if not sep or not NAME.fullmatch(name):
             raise MCPError(f"An mcp entry is NAME=URL, with a name of letters, digits, - and _ (got {entry!r}).")
         parts = urlsplit(url)
-        if parts.scheme != "https" or not parts.hostname:
-            raise MCPError(f"mcp {name}: the gateway only passes HTTPS; {url!r} is not an https:// URL.")
+        local = not in_sandbox(cfg) and parts.scheme == "http" and parts.hostname in LOOPBACK
+        if not (parts.scheme == "https" and parts.hostname or local):
+            raise MCPError(f"mcp {name}: the gateway only passes HTTPS; {url!r} is not an https:// URL "
+                           "(http:// is for engine=strands, to 127.0.0.1, ::1 or localhost).")
         if name in found:
             raise MCPError(f"mcp {name} is listed twice.")
         found[name] = url
