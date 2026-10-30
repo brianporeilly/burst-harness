@@ -458,8 +458,10 @@ orchestrator's page, its API, and later Slack.
    orchestrator run natively on the Mac: done (2026-10-29), tested against a
    real dockerd but not yet on a Mac. No compose file: a containerized
    orchestrator would need docker's socket (root on the docker host) and the
-   host's loopback, where sessions' UIs are published. Not yet: arm64 images
-   (on Apple silicon the amd64 ones run under Rosetta).
+   host's loopback, where sessions' UIs are published. arm64 images, for
+   Apple silicon (docker would not pull amd64-only ones there): each image is
+   built for amd64 and arm64 on runners of each architecture, then the two are
+   put under one tag (2026-10-30).
 Credentials (2026-10-28): each run is handed only what it is granted (a task:
 git, model, gateway and MCP keys; a job: what its job.toml names), and
 everything reads credentials through `harness/credentials.py`, whose overlay

@@ -39,9 +39,6 @@ What is different from podman:
   recorded by the gateway.
 - **No `--root`.** Root in a docker container is root on docker's VM, so the
   harness refuses it.
-- **amd64 images.** On Apple silicon, OrbStack and Docker Desktop run them under
-  Rosetta. They behave the same, only slower.
-
 The orchestrator is not packaged as a container. It would need docker's socket,
 which is root on the docker host. It also checks sessions' UIs on the host's
 loopback, which a container doesn't share.
