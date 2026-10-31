@@ -1,0 +1,3 @@
+# Claude leads and checks the work; the local models do the bulk of it.
+agent = "claude"
+delegate_to = ["local-coder", "local-quick"]

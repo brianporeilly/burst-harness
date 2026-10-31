@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -12,6 +13,7 @@ from typing import Any
 
 from . import (
     agent_sandbox,
+    agents,
     cluster_session,
     containers,
     egress,
@@ -22,7 +24,7 @@ from . import (
 )
 from .agent import OutputLimit, build_agent, call
 from .claude_code import ClaudeCodeEngine
-from .config import CONFIG_FILENAME, HarnessConfig
+from .config import CONFIG_FILES_ENV, CONFIG_FILENAME, HarnessConfig
 from .context import HarnessContext
 from .exec_target import ExecError, ExecTarget, KubectlTarget, LocalTarget
 from .gateway_control import GatewayError
@@ -61,9 +63,16 @@ _PRICES = {
 CACHE_OUTSIDE_INPUT = frozenset(("anthropic", "bedrock"))
 
 
-def _report(agent: Any, model_id: str, provider: str = "anthropic") -> str:
-    raw = agent.event_loop_metrics.accumulated_usage
-    usage = dict(raw) if not isinstance(raw, dict) else raw
+def _report(agent: Any, model_id: str, provider: str = "anthropic",
+            delegated: dict[str, dict[str, Any]] | None = None) -> str:
+    report = _usage(agents.usage_of(agent), model_id, provider)
+    for name, used in (delegated or {}).items():
+        report += (f"\n delegated to {name} ({used['provider']} {used['model_id']}), {used['calls']} time(s):\n"
+                   + _usage(used, str(used["model_id"]), str(used["provider"]), lead=False))
+    return report
+
+
+def _usage(usage: dict[str, Any], model_id: str, provider: str, *, lead: bool = True) -> str:
     inp = usage.get("inputTokens", 0)
     out = usage.get("outputTokens", 0)
     cache_read = usage.get("cacheReadInputTokens", 0) or 0
@@ -75,7 +84,7 @@ def _report(agent: Any, model_id: str, provider: str = "anthropic") -> str:
     if cache_read:
         share = cache_read / (cache_read + billable_in) * 100 if (cache_read + billable_in) else 0
         lines.append(f"  {share:.0f}% of input served from cache")
-    else:
+    elif lead:  # a delegate starts afresh every time
         lines.append(
             "  no cache hits — expected on a first burst. On a resume it usually means "
             "the model or effort changed since the previous burst."
@@ -133,6 +142,8 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
 
 
 def _overrides(args: argparse.Namespace) -> dict[str, Any]:
+    # A run that names its model has nothing to route.
+    named = args.provider or args.model or args.base_url or args.agent
     return {
         "provider": args.provider,
         "model_id": args.model,
@@ -158,6 +169,9 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "egress_webhook": args.egress_webhook,
         "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
         "engine": args.engine,
+        "agent": args.agent,
+        "delegate_to": tuple(n.strip() for n in args.delegate_to.split(",") if n.strip()) if args.delegate_to is not None else None,
+        "router": "" if named else args.router,
         "mcp": tuple(args.mcp) if args.mcp else None,
         "claude_json": args.claude_json,
         "claude_settings": args.claude_settings,
@@ -308,6 +322,9 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
     print("HARNESS_RESULT " + json.dumps({
         "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
         "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
+        "model": f"{ctx.cfg.provider} {ctx.cfg.model_id}", "base_url": ctx.cfg.base_url, "agent": ctx.agent or None,
+        "delegated": {name: {"calls": used["calls"], "input": used.get("inputTokens", 0),
+                             "output": used.get("outputTokens", 0)} for name, used in ctx.delegated.items()} or None,
     }))
 
 
@@ -328,6 +345,7 @@ def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | No
 
 def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
     """Run one headless burst with the configured engine. Returns the usage report."""
+    agents.lead_for(ctx, None if resume else prompt)
     if ctx.cfg.engine == "claude-code":
         engine = ClaudeCodeEngine(ctx)
         try:
@@ -345,7 +363,7 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
             else "No snapshot; resuming from the task document."
         )
     _run(agent, ctx, prompt, interactive=False)
-    return _report(agent, ctx.cfg.model_id, ctx.cfg.provider)
+    return _report(agent, ctx.cfg.model_id, ctx.cfg.provider, ctx.delegated)
 
 
 def _start(ctx: HarnessContext, task: str) -> str | None:
@@ -408,6 +426,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             finally:
                 engine.cleanup()
             return None
+        agents.lead_for(ctx, None)
         agent, _ = build_agent(ctx)
         restored = len(agent.messages)
         print(f"Restored {restored} message(s)." if restored else "Fresh session.")
@@ -423,7 +442,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             if line in {"/quit", "/exit"}:
                 break
             _run(agent, ctx, line, interactive=True)
-        return _report(agent, ctx.cfg.model_id, ctx.cfg.provider)
+        return _report(agent, ctx.cfg.model_id, ctx.cfg.provider, ctx.delegated)
 
     return _session(args, body)
 
@@ -591,6 +610,9 @@ def main(argv: list[str] | None = None) -> int:
                                        f"(default {DEFAULT_REMOTE_REPO}).")
     parser.add_argument("--repo-url", dest="repo_url",
                         help="Clone this into the target first. Required for agent-sandbox.")
+    parser.add_argument("--config", action="append", metavar="FILE",
+                        help="A config file layered over your own (repeatable, later ones win): a scenario's "
+                             f"profiles and settings, say. Also {CONFIG_FILES_ENV}, os.pathsep-separated.")
 
     where = parser.add_argument_group("where work happens")
     where.add_argument("--target", choices=["local", "docker", "podman", "kubectl", "agent-sandbox"],
@@ -650,6 +672,11 @@ def main(argv: list[str] | None = None) -> int:
     model.add_argument("--base-url", dest="base_url", help="Endpoint override.")
     model.add_argument("--effort", choices=["low", "medium", "high", "xhigh", "max"])
     model.add_argument("--max-tokens", type=int, dest="max_tokens")
+    model.add_argument("--agent", help="Run as this [agents.NAME] profile instead of the top-level model.")
+    model.add_argument("--delegate-to", dest="delegate_to", metavar="NAMES",
+                       help="Comma-separated profiles the lead may hand work to (engine=strands; '' for none).")
+    model.add_argument("--router", help="A profile that picks which profile does a new task (see harness/agents.py; "
+                                        "'' for no routing).")
     model.add_argument("--offload-max-tokens", type=int, dest="offload_max_tokens",
                        help="Offload tool results larger than this. Set very high to disable.")
 
@@ -733,6 +760,10 @@ def main(argv: list[str] | None = None) -> int:
     release.set_defaults(func=cmd_release)
 
     args = parser.parse_args(argv)
+    if args.config:
+        # Through the environment, so every load (and a job's run) layers them.
+        os.environ[CONFIG_FILES_ENV] = os.pathsep.join(
+            [*filter(None, os.environ.get(CONFIG_FILES_ENV, "").split(os.pathsep)), *args.config])
     return args.func(args)
 
 

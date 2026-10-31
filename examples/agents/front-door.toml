@@ -1,0 +1,5 @@
+# The front door: a small model reads each new task (or job run) and picks who
+# does it. A run that names its model (--model, --agent, a task given a model)
+# skips it.
+router = "triage"
+route_to = ["local-coder", "local-quick", "claude", "claude-quick"]

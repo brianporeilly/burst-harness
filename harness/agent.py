@@ -8,9 +8,10 @@ is why there is exactly one construction path.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
-from strands import Agent
+from strands import Agent, tool
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
@@ -19,7 +20,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import file_editor, handoff_to_user, shell
 
-from . import mcp
+from . import agents, mcp
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
 from .models import build_model, retry_strategy
@@ -51,6 +52,26 @@ End every session in exactly one terminal state:
 - abandon — the task should not continue.
 
 Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
+
+# Added to the lead's prompt when it has a delegate tool.
+LEAD_PROMPT = """
+
+Other agents can take pieces of this work, with the delegate tool:
+{roster}
+Hand a piece to the one it suits when that is cheaper or better than doing it yourself. A delegate starts with no \
+context: say everything it needs, including what to leave alone. It does not commit; you do, and you decide when \
+the work is done, so check what it reports before relying on it."""
+
+DELEGATE_PROMPT = """You are helping a lead agent with one piece of a larger piece of work.
+
+Working in: {repo}
+
+Do the piece you are given, and nothing else. Do not commit, push, or switch branches: the lead does that. When you \
+are done, reply with a short report: what you did (the files you changed), what you found, and anything left \
+unresolved. That reply is all the lead sees of your work."""
+
+# The most of a delegate's report that goes back to the lead.
+REPORT_CHARS = 12000
 
 
 # Where the context offloader keeps large tool results when the target is not
@@ -130,6 +151,75 @@ def call(agent: Agent, prompt: Any = None) -> Any:
             mark = len(agent.messages) + (prompt is not None)  # the history as the retry starts
 
 
+def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]], state_dir: str) -> Any:
+    """The lead's delegate tool, for cfg.delegate_to's profiles; None when there are none.
+
+    Each call runs a fresh agent with that profile's model, the same sandbox and
+    tools, and the git guardrails, and returns its final reply. Calls run one at
+    a time, as they share one checkout. What each uses is added to `usage`.
+    """
+    names = cfg.delegate_to
+    if not names:
+        return None
+    one_at_a_time = threading.Lock()
+
+    def delegate(to: str, task: str) -> str:  # not `agent`: Strands passes the calling Agent as that
+        """Hand a piece of the work to another agent, and get its report back.
+
+        Args:
+            to: Which agent: one of the names listed.
+            task: What it should do, with everything it needs to know. It sees nothing else.
+        """
+        if to not in names:
+            return f"Rejected: no agent {to!r}. Choose from: {', '.join(names)}."
+        agent, helper_cfg = to, agents.as_profile(cfg, to)
+        with one_at_a_time:
+            print(f"\n--- delegating to {agents.describe(cfg, agent)} ---", flush=True)
+            helper = None
+            try:
+                helper = _helper(target, helper_cfg, state_dir)
+                text = str(call(helper, task)).strip() or "(it gave no report)"
+            except OutputLimit as err:
+                text = f"{agent} stopped: {err}. Nothing it changed was committed."
+            except Exception as err:  # noqa: BLE001 -- the lead hears of it and carries on
+                logger.warning("Delegate %s failed: %s: %s", agent, type(err).__name__, err)
+                text = f"{agent} failed: {type(err).__name__}: {err}"
+            finally:
+                _add_usage(usage, agent, helper_cfg, agents.usage_of(helper) if helper else {})
+            print(f"\n--- back from {agent} ---", flush=True)
+        if len(text) > REPORT_CHARS:
+            text = text[:REPORT_CHARS] + "\n[harness] The rest of the report was cut."
+        return text
+
+    description = ("Hand a piece of the work to another agent, and get its report back. The agents:\n"
+                   + agents.roster(cfg, names))
+    return tool(delegate, name="delegate", description=description)
+
+
+def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str) -> Agent:
+    """A delegate: the sandbox and its tools, no session, no task tools, no delegating."""
+    sandbox = target.sandbox()
+    return Agent(
+        model=build_model(cfg),
+        retry_strategy=retry_strategy(cfg),
+        sandbox=sandbox,
+        system_prompt=DELEGATE_PROMPT.format(repo=target.describe()),
+        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), *mcp.clients(cfg)],
+        plugins=[ContextOffloader(storage=offload_storage(target, state_dir),
+                                  max_result_tokens=cfg.offload_max_result_tokens,
+                                  preview_tokens=cfg.offload_preview_tokens)],
+        interventions=[GitGuardrails(target, cfg)],
+        conversation_manager=conversation_manager(cfg),
+    )
+
+
+def _add_usage(usage: dict[str, dict[str, Any]], name: str, cfg: HarnessConfig, used: dict[str, int]) -> None:
+    entry = usage.setdefault(name, {"provider": cfg.provider, "model_id": cfg.model_id, "calls": 0})
+    entry["calls"] += 1
+    for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens"):
+        entry[key] = entry.get(key, 0) + (used.get(key) or 0)
+
+
 def conversation_manager(cfg: HarnessConfig) -> ChunkedWindow:
     """The one conversation manager, for tasks and jobs alike."""
     return ChunkedWindow(window_size=cfg.window_size, per_turn=True, pin_first=cfg.pin_first,
@@ -171,6 +261,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         plugins.append(AgentSkills(str(target.path(cfg.skills_dir))))
 
     doc_rel = f"{cfg.docs_dir}/{ctx.slug}.md"
+    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir))
     agent = Agent(
         model=model,
         retry_strategy=retry_strategy(cfg),
@@ -184,8 +275,8 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
             remote=cfg.remote,
             base=cfg.base_branch,
             doc=doc_rel,
-        ),
-        tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg)],
+        ) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
+        tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else [])],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
         conversation_manager=conversation_manager(cfg),

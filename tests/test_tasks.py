@@ -176,14 +176,20 @@ def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "same"})
     env = harness.started[-1][1].env  # nothing chosen: the orchestrator's own settings
     assert env["HARNESS_BASE_URL"] == "http://typhon:8080"
-    assert not {"HARNESS_PROVIDER", "HARNESS_MODEL_ID", "HARNESS_CONTEXT_WINDOW_LIMIT"} & set(env)
+    assert not {"HARNESS_PROVIDER", "HARNESS_MODEL_ID", "HARNESS_CONTEXT_WINDOW_LIMIT", "HARNESS_ROUTER"} & set(env)
+    # The burst was routed to a profile (harness/agents.py): the task shows what worked on it.
+    harness.started[-1][1].finish(0, state="paused", model="anthropic claude-haiku-5-5", base_url="", agent="quick",
+                                  delegated={"coder": {"calls": 2, "input": 10, "output": 5}})
+    routed = _settled(runner, "same", "paused")
+    assert routed["uses"] == {"provider": "anthropic", "model": "claude-haiku-5-5", "base_url": "", "agent": "quick"}
+    assert routed["bursts"][-1]["delegated"]["coder"]["calls"] == 2
     # Anthropic: none of llama.cpp's URL, label or window goes with it.
     made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "claude", "provider": "anthropic"})
     env = harness.started[-1][1].env
     assert (env["HARNESS_PROVIDER"], env["HARNESS_BASE_URL"], env["HARNESS_MODEL_ID"]) == ("anthropic", "", "claude-opus-5-5")
     assert env["HARNESS_CONTEXT_WINDOW_LIMIT"] == "1000000" and made["provider"] == "anthropic"
+    assert env["HARNESS_ROUTER"] == ""  # given its model: not routed
     assert made["uses"] == {"provider": "anthropic", "model": "claude-opus-5-5", "base_url": ""}
-    assert runner.task("same")["uses"] == {"provider": "llamacpp", "model": "raon", "base_url": "http://typhon:8080"}
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "other", "provider": "openai",
                    "base_url": "http://other:8000/v1", "model": "qwen3", "context_window": 32768})
     env = harness.started[-1][1].env

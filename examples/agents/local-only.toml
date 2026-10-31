@@ -1,0 +1,3 @@
+# Routed, and nothing leaves the network: local models only.
+router = "triage"
+route_to = ["local-coder", "local-quick"]

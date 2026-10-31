@@ -901,6 +901,70 @@ With `--engine strands` only, a server on the driver's loopback may be plain
 with no gateway in between. The sandbox engines need `https://`, because the
 sandbox reaches the server through the gateway.
 
+### Other agents: routing and delegation (`--router`, `--delegate-to`, `--agent`)
+
+Name your models once, as `[agents.NAME]` profiles in a config file (yours, a
+`--config` file, or a job.toml; never a repo's `.harness.toml`). Each profile
+takes the model settings (`provider`, `base_url`, `model_id`,
+`context_window_limit`, `effort`, `model_params`...) and a `use_for` line
+saying what it is good at. A profile is a whole model: what it leaves out is
+the default, not the top-level setting, so a hosted profile never picks up a
+local `base_url`.
+
+```toml
+[agents.local-coder]
+provider = "llamacpp"
+base_url = "http://typhon:8080"
+model_id = "tiel-coder"
+context_window_limit = 262144
+use_for = "Coding in one repository. Free and private, slower than Claude."
+
+[agents.claude-quick]
+provider = "anthropic"
+model_id = "claude-haiku-5-5"
+use_for = "Fast, cheap hosted work: reading code to answer a question, small edits."
+```
+
+There are three ways to use them, and they combine:
+
+- **`agent = "NAME"`** (`--agent`): the run uses that profile instead of the
+  top-level model.
+- **`delegate_to = [...]`** (`--delegate-to a,b`): the lead gets a `delegate`
+  tool and hands pieces of work to those profiles. Each piece runs as a fresh
+  agent with the same sandbox, tools and git guardrails, but no task tools, so
+  it doesn't commit. Only its final report comes back, so the lead's context
+  stays small. Delegates run one at a time, because they share the checkout,
+  and never delegate further. A profile's own `delegate_to` applies when it
+  leads. Works with `--engine strands` only.
+- **`router = "NAME"`** (`--router`): the front door. Before a new task's
+  first burst, or before each job run, that profile reads the prompt and picks
+  who does the work from `route_to` (all other profiles when empty). Jobs are
+  routed too, so non-coding work (reports, summaries, triage) can go to a small
+  local model and hard work to Claude. A task keeps its choice, so later bursts
+  use the same model and its prompt cache. A run that names its model
+  (`--provider`, `--model`, `--base-url`, `--agent`, or a task given a model in
+  the orchestrator) isn't routed. Neither is `--engine claude-code`. The router
+  gets one try; when it is down or names no profile, the top-level model does
+  the work.
+
+`examples/agents/` has profiles and scenarios to layer over them:
+`front-door`, `strong-lead` (Claude leads, local models do the bulk),
+`small-lead` (the small model leads) and `local-only`. `--config` is
+repeatable, and later files win:
+
+```sh
+harness --config examples/agents/profiles.toml --config examples/agents/front-door.toml \
+  --repo-url https://github.com/me/proj.git --target podman start fix-flake --task "..."
+```
+
+`HARNESS_CONFIG` is the same list (os.pathsep-separated), and `HARNESS_AGENTS`
+takes the profiles as JSON. That is how the orchestrator's bursts get them:
+set either in its environment, along with `HARNESS_ROUTER`. The burst report
+gives each delegate's token use separately. `HARNESS_RESULT` (and a job's
+`HARNESS_JOB`) gives the model that led, the profile (`agent`) and the
+delegations, and the Tasks tab shows the routed profile, so scenarios can be
+compared.
+
 ## Providers
 
 `--provider` / `HARNESS_PROVIDER`: `anthropic` (default), `openai` (any

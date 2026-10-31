@@ -1,0 +1,41 @@
+# Model profiles to pick from: layer a scenario over this file.
+#
+#   harness --config examples/agents/profiles.toml --config examples/agents/front-door.toml \
+#     --repo-url ... start my-task --task "..."
+#
+# Each profile is a whole model: what it leaves out is the default, not the
+# top-level setting. use_for is all a router or a lead knows of it, so say
+# plainly what it is good at and what it is not. See harness/agents.py.
+
+[agents.triage]
+provider = "llamacpp"
+base_url = "http://typhon:8081"  # a second llama-server, beside the big model's
+model_id = "lfm3-1.7b"
+context_window_limit = 32768
+max_tokens = 1024
+use_for = "Picking who does a task. Not for doing it."
+
+[agents.local-coder]
+provider = "llamacpp"
+base_url = "http://typhon:8080"
+model_id = "tiel-coder"
+context_window_limit = 262144
+use_for = "Coding in one repository: changes, tests, refactors. Free and private, slower than Claude."
+
+[agents.local-quick]
+provider = "llamacpp"
+base_url = "http://typhon:8081"
+model_id = "lfm3-1.7b"
+context_window_limit = 32768
+use_for = "Short, simple work that is not coding: summaries, lookups, reformatting text. Free and private."
+
+[agents.claude]
+provider = "anthropic"
+model_id = "claude-opus-5-5"
+use_for = "The hardest work: subtle bugs, design, long multi-step changes, careful review. Costs the most."
+
+[agents.claude-quick]
+provider = "anthropic"
+model_id = "claude-haiku-5-5"
+effort = "low"
+use_for = "Fast, cheap hosted work: reading code to answer a question, small edits, triage of logs and reports."

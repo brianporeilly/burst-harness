@@ -1,0 +1,5 @@
+# The small model leads and hands the real work to the bigger ones.
+# (Its model card says it is not for agentic coding: this is the scenario to
+# measure that.)
+agent = "local-quick"
+delegate_to = ["local-coder", "claude"]

@@ -605,7 +605,7 @@ const modelLabel = (t) => {
   const uses = t.uses || { provider: t.provider, model: t.model };  // tasks from before `uses`
   if (t.engine === "claude-code") return "Claude Code" + (uses.model ? ` · ${uses.model}` : "");
   const provider = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" }[uses.provider] || uses.provider || "default model";
-  return `Strands · ${provider}${uses.model ? ` ${uses.model}` : ""}`;
+  return `Strands · ${provider}${uses.model ? ` ${uses.model}` : ""}${uses.agent ? ` (agent ${uses.agent})` : ""}`;
 };
 
 function selectTask(slug) {

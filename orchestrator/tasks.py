@@ -278,6 +278,8 @@ class TaskRunner:
         """The task's provider and model as the burst's HARNESS_* settings, over the orchestrator's."""
         chosen = model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
                               record.get("model") or "", record.get("context_window") or 0)
+        if chosen:
+            chosen["router"] = ""  # a task given its model is not routed (harness/agents.py)
         return {f"HARNESS_{name.upper()}": str(value) for name, value in chosen.items()}
 
     def _start(self, record: dict[str, Any]) -> None:
@@ -311,7 +313,11 @@ class TaskRunner:
                 record = None  # removed meanwhile
             if record is not None:
                 state = "cancelled" if record.get("cancelling") else _state(code, result)
-                record["bursts"][-1].update(ended=_now(), exit=code, state=state)
+                record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"))
+                if result.get("agent"):  # routed to a profile (harness/agents.py): that is what works on it
+                    provider, _, model = str(result.get("model") or "").partition(" ")
+                    record["uses"] = {"provider": provider, "model": model, "base_url": result.get("base_url") or "",
+                                      "agent": result["agent"]}
                 record.update(state=state, pr=result.get("pr") or record.get("pr"), message=None, cancelling=False)
                 record.pop("pid", None)
                 kept = str(result.get("target") or "")

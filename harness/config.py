@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,10 @@ USER_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or "~/.config").expanduser(
 # container image gets configured: the CLI subcommand is the entrypoint, and
 # everything else arrives through the pod spec.
 ENV_PREFIX = "HARNESS_"
+# More config files, layered over the user's (os.pathsep-separated): what
+# `--config FILE` sets, so a run's own variations (one per benchmark scenario,
+# say) live in their own file.
+CONFIG_FILES_ENV = "HARNESS_CONFIG"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _FALSY = {"0", "false", "no", "off"}
@@ -42,6 +47,14 @@ def _coerce(current: Any, raw: str, *, name: str) -> Any:
             raise ValueError(f"{name} must be a number (got {raw!r}).") from err
     if isinstance(current, tuple):
         return tuple(part.strip() for part in raw.split(",") if part.strip())
+    if isinstance(current, dict):
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"{name} must be a JSON object ({err}).") from err
+        if not isinstance(value, dict):
+            raise ValueError(f"{name} must be a JSON object (got {raw!r}).")
+        return value
     return raw
 
 
@@ -67,6 +80,9 @@ def _shaped(current: Any, value: Any, *, name: str, source: str) -> Any:
     elif isinstance(current, str):
         if isinstance(value, str):
             return value
+    elif isinstance(current, dict):
+        if isinstance(value, dict):
+            return value
     else:
         return value
     if isinstance(value, str) and not isinstance(current, str):
@@ -83,6 +99,8 @@ def _kind(current: Any) -> str:
         return "a number"
     if isinstance(current, tuple):
         return "a list"
+    if isinstance(current, dict):
+        return "a table"
     return "a string"
 
 
@@ -118,6 +136,22 @@ class HarnessConfig:
     # Strands falls back to 200K when this is unset, which would trip every
     # utilization gate at a fifth of the real window on a 1M-context model.
     context_window_limit: int = 1_000_000
+
+    # --- other agents (harness/agents.py) ---
+    # Named model profiles, [agents.NAME] tables: provider, model_id, base_url
+    # and the other model settings above, plus use_for (what it is good at,
+    # which is what a router or a lead goes by) and delegate_to. What a profile
+    # leaves out is the default, not the top-level setting.
+    agents: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Run as this profile rather than the top-level model (and without routing).
+    agent: str = ""
+    # Profiles the lead may hand work to with its delegate tool (engine=strands).
+    delegate_to: tuple[str, ...] = ()
+    # A profile that picks which profile does a new task or job, from route_to
+    # (all profiles but the router, when empty). Skipped when a run names its
+    # model or agent; the top-level model does it when the router cannot say.
+    router: str = ""
+    route_to: tuple[str, ...] = ()
 
     # --- which agent loop ---
     # strands: the harness's own Strands agent, driven from outside the target.
@@ -264,8 +298,8 @@ class HarnessConfig:
     ) -> "HarnessConfig":
         """Build config in increasing order of specificity.
 
-        defaults -> the user's config file -> the repo's .harness.toml ->
-        HARNESS_* env vars -> CLI flags. Env beats the repo file so a deployment
+        defaults -> the user's config file -> HARNESS_CONFIG's files (--config)
+        -> the repo's .harness.toml -> HARNESS_* env vars -> CLI flags. Env beats the repo file so a deployment
         can override a repo's checked-in preference; CLI beats everything because
         it is the most specific.
 
@@ -280,6 +314,11 @@ class HarnessConfig:
         cfg = cls()
         if user_config is not None and user_config.is_file():
             cfg = cfg._merge(tomllib.loads(user_config.read_text()), source=str(user_config))
+        for extra in filter(None, os.environ.get(CONFIG_FILES_ENV, "").split(os.pathsep)):
+            path = Path(extra).expanduser()
+            if not path.is_file():
+                raise ValueError(f"No config file at {path} ({CONFIG_FILES_ENV}, or --config).")
+            cfg = cfg._merge(tomllib.loads(path.read_text()), source=str(path))
         if job:
             cfg = cfg._merge(job, source="job.toml")
         if repo_toml:
@@ -293,17 +332,19 @@ class HarnessConfig:
         cfg = cfg._merge(cfg._env_values(), source="environment")
         if overrides:
             cfg = cfg._merge({k: v for k, v in overrides.items() if v is not None}, source="command line")
+        from . import agents
         from .mcp import servers
         servers(cfg)  # a bad entry fails here, not halfway through starting a sandbox
+        agents.check(cfg)
         return cfg
 
     def _env_values(self) -> dict[str, Any]:
         """Read HARNESS_* overrides, coerced to each field's type."""
         found: dict[str, Any] = {}
-        for field in fields(self):
-            raw = os.environ.get(ENV_PREFIX + field.name.upper())
+        for name in (item.name for item in fields(self)):
+            raw = os.environ.get(ENV_PREFIX + name.upper())
             if raw is not None:
-                found[field.name] = _coerce(getattr(self, field.name), raw, name=ENV_PREFIX + field.name.upper())
+                found[name] = _coerce(getattr(self, name), raw, name=ENV_PREFIX + name.upper())
         return found
 
     @classmethod
@@ -322,6 +363,8 @@ class HarnessConfig:
         coerced: dict[str, Any] = {}
         for key, value in values.items():
             coerced[key] = _shaped(getattr(self, key), value, name=key, source=source)
+        if "agents" in coerced:  # profiles add up across files, each named one replaced whole
+            coerced["agents"] = {**self.agents, **coerced["agents"]}
         return replace(self, **coerced)
 
     def resolve_state_dir(self, name: str) -> Path:

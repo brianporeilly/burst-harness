@@ -34,4 +34,8 @@ class HarnessContext:
     kept: bool = False
     # Set when a run stopped short of a terminal state for a reason of its own ("max_tokens").
     stopped: str = ""
+    # The profile the lead runs as, when not the top-level model (see agents.py).
+    agent: str = ""
+    # What each delegate used, by profile name (see agent.delegate_tool).
+    delegated: dict[str, dict[str, object]] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)

@@ -466,10 +466,12 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     from strands.vended_plugins.context_offloader import ContextOffloader
     from strands.vended_tools import file_editor, shell
 
-    from .agent import OutputLimit, call, conversation_manager, offload_storage
+    from . import agents
+    from .agent import LEAD_PROMPT, OutputLimit, call, conversation_manager, delegate_tool, offload_storage
     from .cli import _report
     from .models import build_model, retry_strategy
 
+    ctx.cfg, ctx.agent = agents.lead(ctx.cfg, spec.prompt)  # each run routed afresh
     cfg, target = ctx.cfg, ctx.target
     finished: dict[str, str] = {}
 
@@ -490,14 +492,17 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     state_dir = cfg.resolve_state_dir(f"jobs/{spec.name}")
     state_dir.mkdir(parents=True, exist_ok=True)
     sandbox = target.sandbox()
+    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir))
     agent = Agent(
         model=build_model(cfg),
         retry_strategy=retry_strategy(cfg),
         storage=LocalFileStorage(str(state_dir)),
         sandbox=sandbox,
-        system_prompt=_rules(target, has_scripts=has_scripts, ending=CALL_FINISH),
+        system_prompt=_rules(target, has_scripts=has_scripts, ending=CALL_FINISH)
+        + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
         # As for tasks: a sandbox with its own tools (podman, kubectl) registers them itself.
-        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), finish_report, *mcp.clients(cfg)],
+        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), finish_report, *mcp.clients(cfg),
+               *([delegate] if delegate else [])],
         plugins=[ContextOffloader(storage=offload_storage(target, str(state_dir)),
                                   max_result_tokens=cfg.offload_max_result_tokens,
                                   preview_tokens=cfg.offload_preview_tokens)],
@@ -510,9 +515,9 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
                 break
             call(agent, NO_FINISH)
     except OutputLimit as err:
-        print("\n" + _report(agent, cfg.model_id, cfg.provider))
+        print("\n" + _report(agent, cfg.model_id, cfg.provider, ctx.delegated))
         return None, f"max_tokens: {err}"
-    print("\n" + _report(agent, cfg.model_id, cfg.provider))
+    print("\n" + _report(agent, cfg.model_id, cfg.provider, ctx.delegated))
     if "report" in finished:
         return finished["report"], ""
     # A model that wrote the file instead of calling the tool still gets its report out.
@@ -676,6 +681,7 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
     reason = ""
     events = ""
     target: SubprocessTarget | None = None
+    ctx: HarnessContext | None = None
     try:
         target = acquire(cfg, spec)
         print(f"Running job {spec.name} in {target.describe()} (engine: {cfg.engine}).")
@@ -697,6 +703,8 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         "job": spec.name, "engine": cfg.engine, "state": "reported" if report is not None else "failed",
         "seconds": round(time.time() - started), "delivery_errors": failures or None,
         "reason": None if report is not None else reason,
+        **({"model": f"{ctx.cfg.provider} {ctx.cfg.model_id}", "agent": ctx.agent or None,
+            "delegated": {name: used["calls"] for name, used in ctx.delegated.items()} or None} if ctx else {}),
     }
     if report is not None:
         (record_dir / "report.md").write_text(report)
