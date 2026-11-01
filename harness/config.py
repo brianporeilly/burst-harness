@@ -80,6 +80,9 @@ def _shaped(current: Any, value: Any, *, name: str, source: str) -> Any:
     elif isinstance(current, str):
         if isinstance(value, str):
             return value
+        if name == "model_params" and isinstance(value, dict):
+            # A TOML table reads better than JSON in a string; it is kept as the JSON it would be.
+            return json.dumps(value)
     elif isinstance(current, dict):
         if isinstance(value, dict):
             return value
@@ -120,6 +123,7 @@ class HarnessConfig:
     token_file: str = ""
     # Raw JSON merged into the provider's sampling params, last. The escape
     # hatch for any knob the harness does not model (temperature, top_p, ...).
+    # A TOML file may give it as a table instead.
     model_params: str = ""
     # Seconds to wait on a model request. Only llama.cpp needs it set: Strands'
     # LlamaCppModel defaults to 30s, and prompt prefill on a modest GPU can take

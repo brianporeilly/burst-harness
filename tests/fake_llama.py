@@ -4,7 +4,7 @@ Each turn of the script is what the model says next: {"tool": NAME, "args": {...
 for a tool call, {"text": "..."}, or {"cut": "..."} for a reply cut off at the
 output limit (finish_reason "length"). The turn is picked by how many assistant
 messages the request already has, so the conversation drives it; a request
-with no tools gets a plain reply (`side`) and does not advance it. In string
+with no tools gets a plain reply (`side`, a string or a turn) and does not advance it. In string
 arguments, "{last_tool}" becomes the content of the last tool result -- which
 shows that a tool's output made it back to the model. A cut-off reply is
 served once: the next request at that turn gets the step after it, as if the
@@ -41,7 +41,7 @@ def _fill(value: Any, last_tool: str) -> Any:
 
 
 def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
-                 side: str = "Side reply") -> type[BaseHTTPRequestHandler]:
+                 side: str | dict[str, Any] = "Side reply") -> type[BaseHTTPRequestHandler]:
     skipped = [0]  # cut-off steps already served, which the turn count does not see
 
     class Handler(BaseHTTPRequestHandler):
@@ -55,8 +55,11 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
             tools = [m for m in messages if m.get("role") == "tool"]
             last_tool = _text(tools[-1].get("content")) if tools else ""
             # A request offering no tools is a side call (opencode titles its sessions this way).
-            step = script[min(turn + skipped[0], len(script) - 1)] if body.get("tools") else {"text": side}
-            if "cut" in step:
+            if body.get("tools"):
+                step = script[min(turn + skipped[0], len(script) - 1)]
+            else:
+                step = side if isinstance(side, dict) else {"text": side}
+            if "cut" in step and body.get("tools"):
                 skipped[0] += 1
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -87,7 +90,7 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
 
 
 def serve(script: list[dict[str, Any]], port: int = 0, host: str = "127.0.0.1",
-          side: str = "Side reply") -> tuple[ThreadingHTTPServer, list]:
+          side: str | dict[str, Any] = "Side reply") -> tuple[ThreadingHTTPServer, list]:
     """Start it in a thread. Returns the server and the list each request body is appended to."""
     requests: list[dict[str, Any]] = []
     server = ThreadingHTTPServer((host, port), make_handler(script, requests, side))

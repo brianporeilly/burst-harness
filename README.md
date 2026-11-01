@@ -945,7 +945,14 @@ There are three ways to use them, and they combine:
   (`--provider`, `--model`, `--base-url`, `--agent`, or a task given a model in
   the orchestrator) isn't routed. Neither is `--engine claude-code`. The router
   gets one try; when it is down or names no profile, the top-level model does
-  the work.
+  the work. It is told it never does a task itself, and gets the roster, then
+  the task in `<task>` tags, then the question: a small model given the task
+  alone tends to do it. A reply cut off at `max_tokens` still routes when it
+  named a profile first. Turn a router's thinking off (for llama.cpp,
+  `model_params = { chat_template_kwargs = { enable_thinking = false } }`):
+  it is much faster, and in benchmarks a small router was no less accurate.
+  Left on, a router can think for thousands of tokens, so its `max_tokens`
+  has to allow for that.
 
 `examples/agents/` has profiles and scenarios to layer over them:
 `front-door`, `strong-lead` (Claude leads, local models do the bulk),
@@ -1022,7 +1029,9 @@ sandbox. For a job, it is a run with no report.
 Every key in `model_params` reaches llama-server, including those Strands does
 not know (it forwards only its own list): `chat_template_kwargs`
 (`{"enable_thinking": false}`), `n_predict`, `reasoning_format`, `dry_multiplier`
-and the rest. Those are named once in the log when first sent.
+and the rest. Those are named once in the log when first sent. In a TOML file,
+`model_params` may be a table rather than a JSON string:
+`model_params = { chat_template_kwargs = { enable_thinking = false } }`.
 
 Keep `window_size` (messages kept, default 200) large. Prompt caching is a
 prefix match: whenever old messages are cut, the next call re-reads everything

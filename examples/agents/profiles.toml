@@ -13,6 +13,8 @@ base_url = "http://typhon:8081"  # a second llama-server, beside the big model's
 model_id = "lfm3-1.7b"
 context_window_limit = 32768
 max_tokens = 1024
+# A router is faster without thinking, and a small one no less accurate.
+model_params = { chat_template_kwargs = { enable_thinking = false } }
 use_for = "Picking who does a task. Not for doing it."
 
 [agents.local-coder]

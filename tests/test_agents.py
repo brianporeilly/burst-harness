@@ -58,9 +58,11 @@ def test_the_router_picks_who_does_a_job_and_the_others_are_not_called(tmp_path,
     out = capsys.readouterr().out
     assert "Routed to cheap (llamacpp cheap): It is a short summary." in out and "summary by cheap" in out
     assert _outcome(out)["agent"] == "cheap" and _outcome(out)["model"] == "llamacpp cheap"
-    prompt = fake_llama._text(asked[0]["messages"][0]["content"])
-    assert "- cheap: cheap work" in prompt and "- big: big work" in prompt and "triage" not in prompt.split("agents:")[1]
-    assert "Write the digest." in fake_llama._text(asked[0]["messages"][-1]["content"])
+    assert "never do a task yourself" in fake_llama._text(asked[0]["messages"][0]["content"])
+    ask = fake_llama._text(asked[0]["messages"][-1]["content"])
+    assert "- cheap: cheap work" in ask and "- big: big work" in ask and "triage" not in ask.split("<task>")[0]
+    assert "Write the digest." in ask.split("<task>")[1].split("</task>")[0]
+    assert ask.rstrip().endswith("then one short line saying why.")
     assert len(cheap_requests) == 1
 
 
@@ -159,9 +161,30 @@ def test_a_profile_is_a_whole_model_and_names_are_checked(tmp_path, monkeypatch)
     assert sorted(loaded.agents) == ["a", "b", "c"] and loaded.delegate_to == ("a", "b")
 
 
+def test_a_router_reply_cut_off_after_the_name_still_routes(tmp_path, llama):
+    named, _ = llama([], side={"cut": "cheap\nIt is short, and"})
+    thinking, _ = llama([], side={"cut": "<think>cheap or big? big would"})
+    for router, chosen, why in ((named, "cheap", "It is short, and (reply cut off at max_tokens)"),
+                                (thinking, None, "the router's reply was cut off at max_tokens before it named "
+                                                 "a candidate")):
+        cfg = replace(HarnessConfig(), router="triage", agents={
+            **_profiles(cheap=DEAD, big=DEAD), "triage": {"provider": "llamacpp", "base_url": router}})
+        assert agents.route(cfg, "Summarise the log.") == (chosen, why)
+
+
+def test_model_params_may_be_a_toml_table(tmp_path):
+    (tmp_path / "config.toml").write_text(
+        'model_params = { chat_template_kwargs = { enable_thinking = false } }\n'
+        '[agents.triage]\nmodel_params = { temperature = 0 }\n')
+    cfg = HarnessConfig.load(None, user_config=tmp_path / "config.toml")
+    assert json.loads(cfg.model_params) == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert json.loads(agents.as_profile(cfg, "triage").model_params) == {"temperature": 0}
+
+
 def test_a_router_reply_is_read_leniently():
     names = ("coder", "Reviewer", "scout")
     assert agents.pick("<think>coder? no, scout</think>\n`reviewer`\nbecause", names) == "Reviewer"
+    assert agents.pick("<think>coder or scout? scout", names) is None
     assert agents.pick("I'd go with coder: it writes code.", names) == "coder"
     assert agents.pick("Agent: scout.", names) == "scout"
     assert agents.pick("none of them", names) is None

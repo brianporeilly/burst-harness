@@ -63,13 +63,19 @@ PROFILE_KEYS = frozenset((*MODEL_KEYS, "use_for", "delegate_to"))
 # How much of a task the router reads.
 ROUTER_TASK_CHARS = 8000
 
-ROUTER_PROMPT = """You pick which agent handles a task. You do not do the task.
-
-The agents:
+# The router's system prompt and its one message. A small model given the task
+# as the bare message tends to do it; the task tagged, with the question after
+# it, is read as something to route (from benchmarking LFM3-1.7B and E4B).
+ROUTER_SYSTEM = "You route tasks to agents. You never do a task yourself: you only name who should."
+ROUTER_ASK = """The agents:
 {roster}
 
-Pick the least capable agent that can still do the whole task well. Save the more capable ones for tasks that need \
-them. Go by what each agent is for, not by the order they are listed in.
+<task>
+{task}
+</task>
+
+Which agent should do the task above? Pick the least capable agent that can still do the whole task well, and save \
+the more capable ones for tasks that need them. Go by what each agent is for, not by the order they are listed in.
 
 Answer with the agent's name alone on the first line, then one short line saying why."""
 
@@ -133,7 +139,7 @@ def candidates(cfg: HarnessConfig) -> tuple[str, ...]:
 
 def pick(reply: str, names: tuple[str, ...]) -> str | None:
     """The candidate a router's reply names: its first line, or else the first name in it."""
-    reply = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
+    reply = _unthought(reply)
     by_lower = {name.lower(): name for name in names}
     lines = [line for line in reply.splitlines() if line.strip()]
     if lines:
@@ -146,25 +152,46 @@ def pick(reply: str, names: tuple[str, ...]) -> str | None:
     return None
 
 
+def _unthought(reply: str) -> str:
+    """`reply` without its reasoning, including reasoning cut off before it closed."""
+    return re.sub(r"<think>.*?(</think>|$)", "", reply, flags=re.DOTALL).strip()
+
+
+def _cut_off_text(router: Any) -> str:
+    """The text of a router reply cut off at max_tokens, which Strands leaves in its messages."""
+    last = router.messages[-1] if router.messages else {}
+    if last.get("role") != "assistant":
+        return ""
+    return "".join(block.get("text", "") for block in last.get("content", []))
+
+
 def route(cfg: HarnessConfig, task: str) -> tuple[str | None, str]:
     """The router's pick for `task`, and why: (None, the reason) when it gives none."""
     from strands import Agent
+    from strands.types.exceptions import MaxTokensReachedException
 
     from .models import build_model
 
     names = candidates(cfg)
+    cut_off = False
     try:
         # One try: a router that is down should not hold the work up for minutes of backoff.
         router = Agent(model=build_model(as_profile(cfg, cfg.router)), callback_handler=None, retry_strategy=None,
-                       system_prompt=ROUTER_PROMPT.format(roster=roster(cfg, names)))
-        reply = str(router(task[:ROUTER_TASK_CHARS]))
+                       system_prompt=ROUTER_SYSTEM)
+        try:
+            reply = str(router(ROUTER_ASK.format(roster=roster(cfg, names), task=task[:ROUTER_TASK_CHARS])))
+        except MaxTokensReachedException:
+            # A reply cut off after it named someone still names them.
+            reply, cut_off = _cut_off_text(router), True
     except Exception as err:  # noqa: BLE001 -- a router that is down must not stop the work
         return None, f"the router failed ({type(err).__name__}: {str(err).splitlines()[0] if str(err) else ''})"
     chosen = pick(reply, names)
     if chosen is None:
+        if cut_off:
+            return None, "the router's reply was cut off at max_tokens before it named a candidate"
         return None, f"the router named no candidate: {reply.strip()[:200]!r}"
-    why = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip().splitlines()[1:]
-    return chosen, " ".join(line.strip() for line in why if line.strip())[:300]
+    why = " ".join(line.strip() for line in _unthought(reply).splitlines()[1:] if line.strip())[:300]
+    return chosen, why + (" (reply cut off at max_tokens)" if cut_off else "")
 
 
 def lead(cfg: HarnessConfig, task: str | None, *, saved: Path | None = None) -> tuple[HarnessConfig, str]:
