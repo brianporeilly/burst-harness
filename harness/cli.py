@@ -1,4 +1,4 @@
-"""Command line entry point: start, resume, run, or chat about one task; list tasks."""
+"""Command line entry point: start, resume, run, or chat about one task; ask a question; list tasks."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import Any
 from . import (
     agent_sandbox,
     agents,
+    ask,
     cluster_session,
     containers,
     egress,
@@ -579,6 +580,11 @@ def cmd_job(args: argparse.Namespace) -> int:
         raise SystemExit(str(err)) from err
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    """A task with no repo, ending in an answer: see ask.py."""
+    return ask.run(args.slug, args.task, args.message, _overrides(args))
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     """Remove a target a run kept: a sandbox claim, or a container with its egress sidecar."""
     cfg = HarnessConfig.load(None, _overrides(args))
@@ -755,6 +761,13 @@ def main(argv: list[str] | None = None) -> int:
                          "runs: its recent runs.")
     jb.add_argument("dir", help="The job's directory.")
     jb.set_defaults(func=cmd_job)
+
+    question = sub.add_parser("ask", help="A task with no repo, ending in an answer rather than a PR: a question, "
+                                           "a summary, research. Runs in a fresh sandbox, as a job does.")
+    question.add_argument("slug")
+    question.add_argument("--task", help="The question. Needed only for the first run.")
+    question.add_argument("--message", help="A follow-up, answered with the earlier questions and answers in view.")
+    question.set_defaults(func=cmd_ask)
 
     release = sub.add_parser("release",help="Remove a kept target (--claim, or --docker-container).")
     release.set_defaults(func=cmd_release)

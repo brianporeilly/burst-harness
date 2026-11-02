@@ -15,6 +15,12 @@ queue. A burst that was running when the orchestrator stopped is queued again
 on the next start, up to RESTARTS times, which picks the task up from its
 branch: what was pushed is kept, anything not yet pushed is redone.
 
+A task with no repo is a question (harness/ask.py): each burst is
+`harness ask SLUG --task PROMPT`, one run in a fresh sandbox that ends in an
+answer, kept with the burst. Continuing it with a message is a follow-up,
+answered with the earlier questions and answers in view; continuing one that
+gave no answer asks it again.
+
 A burst that ends with work it has not pushed (it failed, or was stopped)
 keeps its sandbox, and says so. The next burst is attached to that sandbox, so
 it carries on with the work there; once a burst pushes (a PR, a pause) or
@@ -28,6 +34,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -37,7 +44,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from harness import credentials, git
+from harness import ask, credentials, git, job
 from harness.config import HarnessConfig
 
 from .backend import SpecError, check_model, model_choice
@@ -50,6 +57,7 @@ URL_REPO = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._/-]+")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 ENGINES = ("strands", "claude-code")
 RESULT = "HARNESS_RESULT "
+JOB_RESULT = "HARNESS_JOB "  # what a question's burst ends with
 # A sandbox a burst kept, as the harness gives the flags that reattach to it. The output carries what
 # the model printed too, so only these shapes are taken from it.
 SANDBOX = re.compile(r"--target (?:podman|docker) --docker-container burst-[a-z0-9-]{1,60}"
@@ -62,7 +70,8 @@ RESTARTS = 2
 # How long a cancelled burst gets to release its sandbox before it is killed.
 CANCEL_GRACE = 30
 # States in which nothing is running or waiting to run.
-IDLE = ("pr", "pushed_no_pr", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled")
+IDLE = ("pr", "pushed_no_pr", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled",
+        "answered")
 
 
 class TasksError(ValueError):
@@ -140,17 +149,22 @@ class TaskRunner:
         prompt = str(raw.get("prompt") or "").strip()
         if not prompt:
             raise TasksError("Say what to do: a prompt.")
-        url = repo_url(str(raw.get("repo") or ""))
+        # No repo: a question, answered rather than turned into a PR.
+        url = repo_url(str(raw["repo"])) if str(raw.get("repo") or "").strip() else None
         slug = str(raw.get("slug") or "").strip() or slug_for(prompt)
         if not SLUG.fullmatch(slug):
             raise TasksError(f"{slug!r} is not a slug: lowercase letters, digits and dashes, up to 48.")
+        if url is None and self._asked(slug).exists():
+            raise TasksError(f"A question named {slug} was asked before (from the command line?): pick another name.")
         engine = str(raw.get("engine") or self.base.engine)
         if engine not in ENGINES:
             raise TasksError(f"The engine is one of {', '.join(ENGINES)}.")
         base_branch = str(raw.get("base_branch") or "").strip()
         if base_branch and not BRANCH.fullmatch(base_branch):
             raise TasksError(f"{base_branch!r} is not a branch name.")
-        if not base_branch:
+        if url is None:
+            base_branch = ""
+        elif not base_branch:
             # The repo's own default, not a guess: and a repo that cannot be read is refused now, not in a burst.
             try:
                 base_branch = git.default_branch(url)
@@ -177,8 +191,8 @@ class TaskRunner:
             "uses": {"provider": chosen.get("provider", self.base.provider),
                      "model": chosen.get("model_id", self.base.model_id),
                      "base_url": chosen.get("base_url", self.base.base_url)},
-            "base_branch": base_branch, "draft": bool(raw.get("draft")),
-            "branch": self.base.branch_prefix + slug, "created": _now(), "created_by": user,
+            "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
+            "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
             "sandbox": None,
         }
@@ -195,6 +209,8 @@ class TaskRunner:
             record = self._read(slug)
             if record["state"] not in IDLE:
                 raise TasksError(f"{slug} is {record['state']}: wait for it to stop first.")
+            if record["state"] == "answered" and not message.strip():
+                raise TasksError(f"{slug} is answered: say what to ask next.")
             record.update(state="queued", queued=time.time_ns(), message=message.strip() or None, restarts=0)
             self._write(record)
         self.dispatch()
@@ -228,6 +244,12 @@ class TaskRunner:
             for path in directory.iterdir():
                 path.unlink()
             directory.rmdir()
+            if not record.get("repo"):
+                shutil.rmtree(self._asked(slug), ignore_errors=True)  # its conversation, which a follow-up reads
+
+    def _asked(self, slug: str) -> Path:
+        """Where a question's runs are kept (harness/ask.py)."""
+        return job.runs_dir(self.base, slug, ask.ROOT).parent
 
     # --- running ---
 
@@ -259,12 +281,17 @@ class TaskRunner:
                 self._start(record)
 
     def _argv(self, record: dict[str, Any]) -> list[str]:
-        argv = [sys.executable, "-m", "harness", "--repo-url", record["repo"], "--engine", record["engine"],
-                "--claim-ttl", str(self.claim_ttl), "--draft-pr" if record.get("draft") else "--no-draft-pr"]
+        argv = [sys.executable, "-m", "harness", "--engine", record["engine"], "--claim-ttl", str(self.claim_ttl)]
         if self.base.target in ("local", "podman", "docker"):
             # Never on the orchestrator's own machine: in a container, through a gateway.
             runtime = "docker" if self.base.target == "docker" else "podman"
             argv += ["--target", runtime] + (["--egress", "allowlist"] if self.base.egress == "open" else [])
+        elif not record.get("repo") and self.base.egress == "open":
+            argv += ["--egress", "allowlist"]  # a question runs as a job does: through a gateway
+        if not record.get("repo"):
+            return argv + ["ask", record["slug"], "--task", record["prompt"]] + (
+                ["--message", record["message"]] if record.get("message") else [])
+        argv += ["--repo-url", record["repo"], "--draft-pr" if record.get("draft") else "--no-draft-pr"]
         if record.get("base_branch"):
             argv += ["--base-branch", record["base_branch"]]
         if record.get("sandbox"):
@@ -280,6 +307,10 @@ class TaskRunner:
                               record.get("model") or "", record.get("context_window") or 0)
         if chosen:
             chosen["router"] = ""  # a task given its model is not routed (harness/agents.py)
+        elif not record.get("repo") and (record.get("uses") or {}).get("agent"):
+            # A question's follow-ups stay with the profile the router chose for it (a repo's task keeps
+            # its own choice, in the harness's state).
+            chosen = {"agent": record["uses"]["agent"], "router": ""}
         return {f"HARNESS_{name.upper()}": str(value) for name, value in chosen.items()}
 
     def _start(self, record: dict[str, Any]) -> None:
@@ -290,12 +321,16 @@ class TaskRunner:
             heading = f"\n=== burst {len(record['bursts']) + 1}, {_now()}"
             output.write((heading + (f": {record['message']}" if record.get("message") else "") + " ===\n").encode())
             output.flush()
+            # A question's run is found by its id, which is set here.
+            run = {} if record.get("repo") else {job.RUN_ID_ENV: job.new_run_id()}
             process = subprocess.Popen(
                 self._argv(record), cwd=REPO,
-                env=credentials.for_run(credentials.for_task(self.base), {"PYTHONUNBUFFERED": "1", **self._model_env(record)}),
+                env=credentials.for_run(credentials.for_task(self.base),
+                                        {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
             )
-        record["bursts"].append({"started": _now(), "message": record.get("message")})
+        record["bursts"].append({"started": _now(), "message": record.get("message"),
+                                 **({"run": run[job.RUN_ID_ENV]} if run else {})})
         record.update(state="running", boot=self.boot, pid=process.pid)
         self._write(record)
         self.running[record["slug"]] = process
@@ -303,6 +338,12 @@ class TaskRunner:
 
     def _wait(self, slug: str, process: subprocess.Popen[bytes]) -> None:
         code = process.wait()
+        try:
+            if not self._read(slug).get("repo"):
+                self._answered(slug, code)
+                return
+        except TasksError:
+            pass  # removed meanwhile
         result = _result(self._dir(slug) / OUTPUT)
         done_with = None
         with self.lock:
@@ -331,6 +372,31 @@ class TaskRunner:
             self._release(slug, done_with)
         self.dispatch()
 
+    def _answered(self, slug: str, code: int) -> None:
+        """A question's burst ended: keep its answer, if it gave one."""
+        result = _result(self._dir(slug) / OUTPUT, JOB_RESULT)
+        with self.lock:
+            self.running.pop(slug, None)
+            try:
+                record = self._read(slug)
+            except TasksError:
+                record = None
+            if record is not None:
+                burst = record["bursts"][-1]
+                report = job.runs_dir(self.base, slug, ask.ROOT) / str(burst.get("run")) / "report.md"
+                answer = report.read_text() if burst.get("run") and report.is_file() else None
+                state = "cancelled" if record.get("cancelling") else "answered" if answer is not None else "failed"
+                burst.update(ended=_now(), exit=code, state=state, answer=answer, reason=result.get("reason"),
+                             delegated=result.get("delegated"))
+                if result.get("agent"):
+                    provider, _, model = str(result.get("model") or "").partition(" ")
+                    record["uses"] = {**record.get("uses", {}), "provider": provider, "model": model,
+                                      "agent": result["agent"]}
+                record.update(state=state, message=None, cancelling=False)
+                record.pop("pid", None)
+                self._write(record)
+        self.dispatch()
+
     def _release(self, slug: str, sandbox: str) -> None:
         """Remove a kept sandbox (`harness ... release`), noting it in the task's output."""
         with open(self._dir(slug) / OUTPUT, "ab") as output:
@@ -350,16 +416,16 @@ def _state(code: int, result: dict[str, Any]) -> str:
     return "failed"
 
 
-def _result(output: Path) -> dict[str, Any]:
-    """The last HARNESS_RESULT line in the output, or {} if the burst printed none."""
+def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
+    """The last HARNESS_RESULT (or `prefix`) line in the output, or {} if the burst printed none."""
     try:
         text = _tail(output)
     except OSError:
         return {}
     for line in reversed(text.splitlines()):
-        if line.startswith(RESULT):
+        if line.startswith(prefix):
             try:
-                return json.loads(line[len(RESULT):])
+                return json.loads(line[len(prefix):])
             except ValueError:
                 return {}
     return {}

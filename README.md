@@ -50,6 +50,7 @@ python -m harness --repo /path/to/repo start my-slug --task "What to do"
 python -m harness --repo /path/to/repo resume my-slug              # headless burst
 python -m harness --repo /path/to/repo run my-slug --task "..."    # start or resume, whichever applies
 python -m harness --repo /path/to/repo chat my-slug                # interactive, starts if new
+python -m harness --target podman ask my-q --task "A question"     # no repo: ends in an answer
 python -m harness list                                             # claims and Jobs in flight
 python -m harness session start my-box                             # a long-lived sandbox with a web UI
 ```
@@ -62,6 +63,20 @@ output is `HARNESS_RESULT {json}` with the slug, branch, state, PR URL, and clai
 
 Useful flags: `--draft-pr`, `--no-push`, `--model`, `--effort`, `--base-branch`,
 `--offload-max-tokens`.
+
+**Questions: tasks with no repo.** `ask SLUG --task QUESTION` is for work
+that needs no checkout: a question, a summary, some research. It runs as a
+one-off [job](#jobs) does: a fresh sandbox behind a gateway in report mode, so
+its network only reads; the model routed afresh unless the run names one (see
+[Other agents](#other-agents-routing-and-delegation---router---delegate-to---agent));
+and it ends with `finish_report`, whose report is the answer. The answer is
+printed, and kept with the run in `asks/SLUG/runs/` under the state directory.
+`ask SLUG --message FOLLOW-UP` asks a follow-up: the run is given the earlier
+questions and answers (the newest that fit in 60,000 characters) and the
+follow-up. Nothing else carries over, because each run's sandbox goes when it
+ends. `ask SLUG` alone, after a run that gave no answer, asks the same
+question again. Exit status `0` when it was answered; the last line is
+`HARNESS_JOB {json}`.
 
 ## What is enforced, not prompted
 
@@ -634,7 +649,9 @@ python -m orchestrator --jobs ~/jobs --schedule --timezone America/Anchorage --c
   `scheduled_for`, or `"manual"`.
 
 **Tasks.** The Tasks tab (or `POST /api/tasks`) takes a repo and a prompt and
-works on it until there is a PR, without anyone watching:
+works on it until there is a PR, without anyone watching. With no repo, the
+task is a question (see "Questions" under Usage), answered rather than turned
+into a PR:
 
 ```bash
 curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-Type: application/json' \
@@ -668,6 +685,13 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
 - A burst that fails or is stopped with work not yet pushed keeps its
   sandbox. The next burst carries on in it, and the orchestrator removes it
   once a burst pushes or gives up, or the task is removed.
+- A task with no `repo` is a question: each burst is `harness ask SLUG
+  --task PROMPT`, and it ends `answered`, with the answer kept with the burst
+  (`bursts[].answer` in `GET /api/tasks/SLUG`), or `failed`. Continue with a
+  message asks a follow-up. Continue without one, after a burst that gave no
+  answer, asks the question again. Follow-ups stay with the profile the router
+  picked for the first. `base_branch` and `draft` don't apply. Remove deletes
+  its answers too.
 - `--task-limit` (`ORCHESTRATOR_TASK_LIMIT`, default 1) tasks run at once; the
   rest wait their turn. The queue is in the tasks' records (`tasks/SLUG/` in
   the state directory), so it survives a restart, and a burst a restart cut

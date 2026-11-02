@@ -242,6 +242,55 @@ def test_continuing_a_paused_task_is_another_burst_with_the_reply(tmp_path, harn
     assert "--message" not in harness.argv()
 
 
+def _answer(runner, process, answer, **outcome):
+    """End a question's burst as `harness ask` would: its answer kept with its run, and HARNESS_JOB said."""
+    run = process.env["HARNESS_JOB_RUN_ID"]
+    slug = process.argv[process.argv.index("ask") + 1]
+    if answer is not None:
+        directory = runner.base.resolve_state_dir(f"asks/{slug}/runs/{run}")
+        directory.mkdir(parents=True)
+        (directory / "report.md").write_text(answer)
+    with open(process.output, "a") as handle:
+        handle.write("HARNESS_JOB " + json.dumps({"state": "reported" if answer is not None else "failed",
+                                                  "run": run, **outcome}) + "\n")
+    process.code = 0 if answer is not None else 1
+    process.done.set()
+
+
+def test_a_task_with_no_repo_is_a_question_answered_then_followed_up(tmp_path, harness):
+    runner = _runner(tmp_path)
+    made = runner.create({"prompt": "Ten uses for a brick?", "slug": "bricks", "base_branch": "x", "draft": True})
+    assert (made["repo"], made["branch"], made["base_branch"], made["draft"]) == (None, None, "", False)
+    argv, process = harness.started[0]
+    assert argv[-4:] == ["ask", "bricks", "--task", "Ten uses for a brick?"] and "--repo-url" not in argv
+    assert ["--target", "podman", "--egress", "allowlist"] == argv[argv.index("--target"):argv.index("--target") + 4]
+    _answer(runner, process, "1. A doorstop.", agent="local-quick", model="llamacpp lfm3", reason=None)
+    done = _settled(runner, "bricks", "answered")
+    assert done["bursts"][0]["answer"] == "1. A doorstop." and done["uses"]["agent"] == "local-quick"
+
+    with pytest.raises(TasksError, match="say what to ask next"):
+        runner.resume("bricks", " ")
+    runner.resume("bricks", "Which is safest?")
+    argv, process = harness.started[1]
+    assert argv[-2:] == ["--message", "Which is safest?"]
+    assert process.env["HARNESS_AGENT"] == "local-quick" and process.env["HARNESS_ROUTER"] == ""  # the same profile
+    _answer(runner, process, None, reason="the model ended without calling finish_report")
+    failed = _settled(runner, "bricks", "failed")
+    assert failed["bursts"][1]["reason"] == "the model ended without calling finish_report"
+    runner.resume("bricks")  # asked again: `harness ask` knows the last one gave no answer
+    assert "--message" not in harness.argv()
+    _answer(runner, harness.started[2][1], "The doorstop.")
+    _settled(runner, "bricks", "answered")
+
+    asked = runner.base.resolve_state_dir("asks/bricks")
+    assert asked.is_dir()
+    runner.remove("bricks")
+    assert not asked.exists()  # a new question of that name starts afresh
+    asked.mkdir(parents=True)
+    with pytest.raises(TasksError, match="asked before"):
+        runner.create({"prompt": "again", "slug": "bricks"})
+
+
 def test_cancelling_a_queued_task_or_stopping_a_running_one(tmp_path, harness, monkeypatch):
     signals = []
     monkeypatch.setattr(tasks_module.os, "killpg", lambda pid, sig: signals.append((pid, sig)))

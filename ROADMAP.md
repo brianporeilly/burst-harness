@@ -478,10 +478,13 @@ token on the cluster. Those wait for a second user.
 5. More than one model per run (2026-10-30): named profiles (`[agents.NAME]`),
    a lead that delegates pieces of work to them, and a router that picks the
    lead for a new task or job run (`harness/agents.py`), with example
-   scenarios to benchmark against each other. Not yet: Claude Code as a
-   profile (it runs in the target, not as a Strands model), delegates working
-   in parallel (each would need its own worktree), and tasks without a repo
-   (a question asked in Slack, answered by whichever model the router picks).
+   scenarios to benchmark against each other. Tasks without a repo
+   (2026-11-01): a question, a summary or some research, answered by whichever
+   model the router picks (`harness ask`, and a task with no repo in the
+   orchestrator), run as a one-off job in report mode, with follow-ups given
+   the earlier answers. Not yet: asking one from Slack, Claude Code as a
+   profile (it runs in the target, not as a Strands model), and delegates
+   working in parallel (each would need its own worktree).
    Strands' own `ModelRouter` switches models per call and fails over; per
    task was picked here so a task's prompt cache and snapshot stay with one
    model. Its failover (local down, use Claude) may still be worth adding.

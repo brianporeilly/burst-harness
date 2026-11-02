@@ -90,7 +90,7 @@
   <section class="panel hidden" id="task-create">
     <div class="row spread"><h2>New task</h2><button id="task-cancel">Cancel</button></div>
     <form id="task-form" autocomplete="off">
-      <label>Repository <input type="text" name="repo" required placeholder="owner/repo, or https://host/owner/repo.git"></label>
+      <label>Repository <input type="text" name="repo" placeholder="owner/repo, or https://host/owner/repo.git; empty to ask a question"></label>
       <label>What to do <textarea name="prompt" required style="min-height:140px" placeholder="Fix the flaky test in tests/test_api.py and open a PR."></textarea></label>
       <div class="grid2">
         <label>Engine
@@ -118,6 +118,8 @@
         <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
       </div>
       <label class="inline"><input type="checkbox" name="draft"> Open the PR as a draft</label>
+      <p class="muted">With no repository, the task is a question (a summary, some research): it runs in a fresh
+        sandbox whose network only reads, and ends in an answer rather than a PR. Continuing it asks a follow-up.</p>
       <div class="row"><button class="primary" type="submit">Start</button><span class="error" id="task-form-error"></span></div>
     </form>
   </section>
@@ -580,7 +582,7 @@ async function renderRun(name, id) {
 // --- tasks ---
 
 let selectedTask = null;
-const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", running: "warn", queued: "warn", paused: "warn",
+const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", answered: "ok", running: "warn", queued: "warn", paused: "warn",
   waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn", max_tokens: "bad" }[state] || "") },
   { pr: "PR", pushed_no_pr: "pushed, no PR", waiting: "needs input", max_tokens: "output limit" }[state] || state);
 const taskForm = document.getElementById("task-form");
@@ -595,7 +597,7 @@ async function refreshTasks() {
   else list.replaceChildren(...data.tasks.map((t) => el("div", {
       class: "session" + (t.slug === selectedTask ? " selected" : ""), onclick: () => selectTask(t.slug) },
     el("div", { class: "row spread" }, el("span", { class: "name" }, t.slug), taskChip(t.state)),
-    el("div", { class: "muted" }, [t.repo.replace(/^https:\/\/(github\.com\/)?/, "").replace(/\.git$/, ""),
+    el("div", { class: "muted" }, [t.repo ? t.repo.replace(/^https:\/\/(github\.com\/)?/, "").replace(/\.git$/, "") : "question",
                                     modelLabel(t), when(t.created)].join(" · ")))));
   if (selectedTask) renderTask();
 }
@@ -639,21 +641,28 @@ async function renderTask() {
   }
   box.dataset.key = key;
   const idle = !["queued", "running"].includes(t.state);
-  const reply = el("textarea", { placeholder: t.state === "pr" ? "Changes to make on the PR's branch" : "Your answer, or leave empty to carry on" });
+  const asking = !t.repo;
+  const reply = el("textarea", { placeholder: asking ? (t.state === "answered" ? "A follow-up question" : "A follow-up, or leave empty to ask again")
+    : t.state === "pr" ? "Changes to make on the PR's branch" : "Your answer, or leave empty to carry on" });
   const actions = [
     !idle ? el("button", { class: "danger", onclick: () => taskAct("Cancel", () =>
       api(`/api/tasks/${t.slug}/cancel`, { method: "POST" })) }, t.state === "queued" ? "Cancel" : "Stop") : null,
-    idle ? el("button", { class: "danger", onclick: () => confirm(`Remove ${t.slug}? Its branch and PR stay.`) &&
+    idle ? el("button", { class: "danger", onclick: () => confirm(asking ? `Remove ${t.slug} and its answers?` : `Remove ${t.slug}? Its branch and PR stay.`) &&
       taskAct("Remove", () => api(`/api/tasks/${t.slug}`, { method: "DELETE" })) }, "Remove") : null,
   ];
   const bursts = t.bursts.map((b, i) => el("tr", {},
     el("td", {}, String(i + 1)), el("td", {}, new Date(b.started).toLocaleString()),
     el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
-    el("td", { class: "muted" }, b.message || (i ? "carry on" : "the prompt"))));
+    el("td", { class: "muted" }, b.message || (i ? (asking ? "asked again" : "carry on") : "the prompt"))));
+  // A question's conversation: what each burst asked, and its answer.
+  const answers = asking ? t.bursts.filter((b) => b.ended).map((b, i) => el("div", {},
+    el("p", { class: "muted" }, b.message ? `Follow-up: ${b.message}` : i ? "Asked again:" : "The prompt:"),
+    b.answer != null ? el("pre", { class: "text" }, b.answer)
+      : el("p", { class: "muted" }, b.state === "cancelled" ? "Stopped." : `No answer${b.reason ? `: ${b.reason}` : "."}`))) : [];
   box.replaceChildren(
     el("div", { class: "row spread" }, el("h2", {}, t.slug), el("div", { class: "row" }, ...actions)),
     el("p", {}, taskChip(t.state), " ", t.pr ? el("a", { href: t.pr, target: "_blank", rel: "noopener" }, t.pr) : null,
-      el("span", { class: "muted" }, ` ${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""} · ${modelLabel(t)}`
+      el("span", { class: "muted" }, ` ${asking ? "a question" : `${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""}`} · ${modelLabel(t)}`
         + ((t.uses || t).base_url ? ` at ${(t.uses || t).base_url}` : "") + (t.created_by ? ` · by ${t.created_by}` : ""))),
     t.state === "paused" ? el("p", { class: "muted" }, "Paused: the work is pushed, with where it stands and any questions "
       + "in the task document on the branch (and at the end of the output).") : null,
@@ -667,6 +676,8 @@ async function renderTask() {
       taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
       el("label", {}, "Continue", reply),
       el("div", { class: "row" }, el("button", { class: "primary", type: "submit" }, "Continue"))) : null,
+    asking ? el("h3", {}, "Answers") : null,
+    ...answers,
     el("h3", {}, "Bursts"),
     bursts.length ? el("table", {}, bursts) : el("p", { class: "muted" }, "Waiting for a free slot."),
     el("h3", {}, "Output"),
