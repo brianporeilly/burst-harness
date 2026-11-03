@@ -229,6 +229,8 @@ class PodmanBackend:
                 "claude_oauth_token": bool(credentials.get("CLAUDE_CODE_OAUTH_TOKEN")),
             },
             "defaults": {"provider": cfg.provider, "base_url": cfg.base_url, "model": cfg.model_id,
+                         # A provider plugin that gives Claude Code its own endpoint (harness/models.py).
+                         "claude_endpoint": models.provider_attr(cfg.provider, "target_endpoint") is not None,
                          "context_window": cfg.context_window_limit,
                          "allow": list(cfg.egress_allow), "allowed_for_good": containers.approved(cfg),
                          "mcp": list(cfg.mcp)},

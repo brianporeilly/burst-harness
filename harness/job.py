@@ -297,8 +297,13 @@ def write_rules(spec: JobSpec, cfg: HarnessConfig) -> tuple[dict[str, str], ...]
     from . import session
     if spec.mode != "report":
         return None
+    from . import models
+
     model: tuple[dict[str, str], ...] = ()
-    if cfg.engine == "claude-code":
+    if cfg.engine == "claude-code" and (endpoint := models.target_endpoint(cfg)) is not None:
+        path = urlsplit(endpoint.base_url).path.rstrip("/")
+        model = ({"host": endpoint.host, "method": "POST", "path": f"{path}/v1/messages*"},)
+    elif cfg.engine == "claude-code":
         model = ANTHROPIC_WRITES
     elif cfg.engine == "opencode":
         config = session.opencode_config(cfg)

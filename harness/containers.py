@@ -134,7 +134,7 @@ def approved(cfg: HarnessConfig) -> list[str]:
 def allowlist(cfg: HarnessConfig, extra: tuple[str, ...] = ()) -> list[str]:
     """egress_allow, what has been approved for good, and the hosts this run needs to reach no matter what."""
     hosts = list(dict.fromkeys((*cfg.egress_allow, *approved(cfg), *extra, *mcp.hosts(cfg))))
-    for url in (cfg.repo_url, os.environ.get("ANTHROPIC_BASE_URL", "")):
+    for url in (cfg.repo_url, _model_api(cfg)):
         parts = urlsplit(url)
         if parts.scheme == "https" and parts.hostname and parts.hostname not in hosts:
             hosts.append(parts.hostname)
@@ -143,6 +143,15 @@ def allowlist(cfg: HarnessConfig, extra: tuple[str, ...] = ()) -> list[str]:
                 f"--egress allowlist only passes HTTPS; {url} is not an https:// URL."
             )
     return hosts
+
+
+def _model_api(cfg: HarnessConfig) -> str:
+    """Where an engine in the target calls the model: a provider plugin's endpoint, or the driver's
+    ANTHROPIC_BASE_URL ("" for Anthropic's own, which is in the default allowlist)."""
+    from . import models  # models reads credentials, as this module does
+
+    endpoint = models.target_endpoint(cfg) if cfg.engine == "claude-code" else None
+    return endpoint.base_url if endpoint is not None else os.environ.get("ANTHROPIC_BASE_URL", "")
 
 
 def check_reachable(cfg: HarnessConfig) -> None:
@@ -187,6 +196,11 @@ def model_rule(cfg: HarnessConfig) -> dict[str, object]:
             "--egress-inject model is for an engine that runs in the container (claude-code, or a session's "
             f"opencode); with engine={cfg.engine} the model is called from the driver and its key never leaves."
         )
+    from . import models
+
+    if cfg.engine == "claude-code" and models.target_endpoint(cfg) is not None:
+        raise ContainerError(f"provider {cfg.provider} gives Claude Code its own endpoint and a token that it "
+                             "refreshes, which --egress-inject model cannot hold yet: drop model from it.")
     api = urlsplit(os.environ.get("ANTHROPIC_BASE_URL") or DEFAULT_MODEL_API)
     if api.scheme != "https" or not api.hostname or (api.port or 443) != 443:
         raise ContainerError(f"--egress-inject model needs ANTHROPIC_BASE_URL to be https:// on port 443 (got {api.geturl()}).")

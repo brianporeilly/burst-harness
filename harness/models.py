@@ -25,6 +25,16 @@ none:
       def build(cfg): ...
       build.credentials = ("EXAMPLE_CLIENT_ID", "EXAMPLE_CLIENT_SECRET")
 
+* ``target_endpoint``: a callable taking the HarnessConfig and returning a
+  :class:`TargetEndpoint`, for an engine whose agent loop runs in the target
+  (engine=claude-code, on a container or a claimed sandbox). Claude Code
+  there talks to that endpoint, with the endpoint's token, in place of the
+  driver's Anthropic settings; the token is kept current while it runs (see
+  claude_code.py)::
+
+      build.target_endpoint = lambda cfg: TargetEndpoint(
+          base_url="https://ai.example.com/anthropic", token=my_token)
+
 Two things are deliberately provider-scoped rather than global:
 
 * **Sampling params.** ``thinking: adaptive`` and ``output_config.effort`` are
@@ -45,8 +55,11 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:  # pragma: no cover
     from strands.models.model import Model
@@ -62,6 +75,26 @@ logger = logging.getLogger(__name__)
 
 class ProviderError(RuntimeError):
     """The provider is unknown, or its optional dependency is not installed."""
+
+
+@dataclass(frozen=True)
+class TargetEndpoint:
+    """Where an engine running in the target (Claude Code) sends its model calls, for a provider plugin.
+
+    `token` has the shape of an Anthropic ``credentials=`` provider: called (with
+    ``force_refresh`` as a keyword, which it may ignore), it returns an
+    AccessToken, whose ``expires_at`` (epoch seconds, or None) says when to ask
+    again; a plain string is taken as a token that does not expire. `env` is
+    set in the target as it is, so it holds nothing secret.
+    """
+
+    base_url: str  # the Anthropic Messages API's root, as ANTHROPIC_BASE_URL takes it
+    token: Callable[..., Any]
+    env: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def host(self) -> str:
+        return urlsplit(self.base_url).hostname or ""
 
 
 def _require(module: str, cls: str, extra: str) -> Any:
@@ -288,6 +321,25 @@ def provider_attr(name: str, attr: str, default: Any = None) -> Any:
     except ProviderError:
         return default
     return getattr(builder, attr, default) if builder is not None else default
+
+
+def target_endpoint(cfg: HarnessConfig) -> TargetEndpoint | None:
+    """The run's provider's TargetEndpoint, or None when it has none (every built-in)."""
+    make = provider_attr(cfg.provider, "target_endpoint")
+    if make is None:
+        return None
+    endpoint = make(cfg) if callable(make) else make
+    if endpoint is None:
+        return None
+    if not isinstance(endpoint, TargetEndpoint) or not callable(endpoint.token):
+        raise ProviderError(f"Provider {cfg.provider!r}: target_endpoint must give a models.TargetEndpoint.")
+    parts = urlsplit(endpoint.base_url)
+    if parts.scheme != "https" or not parts.hostname:
+        raise ProviderError(f"Provider {cfg.provider!r}: its target endpoint must be https:// "
+                            f"(got {endpoint.base_url!r}).")
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in endpoint.env.items()):
+        raise ProviderError(f"Provider {cfg.provider!r}: its target endpoint's env must map strings to strings.")
+    return endpoint
 
 
 def _declared(name: str) -> tuple[str, ...]:

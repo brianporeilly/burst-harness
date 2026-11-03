@@ -202,6 +202,19 @@ def test_a_task_can_use_an_installed_provider_plugin_but_a_session_cannot(tmp_pa
         SessionSpec.parse({"name": "box", "provider": "example-gateway"})
 
 
+def test_claude_code_keeps_a_default_provider_that_gives_it_an_endpoint(tmp_path, harness):
+    from orchestrator.backend import PodmanBackend
+
+    runner = _runner(tmp_path, limit=2)
+    runner.base = replace(runner.base, provider="llamacpp", base_url="http://typhon:8080")
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "plain", "engine": "claude-code"})
+    assert harness.started[0][1].env["HARNESS_PROVIDER"] == "anthropic"  # not the default's llama.cpp
+    runner.base = replace(runner.base, provider="tests.fake_provider:gateway")
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "gateway", "engine": "claude-code"})
+    assert "HARNESS_PROVIDER" not in harness.started[1][1].env  # the orchestrator's own: the plugin
+    assert PodmanBackend(runner.base).info()["defaults"]["claude_endpoint"] is True
+
+
 def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch):
     runner = _runner(tmp_path, limit=10)
     runner.base = replace(runner.base, provider="llamacpp", base_url="http://typhon:8080", model_id="raon",

@@ -702,12 +702,14 @@ document.getElementById("task-cancel").onclick = () => {
   document.getElementById("task-create").classList.add("hidden");
   document.getElementById("task-detail").classList.remove("hidden");
 };
-// What an empty field means, for the provider chosen; Claude Code is Anthropic's whatever is chosen.
+// What an empty field means, for the provider chosen. Claude Code is Anthropic's whatever is chosen, unless the
+// default provider is a plugin that gives it an endpoint of its own.
 function taskModelFields() {
   if (!defaults) return;
   const claude = taskForm.engine.value === "claude-code";
-  const provider = claude ? "anthropic" : taskForm.provider.value || defaults.provider;
-  const own = provider === defaults.provider && !(claude && defaults.provider !== "anthropic");
+  const endpoint = claude && defaults.claude_endpoint;
+  const provider = claude && !endpoint ? "anthropic" : taskForm.provider.value || defaults.provider;
+  const own = provider === defaults.provider && !(claude && !endpoint && defaults.provider !== "anthropic");
   taskForm.provider.disabled = claude;
   taskForm.base_url.disabled = claude;
   // Only a server of your own needs its URL; Anthropic, the other built-ins and a plugin know theirs.
@@ -718,7 +720,9 @@ function taskModelFields() {
   taskForm.context_window.placeholder = own ? `default (${defaults.context_window})` : "default (1000000)";
   const held = credentialsHeld;
   const key = held.anthropic_api_key || (claude && held.claude_oauth_token);
-  document.getElementById("task-model-note").textContent = claude
+  document.getElementById("task-model-note").textContent = endpoint
+    ? `Claude Code uses provider ${defaults.provider}'s own endpoint and token.`
+    : claude
     ? `Claude Code uses Anthropic, with the orchestrator's ${held.claude_oauth_token ? "Claude token ✓" : held.anthropic_api_key ? "Anthropic key ✓" : "Claude token or Anthropic key, and it has neither ✗"}.`
     : provider === "anthropic" ? `Anthropic, with the orchestrator's key${key ? " ✓" : ": it has none ✗"}.`
     : provider === "llamacpp" && !own ? "Set the context window to the server's --ctx-size." : "";

@@ -31,6 +31,15 @@ The git token still never enters the target.
 With ``egress_inject = model`` they are not there either: the file holds
 placeholders, and the target's gateway puts the real credential in their place
 on requests to the API (see containers.py).
+
+A provider plugin with a ``target_endpoint`` (models.py) replaces all of that:
+Claude Code talks to the plugin's endpoint (ANTHROPIC_BASE_URL), and none of
+the driver's Anthropic settings are passed. Its token, which may last only an
+hour, is in a 0600 file that Claude Code reads through ``apiKeyHelper``, asking
+again every few minutes and after a 401; a thread on the driver asks the
+plugin for the token while Claude Code runs (at half its remaining life, and
+at least once a minute) and rewrites the file when it changes. Not yet with
+``egress_inject = model``, which is refused.
 """
 
 from __future__ import annotations
@@ -38,10 +47,13 @@ from __future__ import annotations
 import json
 import shlex
 import sys
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import credentials, git, git_policy, mcp, state, terminal
+from . import credentials, git, git_policy, mcp, models, state, terminal
 from .agent_sandbox import label_value
 from .containers import MODEL_CREDENTIALS
 from .context import HarnessContext
@@ -54,6 +66,11 @@ REMOTE_DIR = "/tmp/burst-harness"
 ENV_FILE = f"{REMOTE_DIR}/claude.env"
 # Forwarded from the driver's environment into a remote target, when set.
 CREDENTIAL_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+# A provider plugin's target endpoint: its token, which Claude Code reads with apiKeyHelper this often (and
+# after a 401), and the longest the driver goes without asking the plugin for it.
+TOKEN_FILE = f"{REMOTE_DIR}/model-token"
+HELPER_TTL_MS = 5 * 60 * 1000
+REFRESH_MAX_SECONDS = 60
 
 RULES = """You are working on one task in a git repository, driven by burst-harness.
 
@@ -77,8 +94,57 @@ class ClaudeCodeError(RuntimeError):
     """The target cannot run Claude Code, or its setup failed."""
 
 
+class TokenKeeper:
+    """Keeps a target endpoint's token current in a file in the target, while Claude Code runs."""
+
+    def __init__(self, endpoint: models.TargetEndpoint, write: Callable[[str], None]) -> None:
+        self.endpoint, self.write = endpoint, write
+        self.current = ""
+        self.expires: float | None = None
+        self.stopping = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def refresh(self) -> None:
+        """Ask the plugin for the token, and write it if it changed."""
+        got = self.endpoint.token()
+        token, expires = (got, None) if isinstance(got, str) else (getattr(got, "token", ""), getattr(got, "expires_at", None))
+        if not isinstance(token, str) or not token.strip():
+            raise ClaudeCodeError("the provider's target endpoint gave no token")
+        if token != self.current:
+            self.write(token.strip())
+            self.current = token
+        self.expires = float(expires) if expires is not None else None
+
+    def delay(self) -> float:
+        """Until the next ask: half the token's remaining life, at least a second, at most REFRESH_MAX_SECONDS."""
+        if self.expires is None:
+            return REFRESH_MAX_SECONDS
+        return max(1.0, min(REFRESH_MAX_SECONDS, (self.expires - time.time()) / 2))
+
+    def start(self) -> None:
+        self.refresh()  # the first token, before Claude Code starts: a failure here stops the burst
+        self.thread = threading.Thread(target=self._keep, name="token-keeper", daemon=True)
+        self.thread.start()
+
+    def _keep(self) -> None:
+        while not self.stopping.wait(self.delay()):
+            try:
+                self.refresh()
+            except Exception as err:  # noqa: BLE001 -- said, and tried again; Claude Code has the last token
+                self.expires = None
+                print(f"! Could not refresh the model endpoint's token: {type(err).__name__}: {err}", file=sys.stderr)
+
+    def stop(self) -> None:
+        self.stopping.set()
+        if self.thread is not None:
+            self.thread.join(timeout=10)
+
+
 class ClaudeCodeEngine:
     """Runs one task's Claude Code sessions in `ctx.target`."""
+
+    # Keeping a provider plugin's endpoint token current, from prepare() to cleanup(); None without one.
+    keeper: TokenKeeper | None = None
 
     def __init__(self, ctx: HarnessContext) -> None:
         if not isinstance(ctx.target, SubprocessTarget):
@@ -114,7 +180,20 @@ class ClaudeCodeEngine:
         self._upload(f"{REMOTE_DIR}/git_policy.py", Path(git_policy.__file__).read_text())
         self.hook_path = f"{REMOTE_DIR}/git_policy.py"
 
-        creds = {name: value for name in CREDENTIAL_VARS if (value := credentials.get(name))}
+        endpoint = models.target_endpoint(cfg)
+        if endpoint is not None:
+            # The plugin's endpoint and token, and none of the driver's Anthropic settings: a developer's
+            # shell often has its own ANTHROPIC_BASE_URL, and mixing the two sends credentials astray.
+            if "model" in cfg.egress_inject:
+                raise ClaudeCodeError(f"provider {cfg.provider} gives Claude Code its own endpoint and token, "
+                                      "which egress_inject = model cannot hold yet: drop model from egress_inject.")
+            self.keeper = TokenKeeper(endpoint, lambda token: self._upload(TOKEN_FILE, token))
+            self.keeper.start()
+            creds = {"ANTHROPIC_BASE_URL": endpoint.base_url, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": str(HELPER_TTL_MS),
+                     **endpoint.env}
+            print(f"Claude Code talks to {endpoint.base_url} (provider {cfg.provider}), its token kept current.")
+        else:
+            creds = {name: value for name in CREDENTIAL_VARS if (value := credentials.get(name))}
         if "model" in cfg.egress_inject:
             # The gateway holds the real ones and swaps them in for these.
             creds = {name: MODEL_CREDENTIALS[name][1] if name in MODEL_CREDENTIALS else value
@@ -162,7 +241,11 @@ class ClaudeCodeEngine:
         )
 
     def cleanup(self) -> None:
-        """Remove the credentials file from a remote target."""
+        """Remove the credentials file from a remote target, and the endpoint's token with its keeper."""
+        if self.keeper is not None:
+            self.keeper.stop()
+            self.keeper = None
+            self.target.run_shell(f"rm -f {shlex.quote(TOKEN_FILE)}", check=False, cwd="/")
         if self.has_env_file:
             self.target.run_shell(f"rm -f {shlex.quote(ENV_FILE)}", check=False, cwd="/")
             self.has_env_file = False
@@ -188,9 +271,12 @@ class ClaudeCodeEngine:
             "--protected", ",".join(cfg.protected_branches),
             "--remote", cfg.remote, "--base", cfg.base_branch,
         ])
-        return json.dumps({"hooks": {"PreToolUse": [
+        settings: dict[str, Any] = {"hooks": {"PreToolUse": [
             {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}
-        ]}})
+        ]}}
+        if self.keeper is not None:
+            settings["apiKeyHelper"] = f"cat {shlex.quote(TOKEN_FILE)}"
+        return json.dumps(settings)
 
     def command(self, *args: str) -> str:
         """A shell string running `claude` with the harness's settings and yours."""

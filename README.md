@@ -1130,6 +1130,27 @@ A plain function needs none:
   given the provider in the form while the orchestrator's default is another.
   They're listed in the Settings tab, which can store them even when the name
   doesn't look secret.
+- `build.target_endpoint = lambda cfg: TargetEndpoint(base_url=..., token=...)`
+  (`harness.models.TargetEndpoint`): where Claude Code sends its model calls
+  when it runs in the target (`--engine claude-code` on a container or a
+  claimed sandbox). `token` has the shape of an Anthropic `credentials=`
+  provider: it returns an `AccessToken`, whose `expires_at` says when to ask
+  again. `env` holds extra settings for the target, and nothing secret.
+  - Claude Code then gets the endpoint as `ANTHROPIC_BASE_URL` and none of the
+    driver's Anthropic settings. That matters because a developer's shell
+    often has its own.
+  - The token is in a 0600 file that Claude Code reads with `apiKeyHelper`,
+    every five minutes and after a 401. While Claude Code runs, the driver
+    asks the plugin for the token again at half its remaining life, and at
+    least once a minute, and rewrites the file when it changes. So an
+    hour-long token lasts a four-hour burst. The plugin's `token` must be
+    safe to call from another thread.
+  - The gateway lets the sandbox reach the endpoint, and a job's report mode
+    lets it POST there.
+  - In the orchestrator, a Claude Code task keeps such a default provider
+    instead of switching to Anthropic.
+  - Not yet: `egress_inject = model` with it (refused), and a session's
+    opencode.
 
 Provider config schemas differ, and Strands only *warns* about keys a provider
 doesn't accept before ignoring them. So the harness fits kwargs to each provider's

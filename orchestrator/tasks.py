@@ -45,7 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from harness import ask, credentials, git, job
+from harness import ask, credentials, git, job, models
 from harness.config import HarnessConfig
 
 from .backend import SpecError, check_model, model_choice, task_providers
@@ -176,7 +176,9 @@ class TaskRunner:
             context_window = int(raw.get("context_window") or 0)
             if context_window < 0:
                 raise ValueError
-            if engine == "claude-code":
+            # Claude Code uses Anthropic, unless the provider is a plugin that gives it an endpoint of its own.
+            if engine == "claude-code" and models.provider_attr(provider or self.base.provider,
+                                                                 "target_endpoint") is None:
                 if provider not in ("", "anthropic"):
                     raise SpecError("Claude Code always uses Anthropic (the orchestrator's Claude token or key): "
                                     "leave the provider as it is, or use the Strands engine.")
