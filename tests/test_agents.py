@@ -144,7 +144,9 @@ def test_a_profile_is_a_whole_model_and_names_are_checked(tmp_path, monkeypatch)
                          ({"agents": {"x": {"max_tokens": "lots"}}}, "max_tokens"),
                          ({"delegate_to": ("ghost",)}, "delegate_to names no profile: ghost"),
                          ({"agents": {"r": {}}, "router": "r"}, "nothing to pick from"),
-                         ({"agents": {"a": {"delegate_to": ["b"]}}}, "[agents.a] delegate_to names no profile")):
+                         ({"agents": {"a": {"delegate_to": ["b"]}}}, "[agents.a] delegate_to names no profile"),
+                         ({"agents": {"a": {"prompt": 3}}}, "prompt must be a string"),
+                         ({"agents": {"a": {"read_only": "yes"}}}, "read_only must be true or false")):
         with pytest.raises(ValueError, match=message.replace("[", r"\[")):
             HarnessConfig.load(None, bad)
     with pytest.raises(ValueError, match="may not set: agents"):
@@ -231,6 +233,59 @@ def test_a_task_is_routed_once_and_its_lead_delegates(tmp_path, origin, llama, c
     assert cli.main(["--config", str(scenario), "--repo", str(work), "resume", "t1"]) == cli.EXIT_NO_TERMINAL_STATE
     assert len(asked) == 1 and "as the router chose" in capsys.readouterr().out
     assert len(coder_requests) > 3 and len(scout_requests) == 1
+
+
+def test_a_profiles_role_shapes_it_as_a_delegate_and_read_only_changes_are_told(tmp_path, origin, llama, capsys):
+    from .conftest import git
+
+    reviewer, reviewer_requests = llama([
+        {"tool": "shell", "args": {"command": "echo fixed >> README.md && echo x > notes.txt"}},
+        {"text": "Found one bug, and fixed it."},
+    ])
+    fixer, fixer_requests = llama([
+        {"tool": "shell", "args": {"command": "echo y > fix.txt"}},
+        {"text": "Fixed."},
+    ])
+    lead, lead_requests = llama([
+        {"tool": "delegate", "args": {"to": "reviewer", "task": "Review the change."}},
+        {"tool": "delegate", "args": {"to": "fixer", "task": "Fix it."}},
+        {"tool": "pause_for_review", "args": {"summary": "Reviewed.", "next_step": "Carry on."}},
+        {"text": "Paused."},
+    ])
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    scenario = tmp_path / "scenario.toml"
+    scenario.write_text(
+        f'provider = "llamacpp"\nbase_url = "{lead}"\ndelegate_to = ["reviewer", "fixer"]\n'
+        f'[agents.reviewer]\nprovider = "llamacpp"\nbase_url = "{reviewer}"\nread_only = true\n'
+        'prompt = "Review adversarially. Report; fix nothing."\n'
+        f'[agents.fixer]\nprovider = "llamacpp"\nbase_url = "{fixer}"\nprompt = "Make the smallest fix."\n')
+
+    assert cli.main(["--config", str(scenario), "--repo", str(work), "start", "t1", "--task", "Fix it."]) == 0
+    out = capsys.readouterr().out
+    assert "reviewer is read-only but changed: README.md, notes.txt. Nothing was undone" in out
+    results = [fake_llama._text(m["content"]) for m in lead_requests[-1]["messages"] if m.get("role") == "tool"]
+    assert results[0].startswith("Found one bug, and fixed it.")
+    assert results[0].endswith("check those changes before keeping them.")
+    assert results[1] == "Fixed."  # not read-only: what it changes is its job
+
+    system = fake_llama._text(reviewer_requests[0]["messages"][0]["content"])
+    assert "You are read-only" in system and system.endswith("Review adversarially. Report; fix nothing.")
+    assert not any("file_editor" in t["function"]["name"] for t in reviewer_requests[0]["tools"])
+    system = fake_llama._text(fixer_requests[0]["messages"][0]["content"])
+    assert "read-only" not in system and system.endswith("Make the smallest fix.")
+    assert {"shell", "file_editor"} <= {t["function"]["name"] for t in fixer_requests[0]["tools"]}
+
+
+def test_a_read_only_delegate_in_a_sandbox_is_given_no_file_editor():
+    from harness.agent import _without_file_editor
+    from harness.exec_sandbox import CommandSandbox
+
+    sandbox = CommandSandbox(["podman", "exec", "c", "--"], where="a container")
+    limited = _without_file_editor(sandbox)
+    assert [t.tool_name for t in limited.get_tools()] == ["sandbox_shell"]
+    assert {t.tool_name for t in sandbox.get_tools()} == {"sandbox_shell", "sandbox_file_editor"}
+    assert limited.prefix == sandbox.prefix
 
 
 @pytest.mark.parametrize("scenario", ["front-door", "strong-lead", "small-lead", "local-only"])

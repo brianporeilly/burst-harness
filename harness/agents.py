@@ -16,7 +16,16 @@ file, a job.toml; never a repo's, as it says where requests go):
     use_for = "Reviewing a change before it is finished; hard debugging"
 
 It takes the model settings (MODEL_KEYS) and use_for, what it is good at,
-which is all a router or a lead knows of it. What it leaves out is the
+which is all a router or a lead knows of it. Two more shape it as a
+delegate, whatever brief the lead gives it:
+
+    [agents.reviewer]
+    prompt = "Review adversarially: find bugs, missed requirements and claims the work does not back up."
+    read_only = true
+
+prompt is added to its instructions. read_only takes its file editor away and
+tells it to change nothing; it keeps a shell, so the checkout is compared
+before and after, and the lead is told of any file it changed anyway. What it leaves out is the
 default, not the top-level setting: a profile is a whole model, so a hosted
 one never inherits a local base_url.
 
@@ -59,7 +68,7 @@ logger = logging.getLogger(__name__)
 # The settings a profile may set: what build_model reads.
 MODEL_KEYS = ("provider", "base_url", "token_command", "token_file", "model_params", "model_timeout",
               "model_retries", "model_id", "max_tokens", "effort", "thinking", "context_window_limit")
-PROFILE_KEYS = frozenset((*MODEL_KEYS, "use_for", "delegate_to"))
+PROFILE_KEYS = frozenset((*MODEL_KEYS, "use_for", "delegate_to", "prompt", "read_only"))
 # How much of a task the router reads.
 ROUTER_TASK_CHARS = 8000
 
@@ -92,8 +101,11 @@ def check(cfg: HarnessConfig) -> None:
         if unknown := sorted(set(profile) - PROFILE_KEYS):
             raise AgentsError(f"[agents.{name}] may not set: {', '.join(unknown)}. "
                               f"It takes {', '.join(sorted(PROFILE_KEYS))}.")
-        if not isinstance(profile.get("use_for", ""), str):
-            raise AgentsError(f"[agents.{name}] use_for must be a string.")
+        for key in ("use_for", "prompt"):
+            if not isinstance(profile.get(key, ""), str):
+                raise AgentsError(f"[agents.{name}] {key} must be a string.")
+        if not isinstance(profile.get("read_only", False), bool):
+            raise AgentsError(f"[agents.{name}] read_only must be true or false.")
         as_profile(cfg, name)  # each setting the right type
     uses = [("agent", (cfg.agent,) if cfg.agent else ()), ("delegate_to", cfg.delegate_to),
             ("router", (cfg.router,) if cfg.router else ()), ("route_to", cfg.route_to)]
@@ -121,6 +133,12 @@ def as_profile(cfg: HarnessConfig, name: str) -> HarnessConfig:
 
 def use_for(cfg: HarnessConfig, name: str) -> str:
     return str(cfg.agents[name].get("use_for") or "(no use_for given)")
+
+
+def role(cfg: HarnessConfig, name: str) -> tuple[str, bool]:
+    """What the profile adds to a delegate's instructions, and whether it is read-only."""
+    profile = cfg.agents[name]
+    return str(profile.get("prompt") or "").strip(), bool(profile.get("read_only"))
 
 
 def describe(cfg: HarnessConfig, name: str) -> str:

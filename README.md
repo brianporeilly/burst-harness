@@ -960,6 +960,25 @@ There are three ways to use them, and they combine:
   stays small. Delegates run one at a time, because they share the checkout,
   and never delegate further. A profile's own `delegate_to` applies when it
   leads. Works with `--engine strands` only.
+
+  Two profile settings shape a delegate whatever the lead's brief says.
+  `prompt` is added to its instructions, so a role keeps its stance.
+  `read_only = true` takes away its file editor and tells it to change
+  nothing, for a reviewer or a tester that should report rather than quietly
+  fix. It keeps its shell, to run tests, which can still write files. So the
+  harness compares the checkout before and after, and if the delegate changed
+  anything, the lead's report ends with the files it changed. Nothing is
+  undone. The comparison needs a git checkout, so a job's working directory
+  is not checked.
+
+  ```toml
+  [agents.reviewer]
+  provider = "anthropic"
+  model_id = "claude-haiku-5-5"
+  use_for = "Reviewing a change before it is finished."
+  prompt = "Review adversarially: find bugs, missed requirements and claims the work doesn't back up. Report them; don't fix anything."
+  read_only = true
+  ```
 - **`router = "NAME"`** (`--router`): the front door. Before a new task's
   first burst, or before each job run, that profile reads the prompt and picks
   who does the work from `route_to` (all other profiles when empty). Jobs are

@@ -7,6 +7,7 @@ is why there is exactly one construction path.
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
@@ -69,6 +70,19 @@ Working in: {repo}
 Do the piece you are given, and nothing else. Do not commit, push, or switch branches: the lead does that. When you \
 are done, reply with a short report: what you did (the files you changed), what you found, and anything left \
 unresolved. That reply is all the lead sees of your work."""
+
+# Added for a read-only profile (see agents.py), before its own prompt.
+READ_ONLY_PROMPT = """
+
+You are read-only: read, run and report, but change no files. What needs changing goes in your report, for the \
+lead to do."""
+
+# A read-only delegate's checkout, compared before and after: a hash per file
+# that differs from HEAD (changed or untracked), and the tracked files deleted.
+CHANGED_FILES = ("if git rev-parse --git-dir >/dev/null 2>&1; then "
+                 "git ls-files -m -o --exclude-standard -z | xargs -0 -r sha256sum 2>/dev/null; "
+                 "git ls-files -d | sed 's/^/deleted  /'; else exit 3; fi")
+CHANGED_SHOWN = 20
 
 # The most of a delegate's report that goes back to the lead.
 REPORT_CHARS = 12000
@@ -173,11 +187,13 @@ def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[
         if to not in names:
             return f"Rejected: no agent {to!r}. Choose from: {', '.join(names)}."
         agent, helper_cfg = to, agents.as_profile(cfg, to)
+        prompt, read_only = agents.role(cfg, to)
         with one_at_a_time:
             print(f"\n--- delegating to {agents.describe(cfg, agent)} ---", flush=True)
             helper = None
+            before = _files(target) if read_only else None
             try:
-                helper = _helper(target, helper_cfg, state_dir)
+                helper = _helper(target, helper_cfg, state_dir, prompt=prompt, read_only=read_only)
                 text = str(call(helper, task)).strip() or "(it gave no report)"
             except OutputLimit as err:
                 text = f"{agent} stopped: {err}. Nothing it changed was committed."
@@ -186,31 +202,79 @@ def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[
                 text = f"{agent} failed: {type(err).__name__}: {err}"
             finally:
                 _add_usage(usage, agent, helper_cfg, agents.usage_of(helper) if helper else {})
+            if before is not None and (changed := _changed(before, _files(target))):
+                shown = ", ".join(changed[:CHANGED_SHOWN]) + (" and more" if len(changed) > CHANGED_SHOWN else "")
+                warning = (f"\n[harness] {agent} is read-only but changed: {shown}. Nothing was undone: "
+                           "check those changes before keeping them.")
+                print(warning.strip(), flush=True)
+            else:
+                warning = ""
             print(f"\n--- back from {agent} ---", flush=True)
         if len(text) > REPORT_CHARS:
             text = text[:REPORT_CHARS] + "\n[harness] The rest of the report was cut."
-        return text
+        return text + warning
 
     description = ("Hand a piece of the work to another agent, and get its report back. The agents:\n"
                    + agents.roster(cfg, names))
     return tool(delegate, name="delegate", description=description)
 
 
-def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str) -> Agent:
-    """A delegate: the sandbox and its tools, no session, no task tools, no delegating."""
+def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: str = "",
+            read_only: bool = False) -> Agent:
+    """A delegate: the sandbox and its tools, no session, no task tools, no delegating.
+
+    `prompt` is added to its instructions; a read-only one has no file editor.
+    """
     sandbox = target.sandbox()
+    if sandbox.get_tools():
+        exec_tools = []
+        if read_only:
+            sandbox = _without_file_editor(sandbox)
+    else:
+        exec_tools = [shell] if read_only else [shell, file_editor]
     return Agent(
         model=build_model(cfg),
         retry_strategy=retry_strategy(cfg),
         sandbox=sandbox,
-        system_prompt=DELEGATE_PROMPT.format(repo=target.describe()),
-        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), *mcp.clients(cfg)],
+        system_prompt=DELEGATE_PROMPT.format(repo=target.describe()) + (READ_ONLY_PROMPT if read_only else "")
+        + (f"\n\n{prompt}" if prompt else ""),
+        tools=[*exec_tools, *mcp.clients(cfg)],
         plugins=[ContextOffloader(storage=offload_storage(target, state_dir),
                                   max_result_tokens=cfg.offload_max_result_tokens,
                                   preview_tokens=cfg.offload_preview_tokens)],
         interventions=[GitGuardrails(target, cfg)],
         conversation_manager=conversation_manager(cfg),
     )
+
+
+def _without_file_editor(sandbox: Any) -> Any:
+    """The sandbox, vending its tools but the file editor (Agent registers what get_tools gives)."""
+    limited = copy.copy(sandbox)
+    vended = sandbox.get_tools
+    limited.get_tools = lambda: [t for t in vended() if "file_editor" not in t.tool_name]
+    return limited
+
+
+def _files(target: ExecTarget) -> dict[str, str] | None:
+    """Each file differing from HEAD, with its hash; None when the checkout cannot be read (no git repo)."""
+    try:
+        result = target.run_shell(CHANGED_FILES, check=False)
+    except Exception:  # noqa: BLE001 -- no comparison is better than a failed delegate
+        return None
+    if result.returncode != 0:
+        return None
+    files = {}
+    for line in result.stdout.splitlines():
+        digest, _, path = line.partition("  ")
+        if path:
+            files[path] = digest
+    return files
+
+
+def _changed(before: dict[str, str], after: dict[str, str] | None) -> list[str]:
+    if after is None:
+        return []
+    return sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
 
 
 def _add_usage(usage: dict[str, dict[str, Any]], name: str, cfg: HarnessConfig, used: dict[str, int]) -> None:

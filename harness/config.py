@@ -144,7 +144,8 @@ class HarnessConfig:
     # --- other agents (harness/agents.py) ---
     # Named model profiles, [agents.NAME] tables: provider, model_id, base_url
     # and the other model settings above, plus use_for (what it is good at,
-    # which is what a router or a lead goes by) and delegate_to. What a profile
+    # which is what a router or a lead goes by), delegate_to, and as a delegate
+    # its prompt and read_only (see harness/agents.py). What a profile
     # leaves out is the default, not the top-level setting.
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Run as this profile rather than the top-level model (and without routing).

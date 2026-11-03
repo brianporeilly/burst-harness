@@ -482,7 +482,12 @@ token on the cluster. Those wait for a second user.
    (2026-11-01): a question, a summary or some research, answered by whichever
    model the router picks (`harness ask`, and a task with no repo in the
    orchestrator), run as a one-off job in report mode, with follow-ups given
-   the earlier answers. Not yet: asking one from Slack, Claude Code as a
+   the earlier answers. A profile's role as a delegate (2026-11-02): its own
+   `prompt`, and `read_only`, which takes the file editor away and tells the
+   lead of any file the delegate changed anyway. Waiting on measurements: a
+   delegate on the lead's llama-server pushes out the lead's prompt cache
+   when the server has one slot, so the lead's context is processed again
+   when it resumes. Not yet: asking one from Slack, Claude Code as a
    profile (it runs in the target, not as a Strands model), and delegates
    working in parallel (each would need its own worktree).
    Strands' own `ModelRouter` switches models per call and fails over; per
