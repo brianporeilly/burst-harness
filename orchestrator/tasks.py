@@ -48,7 +48,7 @@ from typing import Any
 from harness import ask, credentials, git, job
 from harness.config import HarnessConfig
 
-from .backend import SpecError, check_model, model_choice
+from .backend import SpecError, check_model, model_choice, task_providers
 from .jobs import OUTPUT, REPO, _iso, _tail, json_file
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
@@ -181,7 +181,7 @@ class TaskRunner:
                     raise SpecError("Claude Code always uses Anthropic (the orchestrator's Claude token or key): "
                                     "leave the provider as it is, or use the Strands engine.")
                 provider = "anthropic"  # and not the orchestrator's other provider's URL or model
-            check_model(provider, base_url, model)
+            check_model(provider, base_url, model, task_providers())
             chosen = model_choice(self.base, provider, base_url, model, context_window)
         except ValueError as err:  # SpecError is one
             raise TasksError(str(err) if isinstance(err, SpecError) else "The context window is a number of tokens.") from err

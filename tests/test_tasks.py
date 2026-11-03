@@ -172,12 +172,34 @@ def test_a_task_on_a_plugin_provider_is_granted_its_credentials(tmp_path, harnes
     from .fake_provider import PROVIDER
 
     monkeypatch.setenv("EXAMPLE_CLIENT_SECRET", "s3cret")
-    monkeypatch.setattr(tasks_module, "check_model", lambda provider, base_url, model: None)
+    monkeypatch.setattr(tasks_module, "check_model", lambda *args: None)
     runner = _runner(tmp_path, limit=2)  # Anthropic by default
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "plain"})
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "plugin", "provider": PROVIDER})
     assert "EXAMPLE_CLIENT_SECRET" not in harness.started[0][1].env
     assert harness.started[1][1].env["EXAMPLE_CLIENT_SECRET"] == "s3cret"
+
+
+def test_a_task_can_use_an_installed_provider_plugin_but_a_session_cannot(tmp_path, harness, monkeypatch):
+    from types import SimpleNamespace
+
+    from harness import models
+    from orchestrator.backend import PodmanBackend, SessionSpec, SpecError
+
+    from . import fake_provider
+
+    installed = [SimpleNamespace(name="example-gateway", load=lambda: fake_provider.plain)]
+    monkeypatch.setattr(models, "entry_points", lambda group, name=None: [
+        ep for ep in installed if name in (None, ep.name)])
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t", "provider": "example-gateway", "model": "big"})
+    env = harness.started[0][1].env
+    assert (env["HARNESS_PROVIDER"], env["HARNESS_MODEL_ID"], env["HARNESS_BASE_URL"]) == ("example-gateway", "big", "")
+    info = PodmanBackend(replace(runner.base)).info()
+    assert "example-gateway" in info["task_providers"] and "anthropic" in info["task_providers"]
+    assert "example-gateway" not in info["providers"]  # a session's opencode knows only its own
+    with pytest.raises(SpecError, match="provider is one of"):
+        SessionSpec.parse({"name": "box", "provider": "example-gateway"})
 
 
 def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch):

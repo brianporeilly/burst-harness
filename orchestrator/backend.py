@@ -20,10 +20,11 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness import cluster_session, containers, credentials, egress, git, mcp, session
+from harness import cluster_session, containers, credentials, egress, git, mcp, models, session
 from harness.config import HarnessConfig
 from harness.gateway_control import Gateway, GatewayError
 
+# What a session's opencode can be given. A task can use any provider the harness has (task_providers).
 PROVIDERS = ("anthropic", "llamacpp", "openai")
 EGRESS = ("allowlist", "log")
 INJECT = ("git", "model")
@@ -115,10 +116,15 @@ class SessionSpec:
 PROVIDER_SETTINGS = ("base_url", "model_id", "context_window_limit", "model_params", "token_command", "token_file")
 
 
-def check_model(provider: str, base_url: str, model: str) -> None:
+def task_providers() -> list[str]:
+    """What a task's burst can use: the built-ins and installed provider plugins."""
+    return models.available()
+
+
+def check_model(provider: str, base_url: str, model: str, providers: tuple[str, ...] | list[str] = PROVIDERS) -> None:
     """A provider, base URL and model id as a form or the API gives them (empty: the default)."""
-    if provider and provider not in PROVIDERS:
-        raise SpecError(f"provider is one of {', '.join(PROVIDERS)}.")
+    if provider and provider not in providers:
+        raise SpecError(f"provider is one of {', '.join(providers)}.")
     if base_url and not re.fullmatch(r"https?://[A-Za-z0-9.:\[\]_-]+(/[A-Za-z0-9._~/-]*)?", base_url):
         raise SpecError(f"{base_url!r} is not a base URL: http(s)://host[:port][/path].")
     if model and not re.fullmatch(r"[A-Za-z0-9._:/@-]{1,100}", model):
@@ -228,7 +234,7 @@ class PodmanBackend:
                          "mcp": list(cfg.mcp)},
             # Which servers' keys this process holds, for the gateway to add (never the keys).
             "mcp_keys": {name: bool(mcp.headers(name)) for name in mcp.servers(cfg)},
-            "agents": list(session.AGENTS), "providers": list(PROVIDERS),
+            "agents": list(session.AGENTS), "providers": list(PROVIDERS), "task_providers": task_providers(),
         }
 
     def sessions(self) -> list[dict[str, Any]]:

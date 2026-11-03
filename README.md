@@ -664,8 +664,10 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   words), `engine` (`strands` or `claude-code`), `base_branch` (by
   default the repo's own, which the orchestrator reads with its git token, so
   a repo it cannot read is refused right away), and `draft`.
-- The model: `provider` (`anthropic`, `llamacpp`, `openai`), `model`,
-  `base_url` and `context_window`, as for sessions. Empty means the
+- The model: `provider`, `model`, `base_url` and `context_window`. A task can
+  use any provider the harness has: the built-ins and installed provider
+  plugins, listed as `task_providers` in `GET /api/info`. A session's
+  opencode takes only `anthropic`, `llamacpp` and `openai`. Empty means the
   orchestrator's own. A different provider from the orchestrator's starts from
   that provider's defaults, so a cluster's llama.cpp URL does not follow a
   task to Anthropic. `llamacpp` and `openai` then need a `base_url`. Claude

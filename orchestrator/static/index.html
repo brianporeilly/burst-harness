@@ -289,6 +289,8 @@ const statusChip = (s) => el("span", { class: "chip " + ({ running: "ok", starti
 const duration = (seconds) => !seconds ? "" : seconds % 86400 === 0 ? `${seconds / 86400}d`
   : seconds % 3600 === 0 ? `${seconds / 3600}h` : seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
 
+const providerName = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" };
+const providerOption = { ...providerName, llamacpp: "llama.cpp server", bedrock: "Bedrock", ollama: "Ollama", gemini: "Gemini" };
 let sessions = [], selected = null, stream = null, streaming = null, defaults = null, credentialsHeld = {};
 
 async function loadInfo() {
@@ -301,13 +303,16 @@ async function loadInfo() {
   if (info.user) creds.append(el("span", { class: "chip", title: "signed in" }, info.user));
   const d = info.defaults;
   defaults = d;
-  const providerName = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" };
   const where = (d.base_url || "").replace(/^https?:\/\//, "");
   for (const select of document.querySelectorAll('select[name="provider"]'))
     select.options[0].textContent = `Default (${[providerName[d.provider] || d.provider, where].filter(Boolean).join(" · ")})`;
   for (const input of document.querySelectorAll('input[name="model"]')) input.placeholder = `default (${d.model})`;
   for (const input of document.querySelectorAll('input[name="context_window"]')) input.placeholder = `default (${d.context_window})`;
   credentialsHeld = info.credentials;
+  // A task can use any provider the harness has, plugins included; a session's opencode only the three.
+  const choice = taskForm.provider;
+  choice.replaceChildren(choice.options[0], ...(info.task_providers || []).map((name) =>
+    el("option", { value: name }, providerOption[name] || name)));
   taskModelFields();
   form.mcp.defaultValue = form.mcp.value = (d.mcp || []).join("\n");
   const keys = Object.entries(info.mcp_keys || {});
@@ -705,9 +710,11 @@ function taskModelFields() {
   const own = provider === defaults.provider && !(claude && defaults.provider !== "anthropic");
   taskForm.provider.disabled = claude;
   taskForm.base_url.disabled = claude;
-  taskForm.base_url.required = !own && provider !== "anthropic";
-  taskForm.base_url.placeholder = own ? (defaults.base_url ? `default (${defaults.base_url})` : "the provider's own") : provider === "anthropic" ? "Anthropic's own" : "http://llm.lan:8080";
-  taskForm.model.placeholder = own ? `default (${defaults.model})` : provider === "anthropic" ? "default (claude-opus-5-5)" : "the server's model";
+  // Only a server of your own needs its URL; Anthropic, the other built-ins and a plugin know theirs.
+  const server = ["llamacpp", "openai"].includes(provider);
+  taskForm.base_url.required = !own && server;
+  taskForm.base_url.placeholder = own ? (defaults.base_url ? `default (${defaults.base_url})` : "the provider's own") : provider === "anthropic" ? "Anthropic's own" : server ? "http://llm.lan:8080" : "the provider's own";
+  taskForm.model.placeholder = own ? `default (${defaults.model})` : provider === "anthropic" ? "default (claude-opus-5-5)" : server ? "the server's model" : "the provider's default";
   taskForm.context_window.placeholder = own ? `default (${defaults.context_window})` : "default (1000000)";
   const held = credentialsHeld;
   const key = held.anthropic_api_key || (claude && held.claude_oauth_token);
