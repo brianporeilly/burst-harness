@@ -13,8 +13,9 @@ burst gets the git token and the model's keys, not a job's Slack token or the
 cluster watcher's KUBE_TOKEN; a job gets what its job.toml names. Anything
 that looks like a credential counts (a name ending in _TOKEN, _KEY, _SECRET,
 _PASSWORD..., and those listed below), so a new one is withheld until it is
-granted. PASS_ENV names more to pass to every run, such as a provider
-plugin's own key.
+granted. A provider plugin's own credentials are granted to the runs that may
+use it, when it declares them (harness/models.py). PASS_ENV names more to pass
+to every run.
 """
 
 from __future__ import annotations
@@ -113,20 +114,22 @@ def passed_names() -> set[str]:
 
 def for_task(cfg: HarnessConfig) -> list[str]:
     """What a task's burst is granted: the git token (the driver pushes and opens the PR), the
-    model's keys, the cluster gateway's token, and the keys of its MCP servers."""
-    from . import mcp  # mcp asks this module for keys
+    model's keys (with those its providers' plugins declare), the cluster gateway's token, and the
+    keys of its MCP servers."""
+    from . import mcp, models  # both ask this module for keys
 
-    return [*GIT, *MODEL, *GATEWAY, *(mcp.key_var(name) for name in mcp.servers(cfg))]
+    return [*GIT, *MODEL, *models.credentials_for(cfg), *GATEWAY, *(mcp.key_var(name) for name in mcp.servers(cfg))]
 
 
 def for_job(cfg: HarnessConfig, secrets: Iterable[str], outputs: Iterable[str]) -> list[str]:
     """What a job's run is granted: the model's keys, the gateway's token, its MCP servers' keys,
     the secrets its job.toml names, and Slack's if it posts there. Not the git token: a job that
     needs one names it."""
-    from . import mcp
+    from . import mcp, models
 
     slack = [*SLACK] if any(o == "slack" or o.startswith("slack:") for o in outputs) else []
-    return [*MODEL, *GATEWAY, *(mcp.key_var(name) for name in mcp.servers(cfg)), *secrets, *slack]
+    return [*MODEL, *models.credentials_for(cfg), *GATEWAY, *(mcp.key_var(name) for name in mcp.servers(cfg)),
+            *secrets, *slack]
 
 
 def for_run(granted: Iterable[str], extra: Mapping[str, str] | None = None) -> dict[str, str]:

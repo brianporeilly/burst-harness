@@ -55,3 +55,26 @@ def test_what_tasks_and_jobs_are_granted():
     quiet = credentials.for_job(HarnessConfig(), ["KUBE_TOKEN"], ["stdout", "file:/r.md"])
     assert "KUBE_TOKEN" in quiet and "SLACK_BOT_TOKEN" not in quiet and "GH_TOKEN" not in quiet
     assert {"SLACK_BOT_TOKEN", "SLACK_WEBHOOK_URL"} <= set(credentials.for_job(HarnessConfig(), [], ["slack:#ops"]))
+
+
+def test_a_providers_declared_credentials_go_to_the_runs_that_may_use_it(monkeypatch):
+    from harness import models
+
+    from .fake_provider import PROVIDER
+
+    declared = ["EXAMPLE_CLIENT_ID", "EXAMPLE_CLIENT_SECRET"]
+    assert models.credentials_for(HarnessConfig(provider=PROVIDER)) == declared
+    assert models.credentials_for(HarnessConfig()) == []
+    # Through a profile: a router, a delegation or --agent may pick it.
+    through = HarnessConfig(agents={"example-gateway": {"provider": PROVIDER}, "local": {"provider": "llamacpp"}})
+    assert models.credentials_for(through) == declared
+    # A plugin with none, one that cannot be loaded, and a built-in declare nothing.
+    for provider in ("tests.fake_provider:plain", "no_such_module:build", "anthropic", "nonesuch"):
+        assert models.credentials_for(HarnessConfig(provider=provider)) == [], provider
+    assert set(declared) <= set(credentials.for_task(through))
+    assert set(declared) <= set(credentials.for_job(HarnessConfig(provider=PROVIDER), [], ["stdout"]))
+    assert not set(declared) & set(credentials.for_task(HarnessConfig()))
+
+    monkeypatch.setenv("EXAMPLE_CLIENT_SECRET", "s3cret")
+    assert "EXAMPLE_CLIENT_SECRET" not in credentials.for_run(credentials.for_task(HarnessConfig()))
+    assert credentials.for_run(credentials.for_task(through))["EXAMPLE_CLIENT_SECRET"] == "s3cret"

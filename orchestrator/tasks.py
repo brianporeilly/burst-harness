@@ -40,6 +40,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -301,6 +302,12 @@ class TaskRunner:
             argv += ["--message", record["message"]]
         return argv
 
+    def _config(self, record: dict[str, Any]) -> HarnessConfig:
+        """The orchestrator's settings with the task's model on top: what its burst runs with, for what
+        it is granted (a provider plugin's credentials go to the tasks that use it)."""
+        return replace(self.base, **model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
+                                                 record.get("model") or "", record.get("context_window") or 0))
+
     def _model_env(self, record: dict[str, Any]) -> dict[str, str]:
         """The task's provider and model as the burst's HARNESS_* settings, over the orchestrator's."""
         chosen = model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
@@ -325,7 +332,7 @@ class TaskRunner:
             run = {} if record.get("repo") else {job.RUN_ID_ENV: job.new_run_id()}
             process = subprocess.Popen(
                 self._argv(record), cwd=REPO,
-                env=credentials.for_run(credentials.for_task(self.base),
+                env=credentials.for_run(credentials.for_task(self._config(record)),
                                         {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
                 stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
             )

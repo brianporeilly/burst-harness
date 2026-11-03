@@ -601,13 +601,14 @@ and only its own put back (`harness/credentials.py`):
 - a task: the git token, the model's keys, the cluster gateway's token, and
   its MCP servers' keys;
 - a job: the model's keys, the gateway's token, its MCP servers' keys, the
-  secrets its `job.toml` names, and Slack's only if it posts there.
+  secrets its `job.toml` names, and Slack's only if it posts there;
+- either: what the provider plugins it may use declare (see Provider plugins).
 
 So a task never sees a job's Slack token or the cluster watcher's
 `KUBE_TOKEN`. A credential is anything named like one (`*_TOKEN`, `*_KEY`,
 `*_SECRET`, `*_PASSWORD`, ...) or listed in that file, except the harness's
 own settings. `ORCHESTRATOR_PASS_ENV` (comma-separated names) passes more to
-every run, such as a provider plugin's key. Everything that needs a credential
+every run, such as the key of a provider plugin that doesn't declare it. Everything that needs a credential
 reads it through one function, which per-user credentials will feed later
 without the callers changing.
 
@@ -1115,6 +1116,18 @@ def build(cfg):
 
 `model_kwargs` gives a plugin the same schema fitting, effort/thinking, and prompt
 caching as the built-ins. Built-in names win over plugin names.
+
+A plugin can say more about itself with optional attributes on the callable.
+A plain function needs none:
+
+- `build.credentials = ("EXAMPLE_CLIENT_ID", "EXAMPLE_CLIENT_SECRET")`: the
+  credentials it reads, through `harness.credentials.get`. The orchestrator
+  hands each run only the credentials it's granted. These are granted to a
+  task or job that may use the provider: its own provider, or any profile's
+  (a router, a delegation or `--agent` may pick one). That includes a task
+  given the provider in the form while the orchestrator's default is another.
+  They're listed in the Settings tab, which can store them even when the name
+  doesn't look secret.
 
 Provider config schemas differ, and Strands only *warns* about keys a provider
 doesn't accept before ignoring them. So the harness fits kwargs to each provider's

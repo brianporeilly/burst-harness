@@ -11,6 +11,20 @@ HarnessConfig and returning a Strands Model, registered under the
 A plugin should build its kwargs with :func:`model_kwargs` so it gets the same
 schema fitting, sampling params, and prompt caching as the built-ins.
 
+A plugin may say more about itself with optional attributes on the callable
+(see :func:`provider_attr`); a plain function needs none, and the built-ins set
+none:
+
+* ``credentials``: the names of the environment variables (or the
+  orchestrator's stored credentials) it reads, such as a gateway's client id
+  and secret. A run the orchestrator starts is handed only the credentials it
+  is granted (harness/credentials.py), and these are granted to a run that may
+  use the provider: its own, or a profile's. They can be set in the
+  orchestrator's Settings tab too::
+
+      def build(cfg): ...
+      build.credentials = ("EXAMPLE_CLIENT_ID", "EXAMPLE_CLIENT_SECRET")
+
 Two things are deliberately provider-scoped rather than global:
 
 * **Sampling params.** ``thinking: adaptive`` and ``output_config.effort`` are
@@ -262,6 +276,42 @@ def _plugin(name: str) -> Callable[[HarnessConfig], "Model"] | None:
     for ep in entry_points(group=PLUGIN_GROUP, name=name):
         return ep.load()
     return None
+
+
+def provider_attr(name: str, attr: str, default: Any = None) -> Any:
+    """A plugin provider's optional attribute (see the module's docstring), or `default`: for a built-in,
+    a plugin without it, and a provider that is unknown or cannot be loaded (build_model says why)."""
+    if name in BUILDERS:
+        return default
+    try:
+        builder = _plugin(name)
+    except ProviderError:
+        return default
+    return getattr(builder, attr, default) if builder is not None else default
+
+
+def _declared(name: str) -> tuple[str, ...]:
+    names = provider_attr(name, "credentials", ())
+    if isinstance(names, str) or not isinstance(names, (tuple, list)):
+        return ()
+    return tuple(n for n in names if isinstance(n, str) and n)
+
+
+def credentials_for(cfg: HarnessConfig) -> list[str]:
+    """The credentials the providers a run may use declare: its own, and every profile's (a router, a
+    delegation or --agent may pick any). A profile without a provider has the default, not the run's."""
+    providers = {cfg.provider, *(str(profile.get("provider") or HarnessConfig().provider)
+                                 for profile in cfg.agents.values() if isinstance(profile, dict))}
+    return list(dict.fromkeys(name for provider in sorted(providers) for name in _declared(provider)))
+
+
+def plugin_credentials() -> dict[str, list[str]]:
+    """Each credential an installed plugin declares, with the plugins that declare it."""
+    found: dict[str, list[str]] = {}
+    for provider in available():
+        for name in _declared(provider):
+            found.setdefault(name, []).append(provider)
+    return found
 
 
 def available() -> list[str]:

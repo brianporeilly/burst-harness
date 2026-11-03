@@ -93,3 +93,24 @@ def test_the_settings_api_is_write_only_and_never_for_a_token(tmp_path, monkeypa
     cleared = browser.delete("/api/settings/credentials/OPENAI_API_KEY", headers=CHANGE)
     assert cleared.status_code == 200 and "no value" in cleared.json()["message"]
     assert credentials.get("OPENAI_API_KEY") == ""
+
+
+def test_an_installed_plugins_credentials_are_offered_and_may_be_kept(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from harness import models
+
+    from . import fake_provider
+
+    installed = [SimpleNamespace(name="example-gateway", load=lambda: fake_provider.build)]
+    monkeypatch.setattr(models, "entry_points", lambda group, name=None: [
+        ep for ep in installed if name in (None, ep.name)])
+    assert models.plugin_credentials() == {"EXAMPLE_CLIENT_ID": ["example-gateway"],
+                                           "EXAMPLE_CLIENT_SECRET": ["example-gateway"]}
+    store = CredentialStore(tmp_path / "credentials.enc", load_key(tmp_path)[0])
+    rows = {row["name"]: row for row in store.listing()}
+    assert rows["EXAMPLE_CLIENT_ID"]["use"] == "provider example-gateway." and "EXAMPLE_CLIENT_SECRET" in rows
+    store.set("EXAMPLE_CLIENT_ID", "client")  # it does not look secret, but the plugin says it reads it
+    assert credentials.get("EXAMPLE_CLIENT_ID") == "client"
+    with pytest.raises(SettingsError, match="not a credential"):
+        store.set("EXAMPLE_ISSUER_URL", "https://ai.example.com")

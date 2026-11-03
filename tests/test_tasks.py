@@ -168,6 +168,18 @@ def test_a_burst_gets_the_git_token_and_model_key_not_every_credential(tmp_path,
     assert "KUBE_TOKEN" not in env and "SLACK_BOT_TOKEN" not in env and env["PYTHONUNBUFFERED"] == "1"
 
 
+def test_a_task_on_a_plugin_provider_is_granted_its_credentials(tmp_path, harness, monkeypatch):
+    from .fake_provider import PROVIDER
+
+    monkeypatch.setenv("EXAMPLE_CLIENT_SECRET", "s3cret")
+    monkeypatch.setattr(tasks_module, "check_model", lambda provider, base_url, model: None)
+    runner = _runner(tmp_path, limit=2)  # Anthropic by default
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "plain"})
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "plugin", "provider": PROVIDER})
+    assert "EXAMPLE_CLIENT_SECRET" not in harness.started[0][1].env
+    assert harness.started[1][1].env["EXAMPLE_CLIENT_SECRET"] == "s3cret"
+
+
 def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch):
     runner = _runner(tmp_path, limit=10)
     runner.base = replace(runner.base, provider="llamacpp", base_url="http://typhon:8080", model_id="raon",

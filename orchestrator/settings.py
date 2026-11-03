@@ -32,7 +32,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from harness import credentials
+from harness import credentials, models
 
 KEY_ENV = "ORCHESTRATOR_SECRETS_KEY"
 NAME = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
@@ -110,9 +110,11 @@ class CredentialStore:
         with self.lock:
             records = self._load()
         rows = []
-        for name in dict.fromkeys((*SUGGESTED, *names, *sorted(records))):
+        plugins = models.plugin_credentials()
+        for name in dict.fromkeys((*SUGGESTED, *plugins, *names, *sorted(records))):
             record = records.get(name, {})
-            rows.append({"name": name, "source": credentials.source(name), "use": USES.get(name, ""),
+            use = USES.get(name) or " ".join(f"provider {provider}." for provider in plugins.get(name, []))
+            rows.append({"name": name, "source": credentials.source(name), "use": use,
                          "updated": record.get("updated"), "updated_by": record.get("updated_by", ""),
                          # Set here and in the environment: clearing it here goes back to the environment's.
                          "environment_too": bool(record) and bool(os.environ.get(name, "").strip())})
@@ -144,7 +146,8 @@ class CredentialStore:
 def check_name(name: str) -> None:
     if not NAME.fullmatch(name):
         raise SettingsError("A credential's name is an environment variable's: capitals, digits and _.")
-    if not credentials.is_secret(name):
+    # A provider plugin's own (a client id, an issuer URL) may be kept here too, though they look harmless.
+    if not credentials.is_secret(name) and name not in models.plugin_credentials():
         raise SettingsError(f"{name} is not a credential (a name ending in _TOKEN, _KEY, _SECRET and so on, or one "
                             "the harness knows). Settings that are not secret stay in the configuration.")
 
