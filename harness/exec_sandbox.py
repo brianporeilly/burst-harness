@@ -99,7 +99,9 @@ class CommandSandbox(PosixShellSandbox):
             raise OSError(f"{self.stdin_prefix[0]} is not installed or not on PATH") from err
         _, stderr = await proc.communicate(content)
         if proc.returncode != 0:
-            raise OSError(stderr.decode(errors="replace").strip() or f"Failed to write file: {path}")
+            # Named here: not every mkdir says which path it failed on (uutils' does not).
+            detail = stderr.decode(errors="replace").strip()
+            raise OSError(f"Failed to write file: {path}" + (f": {detail}" if detail else ""))
 
     def get_tools(self) -> list[AgentTool]:
         """Sandbox-bound tools, described so the model knows where it is working."""

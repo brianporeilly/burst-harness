@@ -20,7 +20,7 @@ def test_write_file_reports_failure(tmp_path):
     try:
         asyncio.run(sandbox.write_file(str(tmp_path / "taken" / "x"), b"data"))
     except OSError as err:
-        assert "taken" in str(err)
+        assert str(err).startswith(f"Failed to write file: {tmp_path / 'taken' / 'x'}: mkdir")
     else:
         raise AssertionError("expected OSError")
 
