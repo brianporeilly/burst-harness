@@ -502,6 +502,36 @@ token on the cluster. Those wait for a second user.
    task was picked here so a task's prompt cache and snapshot stay with one
    model. Its failover (local down, use Claude) may still be worth adding.
 
+Next, in this order (2026-11-04):
+
+6. Model settings for tasks: effort, thinking and the output limit as fields
+   where a provider has them (Anthropic's effort and thinking; llama.cpp's
+   `enable_thinking`; an OpenAI-compatible endpoint's reasoning effort), and
+   the extra request parameters (`model_params`) as JSON, with examples for
+   the provider chosen. The fields write into the same JSON, so what is sent
+   is what is shown. For a llama-server, the orchestrator reads its `/props`
+   (a description, not a model call) to fill in the context window and offer
+   thinking only when its chat template has it. Kept with the task across
+   bursts; Slack and the token API later.
+7. Versions and releases. On each merge to main, python-semantic-release
+   (the Python port of semantic-release) works out the next version from the
+   squashed commit (`feat:` minor, `fix:` and the rest patch, `!` or
+   `BREAKING CHANGE:` major), writes it into `pyproject.toml`, commits and
+   tags `vX.Y.Z`, and makes a GitHub release with notes from the commits. The
+   images workflow already tags `vX.Y.Z` images on a `v*` tag, but a tag
+   pushed with the workflow's own token starts no workflow, so the release
+   job starts the image build itself (or pushes with an app's token). PR
+   titles, which become the squashed commit, then follow Conventional
+   Commits, checked on each PR. Labels instead (patch, minor or major, patch
+   when none) would keep today's titles and need a small workflow of our own.
+   home-ops could then pin `vX.Y.Z@sha256:...` in place of `sha-...`.
+8. Claude as the lead, handing work to Strands profiles: the harness offers
+   Claude Code a `delegate` tool over MCP, through the gateway's route back to
+   the driver, which runs the profile there as a delegate is run now. No new
+   credentials go into the sandbox. After it, maybe the other way round
+   (Claude Code as a profile a Strands lead delegates to), which would put
+   Claude's token in the sandbox for the run.
+
 ## Open
 
 - How much workspace snapshotting or automatic WIP commits sessions need beyond
