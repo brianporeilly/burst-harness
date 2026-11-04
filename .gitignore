@@ -5,3 +5,5 @@ __pycache__/
 .idea/
 .DS_Store
 ._*
+# Local secrets (tokens for a local orchestrator): never committed.
+.env
