@@ -444,7 +444,10 @@ orchestrator's page, its API, and later Slack.
    reaches the Tasks API alone; tasks it starts are "you via NAME". Without a
    signing-in proxy, `--listen` beyond this machine serves the page locally
    and the Tasks API to token holders. On the cluster, a token needs a route
-   to /api/tasks that skips the OIDC sign-in (home-ops). Slack first on the
+   to /api/tasks that skips the OIDC sign-in (home-ops; done 2026-10-30). Slack: done (2026-10-30),
+   orchestrator/slack.py, Socket Mode, tasks from a mention or a direct
+   message, their bursts told in its thread, replies continuing them; the
+   app from examples/slack-app.yaml. Slack first on the
    personal workspace, in
    Socket Mode, so the orchestrator needs no public URL (a laptop or a work
    network will do): `/task owner/repo do the thing`, with replies in a
@@ -481,18 +484,18 @@ token on the cluster. Those wait for a second user.
    scenarios to benchmark against each other. Tasks without a repo
    (2026-11-01): a question, a summary or some research, answered by whichever
    model the router picks (`harness ask`, and a task with no repo in the
-   orchestrator), run as a one-off job in report mode, with follow-ups given
-   the earlier answers. A profile's role as a delegate (2026-11-02): its own
-   `prompt`, and `read_only`, which takes the file editor away and tells the
-   lead of any file the delegate changed anyway. A profile whose provider
-   cannot load (its SDK not installed) stops the run at the start (2026-11-03).
-   Measured and left alone: a delegate on the lead's one-slot llama-server
-   pushes out the lead's prompt cache, but in team-vs-solo benchmarks the
-   lead still read 96-99% of its tokens from cache and prompt processing rose
-   by only a few points of a run; generation in the delegates and the extra
-   fix rounds take the time. Two slots with the lead pinned to one, or saving
-   and restoring its slot, would save about 5% of a team run.
-   Not yet: asking one from Slack, Claude Code as a
+   orchestrator, and a Slack message with no repo), run as a one-off job in
+   report mode, with follow-ups given the earlier answers. A profile's role as
+   a delegate (2026-11-02): its own `prompt`, and `read_only`, which takes the
+   file editor away and tells the lead of any file the delegate changed
+   anyway. A profile whose provider cannot load (its SDK not installed) stops
+   the run at the start (2026-11-03). Measured and left alone: a delegate on
+   the lead's one-slot llama-server pushes out the lead's prompt cache, but in
+   team-vs-solo benchmarks the lead still read 96-99% of its tokens from cache
+   and prompt processing rose by only a few points of a run; generation in the
+   delegates and the extra fix rounds take the time. Two slots with the lead
+   pinned to one, or saving and restoring its slot, would save about 5% of a
+   team run. Not yet: Claude Code as a
    profile (it runs in the target, not as a Strands model), and delegates
    working in parallel (each would need its own worktree).
    Strands' own `ModelRouter` switches models per call and fails over; per

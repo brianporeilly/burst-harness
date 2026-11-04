@@ -33,6 +33,11 @@ Settings (settings.py, the Settings tab): credentials set in the page, used
 in place of the environment's, kept encrypted with ORCHESTRATOR_SECRETS_KEY (or
 a key it makes in the state directory).
 
+Slack (slack.py): with SLACK_APP_TOKEN and SLACK_BOT_TOKEN (set in Settings, or
+here), tasks are started from Slack messages and reported in their threads,
+for the Slack users in --slack-user (ORCHESTRATOR_SLACK_USERS: IDs such as
+U012ABC). Without the tokens it does nothing.
+
 API tokens (tokens.py, made in the Settings tab) let scripts, other machines and
 bots use the Tasks API: `Authorization: Bearer orch_...`. --listen 0.0.0.0
 with no --user-header serves the browser to this machine alone and the Tasks
@@ -63,6 +68,7 @@ from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
 from .settings import CredentialStore, SettingsError, load_key
+from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
 from .tokens import TokenStore
 
@@ -92,6 +98,8 @@ def main() -> None:
                         metavar="N", help="How many tasks run at once; the rest wait (default 1).")
     parser.add_argument("--task-ttl", default=os.environ.get("ORCHESTRATOR_TASK_TTL", "4h"), metavar="DURATION",
                         help="How long a task's sandbox claim lives, on a cluster (default 4h).")
+    parser.add_argument("--slack-user", action="append", default=[], metavar="ID",
+                        help="A Slack user ID that may start tasks from Slack. Repeatable.")
     args = parser.parse_args()
     local_browser = args.listen not in ("127.0.0.1", "localhost", "::1") and not args.user_header
     try:
@@ -134,8 +142,11 @@ def main() -> None:
         for line in tasks.recover():
             print(f"tasks: {line}")
         tasks.dispatch()
+    slack = SlackBot(tasks, users_from(" ".join([*args.slack_user, os.environ.get(USERS_ENV, "")]))) if tasks else None
+    if slack:
+        slack.start()
     tokens = TokenStore(state / "tokens.json")
-    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, hosts=tuple(args.host),
+    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, slack=slack, hosts=tuple(args.host),
                      user_header=args.user_header, local_browser=local_browser)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
 

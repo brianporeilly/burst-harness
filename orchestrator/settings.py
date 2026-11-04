@@ -39,13 +39,14 @@ NAME = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
 MAX_VALUE = 16_384
 # Offered in the page whether or not they have a value anywhere, in this order.
 SUGGESTED = ("HARNESS_GIT_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY",
-             "SLACK_BOT_TOKEN", "SLACK_WEBHOOK_URL")
+             "SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "SLACK_WEBHOOK_URL")
 USES = {
     "HARNESS_GIT_TOKEN": "Clones, pushes and pull requests (GH_TOKEN and GITHUB_TOKEN also work).",
     "ANTHROPIC_API_KEY": "Anthropic's API, for provider anthropic and for Claude Code.",
     "CLAUDE_CODE_OAUTH_TOKEN": "Claude Code on a subscription (claude setup-token).",
     "OPENAI_API_KEY": "provider openai.",
-    "SLACK_BOT_TOKEN": "Jobs that post to Slack.",
+    "SLACK_APP_TOKEN": "The Slack bot's connection (Socket Mode, xapp-...), with SLACK_BOT_TOKEN.",
+    "SLACK_BOT_TOKEN": "The Slack bot's messages (xoxb-...), and jobs that post to Slack.",
     "SLACK_WEBHOOK_URL": "Jobs that post to Slack through a webhook.",
 }
 

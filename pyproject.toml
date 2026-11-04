@@ -12,6 +12,8 @@ dependencies = [
     "uvicorn==0.54.0",
     # Its stored credentials (orchestrator/settings.py).
     "cryptography==50.0.2",
+    # Its Slack bot (orchestrator/slack.py): Socket Mode, with no dependencies of its own.
+    "slack-sdk==3.46.0",
 ]
 
 [project.optional-dependencies]

@@ -167,3 +167,23 @@ def test_a_sandbox_with_commits_not_pushed_is_kept(origin, tmp_path, capsys):
     assert "1 commit(s) not pushed" in capsys.readouterr().out
     abandoned = Owned(repo=str(work))
     assert not close(abandoned, "abandoned").kept and abandoned.released  # given up: let it go
+
+
+def test_the_result_says_what_the_end_was_about(tmp_path, capsys, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    ctx = cli.HarnessContext(target=cli.LocalTarget(repo=str(tmp_path)), cfg=cli.HarnessConfig(), slug="t",
+                             branch="harness/t", state_key="k")
+    asking = SimpleNamespace(stop_reason="interrupt", interrupts=[SimpleNamespace(reason="Which API?"),
+                                                                  SimpleNamespace(reason=None)])
+    monkeypatch.setattr(cli, "call", lambda agent, prompt: asking)
+    cli._turns(None, ctx, "go", interactive=False)
+    cli._finish(None, ctx)
+    result = json.loads([x for x in capsys.readouterr().out.splitlines() if x.startswith("HARNESS_RESULT ")][-1][15:])
+    assert result["state"] == "waiting" and result["said"] == {"asks": ["Which API?", "(no detail)"]}
+
+    ctx.waiting, ctx.terminal, ctx.said = False, "abandoned", {"reason": "x" * (cli.SAID_LIMIT + 5)}
+    cli._finish(None, ctx)
+    result = json.loads([x for x in capsys.readouterr().out.splitlines() if x.startswith("HARNESS_RESULT ")][-1][15:])
+    assert result["said"]["reason"] == "x" * cli.SAID_LIMIT + " [...]"

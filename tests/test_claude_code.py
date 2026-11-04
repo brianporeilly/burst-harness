@@ -75,6 +75,7 @@ def test_pause_outcome_commits_and_pushes(origin, tmp_path, monkeypatch, fake_cl
     ctx = _ctx(origin, tmp_path)
     report = _start(ctx)
     assert ctx.terminal == "paused"
+    assert ctx.said["summary"] == "did a thing" and ctx.said["next_step"] == "do the next thing"  # for HARNESS_RESULT
     assert "2 turn(s)" in report and "$0.010" in report
     pushed = sh_git(origin, "ls-tree", "-r", "--name-only", "harness/t").split()
     assert "work.txt" in pushed and "docs/tasks/t.md" in pushed
@@ -107,6 +108,7 @@ def test_invalid_outcome_is_explained(origin, tmp_path, monkeypatch, fake_claude
     calls = fake_claude()
     assert "could not be applied" in calls[1][calls[1].index("-p") + 1]
     assert ctx.terminal == "abandoned"
+    assert set(ctx.said) == {"reason"}
 
 
 def test_gives_up_after_fixups(origin, tmp_path, monkeypatch, fake_claude):

@@ -39,6 +39,7 @@ from harness.exec_target import ExecError
 from .backend import Backend, SessionSpec, SpecError
 from .jobs import JobRunner, JobsError
 from .settings import CredentialStore, SettingsError
+from .slack import SlackBot
 from .tasks import TaskRunner, TasksError
 from .tokens import TokenError, TokenStore, user_of
 
@@ -52,7 +53,7 @@ LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
-               tokens: TokenStore | None = None, settings: CredentialStore | None = None,
+               tokens: TokenStore | None = None, settings: CredentialStore | None = None, slack: SlackBot | None = None,
                hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
@@ -95,7 +96,7 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
 
     @app.get("/api/info")
     def info(request: Request) -> dict[str, Any]:
-        return {**backend.info(), "user": request.state.user}
+        return {**backend.info(), "user": request.state.user, "slack": slack.status if slack else None}
 
     @app.get("/api/sessions")
     def sessions() -> list[dict[str, Any]]:

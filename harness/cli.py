@@ -37,6 +37,8 @@ ENGINES = ("strands", "claude-code")
 EXIT_DONE = 0
 EXIT_NO_TERMINAL_STATE = 1
 EXIT_NEEDS_INPUT = 3
+# Each text in HARNESS_RESULT's `said`: enough for a question or a reason, not a whole document.
+SAID_LIMIT = 2000
 
 # Where a remote target's checkout lives when --repo is not given.
 DEFAULT_REMOTE_REPO = "/workspace/repo"
@@ -116,8 +118,10 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
     while True:
         if result.stop_reason == "interrupt":
             if not interactive:
-                for itr in result.interrupts:
-                    print(f"\n[agent needs input] {getattr(itr, 'reason', '(no detail)')}")
+                asks = [str(getattr(itr, "reason", None) or "(no detail)") for itr in result.interrupts]
+                for ask in asks:
+                    print(f"\n[agent needs input] {ask}")
+                ctx.said = {"asks": asks}
                 print("\nRe-run with `chat` to answer, or `resume --message '...'`.")
                 ctx.waiting = True
                 return result
@@ -323,14 +327,22 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
 
 def _result_line(ctx: HarnessContext, state_name: str) -> None:
     """One machine-readable line for whatever launched this (a Job, the orchestrator). `target`
-    reattaches a later run to this one's sandbox, which is still there if `kept`."""
+    reattaches a later run to this one's sandbox, which is still there if `kept`. `said` is what the
+    agent said its end was about (ctx.said), each text cut to SAID_LIMIT."""
+    said = {key: [_cut(v) for v in value] if isinstance(value, list) else _cut(value) for key, value in ctx.said.items()}
     print("HARNESS_RESULT " + json.dumps({
         "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
         "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
         "model": f"{ctx.cfg.provider} {ctx.cfg.model_id}", "base_url": ctx.cfg.base_url, "agent": ctx.agent or None,
         "delegated": {name: {"calls": used["calls"], "input": used.get("inputTokens", 0),
                              "output": used.get("outputTokens", 0)} for name, used in ctx.delegated.items()} or None,
+        "said": said or None,
     }))
+
+
+def _cut(value: object) -> str:
+    text = str(value)
+    return text if len(text) <= SAID_LIMIT else text[:SAID_LIMIT] + " [...]"
 
 
 def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | None]) -> int:

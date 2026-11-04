@@ -38,4 +38,7 @@ class HarnessContext:
     agent: str = ""
     # What each delegate used, by profile name (see agent.delegate_tool).
     delegated: dict[str, dict[str, object]] = field(default_factory=dict)
+    # What the run said its end was about, for whatever launched it (HARNESS_RESULT's `said`): a pause's
+    # next step and questions, an abandon's reason, the questions it stopped on.
+    said: dict[str, object] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)

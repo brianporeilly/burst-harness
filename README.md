@@ -728,6 +728,44 @@ curl -H "Authorization: Bearer orch_..." -H 'Content-Type: application/json' \
   `/api/tasks` that skips the sign-in (and lets the token do the checking) is
   that cluster's own configuration.
 
+**Slack.** Tasks can be started from Slack, and the bot reports how they go in
+the message's thread. It uses Socket Mode: the orchestrator connects out to
+Slack, so nothing has to reach it.
+
+1. Create the app from [`examples/slack-app.yaml`](examples/slack-app.yaml) at
+   api.slack.com/apps (Create New App, From a manifest). The file says where
+   to find its two tokens.
+2. Set `SLACK_APP_TOKEN` (xapp-...) and `SLACK_BOT_TOKEN` (xoxb-...) in the
+   Settings tab, or in the environment. The orchestrator connects within 30
+   seconds, with no restart, and Settings shows whether it is connected.
+3. List who may use it, by Slack member ID: `--slack-user U012ABC`
+   (repeatable), or `ORCHESTRATOR_SLACK_USERS`. Anyone else who messages the
+   bot is told their own ID and nothing more, which is also how you find
+   yours.
+
+Then mention it in a channel it's in, or message it directly:
+
+- `@burst you/proj fix the flaky test in test_api.py` starts a task. The repo
+  is owner/repo or its https URL.
+- `@burst what are the tradeoffs of SQLite's WAL mode?`, anything without a
+  repo first, is a question (see "Questions" under Usage). The answer is posted
+  in its thread, and a reply there asks a follow-up.
+- `@burst status` lists the latest tasks.
+
+In the task's thread you get each burst's start and how it ended:
+- a PR;
+- a pause, with its summary, next step and questions;
+- the questions it stopped on;
+- why it gave up;
+- or a failure, with the end of its output.
+
+Reply in the thread to continue the task. In a channel, mention the bot in the
+thread; in a direct message, just reply. `status`, `cancel` and `continue`
+(another burst, with no reply) also work there.
+
+A task started from Slack is the same as one from the Tasks tab, with
+`created_by` set to `slack:<member ID>`.
+
 With `target = "agent-sandbox"` and a cluster session's settings (On a cluster,
 above), its sessions are on that cluster instead: claimed, suspended and
 removed as `harness session` does there, with events and refusals read from

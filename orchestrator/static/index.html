@@ -140,6 +140,7 @@
       name, by sessions, tasks and jobs started from now on. Values are never shown again, here or by the API.
       Clearing one goes back to the environment's.</p>
     <div id="credentials"><p class="muted">Loading...</p></div>
+    <p class="muted" id="slack-status"></p>
   </section>
   <section class="panel">
     <h2>Set a credential</h2>
@@ -313,6 +314,7 @@ async function loadInfo() {
   const choice = taskForm.provider;
   choice.replaceChildren(choice.options[0], ...(info.task_providers || []).map((name) =>
     el("option", { value: name }, providerOption[name] || name)));
+  document.getElementById("slack-status").textContent = info.slack ? `Slack: ${info.slack}.` : "";
   taskModelFields();
   form.mcp.defaultValue = form.mcp.value = (d.mcp || []).join("\n");
   const keys = Object.entries(info.mcp_keys || {});

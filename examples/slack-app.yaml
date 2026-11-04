@@ -1,0 +1,40 @@
+# The Slack app for the orchestrator's bot (orchestrator/slack.py). At
+# https://api.slack.com/apps: Create New App, From a manifest, pick the
+# workspace, and paste this. Then:
+#   1. Basic Information, App-Level Tokens: generate one with the scope
+#      connections:write. That is SLACK_APP_TOKEN (xapp-...).
+#   2. Install App: install it to the workspace. Its Bot User OAuth Token is
+#      SLACK_BOT_TOKEN (xoxb-...).
+#   3. Set both in the orchestrator's Settings tab, and your Slack member ID
+#      (profile, ..., Copy member ID) in ORCHESTRATOR_SLACK_USERS.
+#
+# Socket Mode: the orchestrator connects out to Slack, so there is no request
+# URL and nothing to expose. The scopes are what it uses and no more: to hear
+# mentions and direct messages, and to answer.
+display_information:
+  name: burst
+  description: Starts coding tasks on the burst orchestrator and reports how they go in the thread.
+features:
+  bot_user:
+    display_name: burst
+    always_online: true
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - im:history
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

@@ -25,6 +25,10 @@ A burst that ends with work it has not pushed (it failed, or was stopped)
 keeps its sandbox, and says so. The next burst is attached to that sandbox, so
 it carries on with the work there; once a burst pushes (a PR, a pause) or
 gives up, or the task is removed, the orchestrator releases it.
+
+Whatever wants to hear about a task's bursts (the Slack bot, slack.py) is
+told with `watch`: each burst's start and end, with the task's record. A task
+started from Slack keeps where to answer in its record (`slack`).
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from harness import ask, credentials, git, job, models
@@ -104,6 +109,19 @@ class TaskRunner:
         self.running: dict[str, subprocess.Popen[bytes]] = {}
         # Marks the records of bursts this orchestrator started, so one left "running" by another is known.
         self.boot = secrets.token_hex(6)
+        self.watchers: list[Callable[[str, dict[str, Any]], None]] = []
+
+    def watch(self, watcher: Callable[[str, dict[str, Any]], None]) -> None:
+        """Call watcher("started" or "ended", record) for each burst. It must not block: it may be called
+        with the lock held."""
+        self.watchers.append(watcher)
+
+    def _tell(self, event: str, record: dict[str, Any]) -> None:
+        for watcher in self.watchers:
+            try:
+                watcher(event, dict(record))
+            except Exception as err:  # a watcher's trouble is not the task's
+                print(f"tasks: telling {watcher} about {record.get('slug')}: {err}")
 
     # --- records ---
 
@@ -141,12 +159,19 @@ class TaskRunner:
     def tasks(self) -> list[dict[str, Any]]:
         return [_summary(r) for r in self._records()]
 
+    def in_thread(self, channel: str, thread: str) -> str | None:
+        """The task started from this Slack thread, if any."""
+        for record in self._records():
+            if record.get("slack") == {"channel": channel, "thread": thread}:
+                return str(record["slug"])
+        return None
+
     def task(self, slug: str) -> dict[str, Any]:
         record = self._read(slug)
         output = self._dir(slug) / OUTPUT
         return {**record, "output": _tail(output) if output.is_file() else None}
 
-    def create(self, raw: dict[str, Any], *, user: str = "") -> dict[str, Any]:
+    def create(self, raw: dict[str, Any], *, user: str = "", slack: dict[str, str] | None = None) -> dict[str, Any]:
         prompt = str(raw.get("prompt") or "").strip()
         if not prompt:
             raise TasksError("Say what to do: a prompt.")
@@ -197,7 +222,7 @@ class TaskRunner:
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
-            "sandbox": None,
+            "sandbox": None, "said": None, "slack": slack,
         }
         with self.lock:
             if (self._dir(slug) / TASK_FILE).exists():
@@ -343,6 +368,7 @@ class TaskRunner:
         record.update(state="running", boot=self.boot, pid=process.pid)
         self._write(record)
         self.running[record["slug"]] = process
+        self._tell("started", record)
         threading.Thread(target=self._wait, args=(record["slug"], process), daemon=True).start()
 
     def _wait(self, slug: str, process: subprocess.Popen[bytes]) -> None:
@@ -368,7 +394,8 @@ class TaskRunner:
                     provider, _, model = str(result.get("model") or "").partition(" ")
                     record["uses"] = {"provider": provider, "model": model, "base_url": result.get("base_url") or "",
                                       "agent": result["agent"]}
-                record.update(state=state, pr=result.get("pr") or record.get("pr"), message=None, cancelling=False)
+                record.update(state=state, pr=result.get("pr") or record.get("pr"), message=None, cancelling=False,
+                              said=result.get("said") if isinstance(result.get("said"), dict) else None)
                 record.pop("pid", None)
                 kept = str(result.get("target") or "")
                 if result.get("kept") and SANDBOX.fullmatch(kept):
@@ -379,6 +406,8 @@ class TaskRunner:
                 self._write(record)
         if done_with:
             self._release(slug, done_with)
+        if record is not None:
+            self._tell("ended", {**record, "exit": code})
         self.dispatch()
 
     def _answered(self, slug: str, code: int) -> None:
@@ -404,6 +433,7 @@ class TaskRunner:
                 record.update(state=state, message=None, cancelling=False)
                 record.pop("pid", None)
                 self._write(record)
+                self._tell("ended", {**record, "exit": code})
         self.dispatch()
 
     def _release(self, slug: str, sandbox: str) -> None:
@@ -443,7 +473,7 @@ def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
         "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "uses", "base_branch", "draft", "branch", "created", "created_by",
-        "state", "pr", "message", "restarts", "sandbox")} | {"bursts": len(record.get("bursts", [])),
+        "state", "pr", "message", "restarts", "sandbox", "said")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
 
 

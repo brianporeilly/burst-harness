@@ -57,6 +57,7 @@ def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str |
     update_doc(ctx, done=summary, next_step=next_step, open_questions=questions)
     steps = _wrap_up(ctx, f"wip({ctx.slug}): {next_step}")
     ctx.terminal = "paused"
+    ctx.said = {"summary": summary, "next_step": next_step, **({"questions": questions} if questions else {})}
     return "\n".join([*steps, "Paused for review. No PR opened."])
 
 
@@ -65,4 +66,5 @@ def abandon(ctx: HarnessContext, *, reason: str) -> str:
     update_doc(ctx, next_step=f"Abandoned: {reason}")
     steps = _wrap_up(ctx, f"wip({ctx.slug}): abandoned - {reason}")
     ctx.terminal = "abandoned"
+    ctx.said = {"reason": reason}
     return "\n".join([*steps, f"Abandoned: {reason}"])
