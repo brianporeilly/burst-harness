@@ -14,6 +14,7 @@ import json
 import re
 import threading
 import time
+import urllib.request
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
@@ -131,9 +132,62 @@ def check_model(provider: str, base_url: str, model: str, providers: tuple[str, 
         raise SpecError(f"{model!r} is not a model id.")
 
 
-def model_choice(base: HarnessConfig, provider: str, base_url: str, model: str, context_window: int) -> dict[str, Any]:
+# A task's model settings (model_settings): how hard it thinks, and the raw request parameters.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+MODEL_PARAMS_CHARS = 8000
+
+
+def model_settings(raw: dict[str, Any]) -> dict[str, Any]:
+    """A task's model settings as a form or the API gives them, checked; what is not given is left out.
+
+    effort and thinking are Anthropic's (the Messages API's effort, and adaptive
+    thinking on or off); max_tokens caps one reply on any provider; model_params
+    is a JSON object merged into every request last, for what the others do not
+    cover (llama.cpp's chat_template_kwargs.enable_thinking, an OpenAI-compatible
+    server's reasoning_effort, temperature...). Raises SpecError.
+    """
+    found: dict[str, Any] = {}
+    effort = str(raw.get("effort") or "").strip()
+    if effort:
+        if effort not in EFFORTS:
+            raise SpecError(f"effort is one of {', '.join(EFFORTS)}.")
+        found["effort"] = effort
+    thinking = raw.get("thinking")
+    if isinstance(thinking, str):
+        thinking = {"": None, "on": True, "true": True, "off": False, "false": False}.get(thinking.strip().lower(), thinking)
+    if thinking is not None:
+        if not isinstance(thinking, bool):
+            raise SpecError("thinking is on or off (true or false).")
+        found["thinking"] = thinking
+    try:
+        max_tokens = int(raw.get("max_tokens") or 0)
+    except (TypeError, ValueError):
+        max_tokens = -1
+    if max_tokens < 0:
+        raise SpecError("max_tokens is a number of tokens.")
+    if max_tokens:
+        found["max_tokens"] = max_tokens
+    params = raw.get("model_params")
+    if isinstance(params, str):
+        if len(params) > MODEL_PARAMS_CHARS:
+            raise SpecError(f"model_params is at most {MODEL_PARAMS_CHARS} characters.")
+        try:
+            params = json.loads(params) if params.strip() else None
+        except ValueError as err:
+            raise SpecError(f"model_params is not JSON: {err}.") from err
+    if params is not None:
+        if not isinstance(params, dict):
+            raise SpecError('model_params is a JSON object, such as {"temperature": 0.2}.')
+        if params:
+            found["model_params"] = params
+    return found
+
+
+def model_choice(base: HarnessConfig, provider: str, base_url: str, model: str, context_window: int,
+                 settings: dict[str, Any] | None = None) -> dict[str, Any]:
     """The harness settings for a chosen provider and model, on top of `base`. Empty means base's;
-    another provider than base's resets the settings that went with base's."""
+    another provider than base's resets the settings that went with base's. `settings` are
+    model_settings', model_params as the JSON the harness takes."""
     chosen: dict[str, Any] = {}
     if provider and provider != base.provider:
         if provider in ("llamacpp", "openai") and not base_url:
@@ -143,7 +197,39 @@ def model_choice(base: HarnessConfig, provider: str, base_url: str, model: str, 
     for name, value in (("base_url", base_url), ("model_id", model), ("context_window_limit", context_window)):
         if value:
             chosen[name] = value
+    for name, value in (settings or {}).items():
+        chosen[name] = json.dumps(value) if name == "model_params" else value
     return chosen
+
+
+# How much of a llama-server's /props is read: its chat template can be long, but not this long.
+PROPS_BYTES = 4 << 20
+
+
+def probe(base_url: str) -> dict[str, Any]:
+    """What a llama-server at `base_url` says of itself (GET /props: a description, not a model call):
+    its model, its context window per slot, its slots, and whether its chat template takes
+    enable_thinking. {"found": False, "why": ...} when it cannot be read from here."""
+    check_model("", base_url, "")
+    if not base_url:
+        raise SpecError("Give the server's base URL.")
+    root = re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+    try:
+        with urllib.request.urlopen(root + "/props", timeout=5) as response:
+            props = json.loads(response.read(PROPS_BYTES))
+    except (OSError, ValueError) as err:
+        return {"found": False, "why": f"no llama-server description at {root}/props ({type(err).__name__}: {err})"}
+    if not isinstance(props, dict):
+        return {"found": False, "why": f"{root}/props is not a llama-server's description"}
+    settings = props.get("default_generation_settings") if isinstance(props.get("default_generation_settings"), dict) else {}
+    window = settings.get("n_ctx") or props.get("n_ctx")
+    template = props.get("chat_template") if isinstance(props.get("chat_template"), str) else ""
+    model = str(props.get("model_alias") or Path(str(props.get("model_path") or "")).name or "")
+    return {"found": True, "model": model or None,
+            "context_window": window if isinstance(window, int) and window > 0 else None,
+            "slots": props.get("total_slots") if isinstance(props.get("total_slots"), int) else None,
+            # Qwen's, GLM's and others' templates read it: chat_template_kwargs turns thinking off.
+            "thinking": "enable_thinking" in template}
 
 
 def servers(value: Any) -> tuple[str, ...] | None:

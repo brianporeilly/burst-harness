@@ -253,6 +253,82 @@ def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch
             runner.create({"repo": "me/proj", "prompt": "x", "slug": "bad", **raw})
 
 
+def test_a_task_keeps_its_model_settings_for_every_burst(tmp_path, harness, monkeypatch):
+    runner = _runner(tmp_path, limit=10)
+    runner.base = replace(runner.base, provider="llamacpp", base_url="http://typhon:8080", model_id="raon",
+                          model_params='{"temperature": 0.7}')
+    made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "tuned", "provider": "anthropic", "effort": "low",
+                          "thinking": "off", "max_tokens": "8000", "model_params": '{"top_k": 5}'})
+    assert made["settings"] == {"effort": "low", "thinking": False, "max_tokens": 8000, "model_params": {"top_k": 5}}
+    env = harness.started[-1][1].env
+    assert (env["HARNESS_EFFORT"], env["HARNESS_THINKING"], env["HARNESS_MAX_TOKENS"]) == ("low", "false", "8000")
+    assert json.loads(env["HARNESS_MODEL_PARAMS"]) == {"top_k": 5}  # the orchestrator's llama.cpp ones are not sent
+    # What the burst's harness reads from that environment.
+    with monkeypatch.context() as patch:
+        patch.setattr("os.environ", {**env})
+        cfg = HarnessConfig.load(None, {})
+    assert (cfg.effort, cfg.thinking, cfg.max_tokens, cfg.model_params) == ("low", False, 8000, '{"top_k": 5}')
+    harness.started[-1][1].finish(0, state="paused")
+    _settled(runner, "tuned", "paused")
+    runner.resume("tuned", "go on")
+    assert harness.started[-1][1].env["HARNESS_THINKING"] == "false"  # every burst, not only the first
+
+    # Settings alone, on the orchestrator's own model: that model with them, and not routed.
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "warm", "model_params": {"chat_template_kwargs": {
+        "enable_thinking": False}}})
+    env = harness.started[-1][1].env
+    assert "HARNESS_PROVIDER" not in env and env["HARNESS_ROUTER"] == ""
+    assert json.loads(env["HARNESS_MODEL_PARAMS"]) == {"chat_template_kwargs": {"enable_thinking": False}}
+    # None given: nothing set, as before.
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "plain", "effort": "", "thinking": "", "model_params": ""})
+    env = harness.started[-1][1].env
+    assert not {"HARNESS_EFFORT", "HARNESS_THINKING", "HARNESS_MODEL_PARAMS", "HARNESS_ROUTER"} & set(env)
+    assert runner.task("plain")["settings"] == {}
+    for raw, message in [({"effort": "huge"}, "effort is one of"), ({"thinking": "maybe"}, "thinking is on or off"),
+                         ({"max_tokens": "-1"}, "number of tokens"), ({"max_tokens": "many"}, "number of tokens"),
+                         ({"model_params": "{nope"}, "not JSON"), ({"model_params": "[1]"}, "a JSON object"),
+                         ({"model_params": "{" + " " * 9000 + "}"}, "at most")]:
+        with pytest.raises(TasksError, match=message):
+            runner.create({"repo": "me/proj", "prompt": "x", "slug": "bad", **raw})
+
+
+def test_a_llama_server_is_read_for_the_form(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from orchestrator.backend import SpecError, probe
+
+    seen = []
+
+    class Props(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            body = json.dumps({"default_generation_settings": {"n_ctx": 65536}, "total_slots": 2,
+                               "model_path": "/models/qwen3.8-27b-q4_0.gguf",
+                               "chat_template": "{% if enable_thinking is defined and not enable_thinking %}"}).encode()
+            self.send_response(200 if self.path == "/props" else 404)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Props)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        assert probe(url) == {"found": True, "model": "qwen3.8-27b-q4_0.gguf", "context_window": 65536, "slots": 2,
+                              "thinking": True}
+        assert probe(url + "/v1")["found"] and seen == ["/props", "/props"]  # an OpenAI-style URL: its server's root
+        client = TestClient(create_app(FakeBackend()), base_url="http://127.0.0.1:8700")
+        assert client.get("/api/probe", params={"base_url": url}).json()["context_window"] == 65536
+    finally:
+        server.shutdown()
+    gone = probe("http://127.0.0.1:9")
+    assert gone["found"] is False and "no llama-server description at http://127.0.0.1:9/props" in gone["why"]
+    with pytest.raises(SpecError, match="not a base URL"):
+        probe("file:///etc/passwd")
+
+
 def test_on_a_cluster_the_target_is_the_orchestrators_own(tmp_path, harness):
     runner = _runner(tmp_path, claim_ttl=7200)
     runner.base = replace(runner.base, target="agent-sandbox")

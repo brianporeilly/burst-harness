@@ -674,6 +674,26 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   Code is always Anthropic's, with the orchestrator's Claude token or
   Anthropic key. Each task shows what it uses (`uses`: provider, model and
   URL, the defaults filled in).
+- Its model settings, all optional, kept for every burst of the task:
+  - `effort` (`low` to `max`) and `thinking` (`true` or `false`, adaptive
+    thinking) are Anthropic's.
+  - `max_tokens` caps one reply, on any provider.
+  - `model_params` is a JSON object merged into every request last, for
+    what the others don't cover. On llama.cpp that is
+    `{"chat_template_kwargs": {"enable_thinking": false}}` for a template
+    that reads it (Qwen's, GLM's and others'), and sampling settings such as
+    `temperature`. On an OpenAI-compatible endpoint it is
+    `{"reasoning_effort": "low"}`.
+
+  In the Tasks form, Model settings shows the fields that apply to the
+  provider chosen. The llama.cpp thinking switch and the OpenAI-compatible
+  effort are written into the JSON, so what is sent is what is shown.
+  **Read the server** asks a llama-server for `/props`, which is its
+  description and not a model call. It fills in the context window (per
+  slot) and says whether its chat template can switch thinking. That is `GET
+  /api/probe?base_url=...`, from the page only. A task given its model or
+  any of these settings isn't routed. Claude Code tasks take none of them;
+  Claude Code chooses for itself.
 - Each burst is `harness run SLUG --task PROMPT --repo-url URL` as a
   subprocess, with the orchestrator's environment: its git token and model
   key, its target, and the task's model settings on top. On a cluster that's a claimed sandbox

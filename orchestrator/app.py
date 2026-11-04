@@ -36,7 +36,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from harness import containers, credentials, egress, git, mcp, session
 from harness.exec_target import ExecError
 
-from .backend import Backend, SessionSpec, SpecError
+from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
 from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
@@ -210,6 +210,11 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     @app.post("/api/tasks", status_code=202)
     async def create_task(request: Request) -> dict[str, Any]:
         return await run_in_threadpool(task_runner().create, await body(request), user=request.state.user)
+
+    @app.get("/api/probe")
+    def probe_server(base_url: str) -> dict[str, Any]:
+        """A llama-server's own description, for the Tasks form (backend.probe)."""
+        return probe(base_url)
 
     @app.get("/api/tasks/{slug}")
     def task_detail(slug: str) -> dict[str, Any]:

@@ -504,15 +504,17 @@ token on the cluster. Those wait for a second user.
 
 Next, in this order (2026-11-04):
 
-6. Model settings for tasks: effort, thinking and the output limit as fields
-   where a provider has them (Anthropic's effort and thinking; llama.cpp's
-   `enable_thinking`; an OpenAI-compatible endpoint's reasoning effort), and
-   the extra request parameters (`model_params`) as JSON, with examples for
-   the provider chosen. The fields write into the same JSON, so what is sent
-   is what is shown. For a llama-server, the orchestrator reads its `/props`
-   (a description, not a model call) to fill in the context window and offer
-   thinking only when its chat template has it. Kept with the task across
-   bursts; Slack and the token API later.
+6. Model settings for tasks: done (2026-11-04). Effort, thinking and the
+   longest reply as fields where a provider has them (Anthropic's effort and
+   thinking; llama.cpp's `enable_thinking`; an OpenAI-compatible endpoint's
+   reasoning effort), and the extra request parameters (`model_params`) as
+   JSON, with examples for the provider chosen. The llama.cpp and
+   OpenAI-compatible fields write into the JSON, so what is sent is what is
+   shown. For a llama-server, the orchestrator reads its `/props` (a
+   description, not a model call) to fill in the context window and say
+   whether its chat template can switch thinking. Kept with the task for
+   every burst, and taken by `POST /api/tasks` with a token too. Not yet: from
+   Slack, and for Claude Code tasks.
 7. Versions and releases. On each merge to main, python-semantic-release
    (the Python port of semantic-release) works out the next version from the
    squashed commit (`feat:` minor, `fix:` and the rest patch, `!` or

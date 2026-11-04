@@ -53,7 +53,7 @@ from typing import Any
 from harness import ask, credentials, git, job, models
 from harness.config import HarnessConfig
 
-from .backend import SpecError, check_model, model_choice, task_providers
+from .backend import SpecError, check_model, model_choice, model_settings, task_providers
 from .jobs import OUTPUT, REPO, _iso, _tail, json_file
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
@@ -209,12 +209,13 @@ class TaskRunner:
                                     "leave the provider as it is, or use the Strands engine.")
                 provider = "anthropic"  # and not the orchestrator's other provider's URL or model
             check_model(provider, base_url, model, task_providers())
-            chosen = model_choice(self.base, provider, base_url, model, context_window)
+            settings = model_settings(raw)
+            chosen = model_choice(self.base, provider, base_url, model, context_window, settings)
         except ValueError as err:  # SpecError is one
             raise TasksError(str(err) if isinstance(err, SpecError) else "The context window is a number of tokens.") from err
         record = {
             "slug": slug, "repo": url, "prompt": prompt, "engine": engine, "model": model,
-            "provider": provider, "base_url": base_url, "context_window": context_window,
+            "provider": provider, "base_url": base_url, "context_window": context_window, "settings": settings,
             # What that comes to, the orchestrator's defaults filled in: for showing which model works on it.
             "uses": {"provider": chosen.get("provider", self.base.provider),
                      "model": chosen.get("model_id", self.base.model_id),
@@ -332,20 +333,23 @@ class TaskRunner:
     def _config(self, record: dict[str, Any]) -> HarnessConfig:
         """The orchestrator's settings with the task's model on top: what its burst runs with, for what
         it is granted (a provider plugin's credentials go to the tasks that use it)."""
-        return replace(self.base, **model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
-                                                 record.get("model") or "", record.get("context_window") or 0))
+        return replace(self.base, **self._chosen(record))
+
+    def _chosen(self, record: dict[str, Any]) -> dict[str, Any]:
+        return model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
+                            record.get("model") or "", record.get("context_window") or 0, record.get("settings"))
 
     def _model_env(self, record: dict[str, Any]) -> dict[str, str]:
         """The task's provider and model as the burst's HARNESS_* settings, over the orchestrator's."""
-        chosen = model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
-                              record.get("model") or "", record.get("context_window") or 0)
+        chosen = self._chosen(record)
         if chosen:
-            chosen["router"] = ""  # a task given its model is not routed (harness/agents.py)
+            chosen["router"] = ""  # a task given its model or its settings is not routed (harness/agents.py)
         elif not record.get("repo") and (record.get("uses") or {}).get("agent"):
             # A question's follow-ups stay with the profile the router chose for it (a repo's task keeps
             # its own choice, in the harness's state).
             chosen = {"agent": record["uses"]["agent"], "router": ""}
-        return {f"HARNESS_{name.upper()}": str(value) for name, value in chosen.items()}
+        return {f"HARNESS_{name.upper()}": str(value).lower() if isinstance(value, bool) else str(value)
+                for name, value in chosen.items()}
 
     def _start(self, record: dict[str, Any]) -> None:
         """Start a burst of a queued task. Called with the lock held."""
@@ -472,7 +476,7 @@ def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "uses", "base_branch", "draft", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "base_branch", "draft", "branch", "created", "created_by",
         "state", "pr", "message", "restarts", "sandbox", "said")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
 

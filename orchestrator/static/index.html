@@ -111,8 +111,27 @@
       <p class="muted" id="task-model-note"></p>
       <div class="grid2">
         <label>Context window (tokens) <input type="number" name="context_window" min="0" placeholder="default"></label>
-        <span></span>
+        <div class="row" id="task-probe-row" style="align-self:end;padding-bottom:2px"><button type="button" id="task-probe">Read the server</button></div>
       </div>
+      <p class="muted" id="task-probe-note"></p>
+      <details id="task-settings"><summary>Model settings</summary>
+        <div class="grid2">
+          <label data-for="effort">Effort
+            <select name="effort"><option value="">Default</option></select>
+          </label>
+          <label data-for="thinking">Thinking
+            <select name="thinking"><option value="">Default</option><option value="on">On</option><option value="off">Off</option></select>
+          </label>
+        </div>
+        <div class="grid2">
+          <label>Longest reply (tokens) <input type="number" name="max_tokens" min="0" placeholder="default (32000)"></label>
+          <span></span>
+        </div>
+        <label>Extra request parameters (JSON, sent with every request)
+          <textarea name="model_params" placeholder="{}" style="min-height:120px"></textarea></label>
+        <p class="muted" id="task-params-note"></p>
+        <p class="muted" id="task-params-examples"></p>
+      </details>
       <div class="grid2">
         <label>Base branch <input type="text" name="base_branch" placeholder="default"></label>
         <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
@@ -617,6 +636,16 @@ const modelLabel = (t) => {
   return `Strands · ${provider}${uses.model ? ` ${uses.model}` : ""}${uses.agent ? ` (agent ${uses.agent})` : ""}`;
 };
 
+// A task's model settings, as given (none: the orchestrator's).
+const settingsLine = (settings) => {
+  if (!settings || !Object.keys(settings).length) return null;
+  const parts = [settings.effort ? `effort ${settings.effort}` : null,
+    settings.thinking != null ? `thinking ${settings.thinking ? "on" : "off"}` : null,
+    settings.max_tokens ? `replies up to ${settings.max_tokens.toLocaleString()} tokens` : null,
+    settings.model_params ? `request parameters ${JSON.stringify(settings.model_params)}` : null];
+  return el("p", { class: "muted" }, "Model settings: " + parts.filter(Boolean).join(" · "));
+};
+
 function selectTask(slug) {
   selectedTask = slug;
   document.getElementById("task-create").classList.add("hidden");
@@ -678,6 +707,7 @@ async function renderTask() {
     t.sandbox ? el("p", { class: "muted" }, "Its sandbox is kept, with work not yet pushed: continuing carries on there. "
       + "It is removed once the work is pushed, or with the task.") : null,
     t.restarts ? el("p", { class: "muted" }, `Restarted ${t.restarts} time(s) after the orchestrator stopped mid-burst.`) : null,
+    settingsLine(t.settings),
     el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, t.prompt)),
     idle ? el("form", { onsubmit: (event) => { event.preventDefault();
       taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
@@ -727,8 +757,128 @@ function taskModelFields() {
     : claude
     ? `Claude Code uses Anthropic, with the orchestrator's ${held.claude_oauth_token ? "Claude token ✓" : held.anthropic_api_key ? "Anthropic key ✓" : "Claude token or Anthropic key, and it has neither ✗"}.`
     : provider === "anthropic" ? `Anthropic, with the orchestrator's key${key ? " ✓" : ": it has none ✗"}.`
-    : provider === "llamacpp" && !own ? "Set the context window to the server's --ctx-size." : "";
+    : provider === "llamacpp" && !own ? "Set the context window to the server's --ctx-size, or read it from the server." : "";
+  if (provider !== taskProvider) {
+    // What the fields wrote for the last provider means nothing to this one; what you typed stays.
+    document.getElementById("task-probe-note").textContent = "";
+    taskForm.effort.value = taskForm.thinking.value = "";
+    if (taskParams()) setTaskParams((found) => {
+      if (taskProvider === "openai") delete found.reasoning_effort;
+      if (taskProvider === "llamacpp" && found.chat_template_kwargs) {
+        delete found.chat_template_kwargs.enable_thinking;
+        if (!Object.keys(found.chat_template_kwargs).length) delete found.chat_template_kwargs;
+      }
+    });
+  }
+  taskProvider = provider;
+  taskSettingsFields(claude);
 }
+
+// --- the task's model settings ---
+// Anthropic takes effort and thinking as settings of its own. llama.cpp's thinking switch and an
+// OpenAI-compatible server's reasoning effort are request parameters: those fields write into the
+// JSON, so what is sent is what is shown. Claude Code picks its own.
+const EFFORTS = { anthropic: ["low", "medium", "high", "xhigh", "max"], openai: ["low", "medium", "high"] };
+const PARAM_EXAMPLES = {
+  anthropic: [],
+  llamacpp: [{ temperature: 0.6, top_p: 0.95, top_k: 20, min_p: 0 }, { repeat_penalty: 1.05 }],
+  openai: [{ reasoning_effort: "low" }, { temperature: 0.2 }],
+  other: [{ temperature: 0.2 }],
+};
+let taskProvider = "";
+
+function taskParams() {
+  const text = taskForm.model_params.value.trim();
+  if (!text) return {};
+  try { const found = JSON.parse(text); return found && typeof found === "object" && !Array.isArray(found) ? found : null; }
+  catch { return null; }
+}
+
+function setTaskParams(change) {
+  const found = taskParams();
+  const note = document.getElementById("task-params-note");
+  if (found === null) { note.textContent = "Fix the JSON first: it isn't an object."; return false; }
+  change(found);
+  taskForm.model_params.value = Object.keys(found).length ? JSON.stringify(found, null, 2) : "";
+  note.textContent = "";
+  return true;
+}
+
+// The typed fields, from the JSON (after it is edited, or an example is added).
+function taskFieldsFromParams() {
+  const found = taskParams();
+  if (!found) return;
+  if (taskProvider === "llamacpp") {
+    const on = found.chat_template_kwargs?.enable_thinking;
+    taskForm.thinking.value = on === true ? "on" : on === false ? "off" : "";
+  } else if (taskProvider === "openai") {
+    taskForm.effort.value = EFFORTS.openai.includes(found.reasoning_effort) ? found.reasoning_effort : "";
+  }
+}
+
+function taskSettingsFields(claude) {
+  const box = document.getElementById("task-settings");
+  box.classList.toggle("hidden", claude);
+  const efforts = EFFORTS[taskProvider];
+  const effort = taskForm.effort.value;
+  taskForm.effort.replaceChildren(el("option", { value: "" }, "Default"), ...(efforts || []).map((name) => el("option", { value: name }, name)));
+  taskForm.effort.value = efforts?.includes(effort) ? effort : "";
+  box.querySelector('[data-for="effort"]').classList.toggle("hidden", !efforts);
+  box.querySelector('[data-for="thinking"]').classList.toggle("hidden", !["anthropic", "llamacpp"].includes(taskProvider));
+  document.getElementById("task-params-note").textContent = {
+    anthropic: "Effort and thinking are Anthropic's own settings; little else belongs here.",
+    llamacpp: "Thinking is the chat template's enable_thinking (Qwen, GLM and others): it is written into the JSON.",
+    openai: "Effort is reasoning_effort, for reasoning models: it is written into the JSON.",
+  }[taskProvider] || "";
+  const examples = PARAM_EXAMPLES[taskProvider] || PARAM_EXAMPLES.other;
+  document.getElementById("task-params-examples").replaceChildren(...(examples.length ? ["Add: "] : []),
+    ...examples.flatMap((example, i) => [i ? " " : "", el("button", { type: "button", class: "chip", onclick: () => {
+      if (setTaskParams((found) => Object.assign(found, structuredClone(example)))) taskFieldsFromParams();
+    } }, JSON.stringify(example))]));
+  taskFieldsFromParams();
+  // A llama-server can say what it is; the others cannot be asked.
+  document.getElementById("task-probe-row").classList.toggle("hidden", claude || !["llamacpp", "openai"].includes(taskProvider));
+}
+
+taskForm.thinking.onchange = () => {
+  if (taskProvider !== "llamacpp") return;
+  const on = taskForm.thinking.value;
+  setTaskParams((found) => {
+    const kwargs = { ...(found.chat_template_kwargs || {}) };
+    if (on) kwargs.enable_thinking = on === "on"; else delete kwargs.enable_thinking;
+    if (Object.keys(kwargs).length) found.chat_template_kwargs = kwargs; else delete found.chat_template_kwargs;
+  });
+};
+taskForm.effort.onchange = () => {
+  if (taskProvider !== "openai") return;
+  const effort = taskForm.effort.value;
+  setTaskParams((found) => { if (effort) found.reasoning_effort = effort; else delete found.reasoning_effort; });
+};
+taskForm.model_params.oninput = () => {
+  document.getElementById("task-params-note").textContent = taskParams() === null ? "Not a JSON object yet." : "";
+  taskFieldsFromParams();
+};
+
+document.getElementById("task-probe").onclick = async () => {
+  const note = document.getElementById("task-probe-note");
+  const own = (taskForm.provider.value || defaults.provider) === defaults.provider;
+  const url = taskForm.base_url.value.trim() || (own ? defaults.base_url : "");
+  if (!url) { note.textContent = "Give the server's base URL first."; return; }
+  note.textContent = `Reading ${url}...`;
+  let found;
+  try { found = await api(`/api/probe?base_url=${encodeURIComponent(url)}`); }
+  catch (err) { note.textContent = err.message; return; }
+  if (!found.found) { note.textContent = `Couldn't read it: ${found.why}.`; return; }
+  if (found.context_window && !taskForm.context_window.value) taskForm.context_window.value = found.context_window;
+  if (found.model) taskForm.model.placeholder = `the server's (${found.model})`;
+  note.textContent = [`llama-server: ${found.model || "a model"}`,
+    found.context_window ? `${found.context_window.toLocaleString()} tokens per slot` : null,
+    found.slots ? `${found.slots} slot(s)` : null,
+    found.thinking ? "its template can switch thinking on and off" : "its template has no thinking switch"].filter(Boolean).join(", ") + ".";
+  if (taskProvider === "llamacpp" && !found.thinking && !taskForm.thinking.value)
+    document.getElementById("task-settings").querySelector('[data-for="thinking"]').classList.add("hidden");
+};
+
 taskForm.engine.onchange = taskForm.provider.onchange = taskModelFields;
 taskForm.onsubmit = async (event) => {
   event.preventDefault();
@@ -736,9 +886,14 @@ taskForm.onsubmit = async (event) => {
   error.textContent = "";
   const data = Object.fromEntries(new FormData(taskForm));
   data.draft = taskForm.draft.checked;
+  // Only Anthropic takes effort and thinking as settings; elsewhere they are in the JSON already.
+  if (taskProvider !== "anthropic") { delete data.effort; delete data.thinking; }
+  if (taskForm.engine.value === "claude-code") { delete data.max_tokens; delete data.model_params; }
+  if (taskParams() === null) { error.textContent = "The extra request parameters aren't a JSON object."; return; }
   try {
     const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     taskForm.reset();
+    document.getElementById("task-probe-note").textContent = "";
     taskModelFields();
     selectTask(created.slug);
   } catch (err) { error.textContent = err.message; }
