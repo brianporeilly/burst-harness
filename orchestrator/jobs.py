@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from harness import credentials, cron, job
+from harness import credentials, cron, job, models
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 OUTPUT = "output.log"
@@ -100,7 +100,7 @@ class JobRunner:
         runs = job.list_runs(cfg, name, limit=20)
         missing = [s.env for s in spec.secrets if not credentials.get(s.env)]
         item.update(
-            trigger=spec.trigger, mode=spec.mode, engine=cfg.engine, model=f"{cfg.provider} {cfg.model_id}",
+            trigger=spec.trigger, mode=spec.mode, engine=cfg.engine, model=f"{cfg.provider} {models.model_name(cfg)}",
             outputs=list(spec.outputs), missing=missing,
             last_run=_alive(runs[0]) if runs else None,
             last_success=next((r for r in runs if r.get("state") == "reported"), None),

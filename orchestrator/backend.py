@@ -314,7 +314,7 @@ class PodmanBackend:
                 "anthropic_api_key": bool(credentials.get("ANTHROPIC_API_KEY")),
                 "claude_oauth_token": bool(credentials.get("CLAUDE_CODE_OAUTH_TOKEN")),
             },
-            "defaults": {"provider": cfg.provider, "base_url": cfg.base_url, "model": cfg.model_id,
+            "defaults": {"provider": cfg.provider, "base_url": cfg.base_url, "model": models.model_name(cfg),
                          # A provider plugin that gives Claude Code its own endpoint (harness/models.py).
                          "claude_endpoint": models.provider_attr(cfg.provider, "target_endpoint") is not None,
                          "context_window": cfg.context_window_limit,

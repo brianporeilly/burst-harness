@@ -215,6 +215,20 @@ def test_claude_code_keeps_a_default_provider_that_gives_it_an_endpoint(tmp_path
     assert PodmanBackend(runner.base).info()["defaults"]["claude_endpoint"] is True
 
 
+def test_a_task_on_a_llamacpp_server_with_no_model_chosen_shows_the_served_one(tmp_path, harness):
+    from .test_models import _models_server
+
+    url, _, stop = _models_server("/models/Qwen3-Coder-30B.gguf")
+    try:
+        runner = _runner(tmp_path, limit=10)
+        runner.base = replace(runner.base, provider="llamacpp", base_url=url)
+        made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "served"})
+    finally:
+        stop()
+    assert made["uses"]["model"] == "Qwen3-Coder-30B"  # not the harness's default, a Claude model
+    assert "HARNESS_MODEL_ID" not in harness.started[-1][1].env  # the burst asks the server itself
+
+
 def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch):
     runner = _runner(tmp_path, limit=10)
     runner.base = replace(runner.base, provider="llamacpp", base_url="http://typhon:8080", model_id="raon",

@@ -24,7 +24,7 @@ from strands.vended_tools import file_editor, handoff_to_user, shell
 from . import agents, mcp
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
-from .models import build_model, retry_strategy
+from .models import build_model, model_name, retry_strategy
 from .tools import HarnessContext, make_tools
 
 if TYPE_CHECKING:
@@ -278,7 +278,7 @@ def _changed(before: dict[str, str], after: dict[str, str] | None) -> list[str]:
 
 
 def _add_usage(usage: dict[str, dict[str, Any]], name: str, cfg: HarnessConfig, used: dict[str, int]) -> None:
-    entry = usage.setdefault(name, {"provider": cfg.provider, "model_id": cfg.model_id, "calls": 0})
+    entry = usage.setdefault(name, {"provider": cfg.provider, "model_id": model_name(cfg), "calls": 0})
     entry["calls"] += 1
     for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens"):
         entry[key] = entry.get(key, 0) + (used.get(key) or 0)

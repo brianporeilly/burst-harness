@@ -20,6 +20,7 @@ from . import (
     egress,
     git,
     job,
+    models,
     session,
     state,
 )
@@ -333,7 +334,7 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
     print("HARNESS_RESULT " + json.dumps({
         "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
         "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
-        "model": f"{ctx.cfg.provider} {ctx.cfg.model_id}", "base_url": ctx.cfg.base_url, "agent": ctx.agent or None,
+        "model": f"{ctx.cfg.provider} {models.model_name(ctx.cfg)}", "base_url": ctx.cfg.base_url, "agent": ctx.agent or None,
         "delegated": {name: {"calls": used["calls"], "input": used.get("inputTokens", 0),
                              "output": used.get("outputTokens", 0)} for name, used in ctx.delegated.items()} or None,
         "said": said or None,
@@ -380,7 +381,7 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
             else "No snapshot; resuming from the task document."
         )
     _run(agent, ctx, prompt, interactive=False)
-    return _report(agent, ctx.cfg.model_id, ctx.cfg.provider, ctx.delegated)
+    return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
 
 def _start(ctx: HarnessContext, task: str) -> str | None:
@@ -459,7 +460,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             if line in {"/quit", "/exit"}:
                 break
             _run(agent, ctx, line, interactive=True)
-        return _report(agent, ctx.cfg.model_id, ctx.cfg.provider, ctx.delegated)
+        return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
     return _session(args, body)
 

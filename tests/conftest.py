@@ -21,6 +21,8 @@ def _isolated_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
     for key, value in GIT_ENV.items():
         monkeypatch.setenv(key, value)
+    from harness import models
+    monkeypatch.setattr(models, "_SERVED", {})  # what a llama.cpp server said it serves, per test
 
 
 def git(cwd: Path, *args: str) -> str:

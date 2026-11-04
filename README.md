@@ -1107,7 +1107,8 @@ features and are not sent. Four settings matter:
 # ~/.config/burst-harness/config.toml  (or HARNESS_* env vars of the same names)
 provider = "llamacpp"
 base_url = "http://llm.example.lan:8080"
-model_id = "qwen3-coder-30b"          # a label: llama-server serves whatever it loaded
+model_id = "qwen3-coder-30b"          # a label: llama-server serves whatever it loaded;
+                                      #   unset, the name the server lists is sent and shown
 context_window_limit = 65536          # = llama-server --ctx-size; the default 1M
                                       #   would stop context management ever firing
 model_params = '{"max_tokens": 8192}' # one reply's cap; by default max_tokens,

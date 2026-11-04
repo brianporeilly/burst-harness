@@ -83,7 +83,7 @@ from urllib.parse import urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers, credentials, cron, mcp
+from . import agent_sandbox, containers, credentials, cron, mcp, models
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -297,7 +297,6 @@ def write_rules(spec: JobSpec, cfg: HarnessConfig) -> tuple[dict[str, str], ...]
     from . import session
     if spec.mode != "report":
         return None
-    from . import models
 
     model: tuple[dict[str, str], ...] = ()
     if cfg.engine == "claude-code" and (endpoint := models.target_endpoint(cfg)) is not None:
@@ -407,7 +406,7 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
         f"  runs     engine={cfg.engine} target={cfg.target} "
         + (f"pool={cfg.pool} namespace={cfg.namespace or '(current)'}" if cfg.target == "agent-sandbox"
            else f"image={cfg.image}"),
-        f"  model    {cfg.provider} {cfg.model_id}" + (f" at {cfg.base_url}" if cfg.base_url else "")
+        f"  model    {cfg.provider} {models.model_name(cfg)}" + (f" at {cfg.base_url}" if cfg.base_url else "")
         + (" (called from the driver)" if cfg.engine == "strands" else " (called from the sandbox)"),
         f"  egress   {cfg.egress}" + (f": {', '.join(containers.allowlist(cfg, _hosts(spec)))}" if cfg.egress == "allowlist" else ""),
     ]
@@ -548,9 +547,9 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
                 break
             call(agent, NO_FINISH)
     except OutputLimit as err:
-        print("\n" + _report(agent, cfg.model_id, cfg.provider, ctx.delegated))
+        print("\n" + _report(agent, models.model_name(cfg), cfg.provider, ctx.delegated))
         return None, f"max_tokens: {err}"
-    print("\n" + _report(agent, cfg.model_id, cfg.provider, ctx.delegated))
+    print("\n" + _report(agent, models.model_name(cfg), cfg.provider, ctx.delegated))
     if "report" in finished:
         return finished["report"], ""
     # A model that wrote the file instead of calling the tool still gets its report out.
@@ -715,7 +714,7 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
     record: dict[str, Any] = {
         "id": run_id, "job": spec.name, "path": str(spec.path), "state": "running",
         "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
-        "engine": cfg.engine, "model": f"{cfg.provider} {cfg.model_id}", "mode": spec.mode,
+        "engine": cfg.engine, "model": f"{cfg.provider} {models.model_name(cfg)}", "mode": spec.mode,
         "pid": os.getpid(), "trigger": os.environ.get(TRIGGER_ENV) or "manual",
         **({"scheduled_for": due} if (due := os.environ.get(SCHEDULED_FOR_ENV)) else {}),
         **({"asked": spec.asked, "turn": spec.turn} if spec.asking else {}),
@@ -747,7 +746,7 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         "job": spec.name, "engine": cfg.engine, "state": "reported" if report is not None else "failed",
         "seconds": round(time.time() - started), "delivery_errors": failures or None,
         "reason": None if report is not None else reason,
-        **({"model": f"{ctx.cfg.provider} {ctx.cfg.model_id}", "agent": ctx.agent or None,
+        **({"model": f"{ctx.cfg.provider} {models.model_name(ctx.cfg)}", "agent": ctx.agent or None,
             "delegated": {name: used["calls"] for name, used in ctx.delegated.items()} or None} if ctx else {}),
     }
     if report is not None:

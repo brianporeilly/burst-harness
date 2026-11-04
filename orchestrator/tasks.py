@@ -218,7 +218,7 @@ class TaskRunner:
             "provider": provider, "base_url": base_url, "context_window": context_window, "settings": settings,
             # What that comes to, the orchestrator's defaults filled in: for showing which model works on it.
             "uses": {"provider": chosen.get("provider", self.base.provider),
-                     "model": chosen.get("model_id", self.base.model_id),
+                     "model": models.model_name(replace(self.base, **chosen)),
                      "base_url": chosen.get("base_url", self.base.base_url)},
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,

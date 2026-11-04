@@ -184,3 +184,58 @@ def test_strands_openai_reasoning_warning_is_said_once(caplog):
     assert len(warned) == 1 and warned[0].endswith("said once, not for every message.")
     # Strands still drops the reasoning, and only that.
     assert sent[1:] == [{"role": "assistant", "content": [{"text": "done", "type": "text"}]}] * 3
+
+
+def _models_server(served):
+    """A llama.cpp server's /v1/models alone, listing `served`; (its URL, how often it was asked, stop)."""
+    import http.server
+    import json
+    import threading
+
+    asked = []
+
+    class Models(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            asked.append(self.path)
+            body = json.dumps({"data": [{"id": served}]}).encode()
+            self.send_response(200 if self.path == "/v1/models" else 404)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Models)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_address[1]}", asked, server.shutdown
+
+
+def test_llamacpp_with_no_model_chosen_sends_and_shows_the_one_the_server_serves():
+    from harness.models import model_name
+
+    url, asked, stop = _models_server("/models/Qwen3-Coder-30B.gguf")
+    try:
+        cfg = HarnessConfig(provider="llamacpp", base_url=url + "/")
+        assert model_name(cfg) == "Qwen3-Coder-30B"  # the file's name, not the harness's Claude default
+        assert build_model(cfg).config["model_id"] == "Qwen3-Coder-30B"
+        assert asked == ["/v1/models"]  # asked once, then remembered
+        assert model_name(HarnessConfig(provider="llamacpp", base_url=url, model_id="raon")) == "raon"
+        assert model_name(HarnessConfig(base_url=url)) == HarnessConfig.model_id  # Anthropic's own
+        assert asked == ["/v1/models"]
+    finally:
+        stop()
+    assert model_name(HarnessConfig(provider="llamacpp", base_url="http://127.0.0.1:9")) == "llama.cpp"
+
+
+def test_the_served_model_is_asked_again_after_a_while(monkeypatch):
+    from harness import models
+
+    url, asked, stop = _models_server("qwen3")
+    try:
+        cfg = HarnessConfig(provider="llamacpp", base_url=url)
+        models.model_name(cfg)
+        monkeypatch.setattr(models, "SERVED_FOR", -1)  # a restarted server may serve another model
+        models.model_name(cfg)
+        assert len(asked) == 2
+    finally:
+        stop()

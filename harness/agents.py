@@ -58,6 +58,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import models
 from .config import HarnessConfig
 
 if TYPE_CHECKING:
@@ -133,16 +134,14 @@ def in_use(cfg: HarnessConfig) -> list[str]:
 def check_providers(cfg: HarnessConfig) -> None:
     """Every profile the run may call has a provider that can build a model here (its SDK installed).
     Found at the start, rather than as a delegate or a router failing halfway through. Raises AgentsError."""
-    from .models import ProviderError, check_provider
-
     if cfg.engine != "strands":  # Claude Code picks its own model; profiles are not used
         return
     problems = []
     for name in in_use(cfg):
         provider = str(cfg.agents[name].get("provider") or HarnessConfig().provider)
         try:
-            check_provider(provider)
-        except ProviderError as err:
+            models.check_provider(provider)
+        except models.ProviderError as err:
             problems.append(f"[agents.{name}] provider {provider}: {err}")
     if problems:
         raise AgentsError("A profile this run may use cannot be loaded:\n  " + "\n  ".join(problems))
@@ -173,7 +172,7 @@ def role(cfg: HarnessConfig, name: str) -> tuple[str, bool]:
 def describe(cfg: HarnessConfig, name: str) -> str:
     """The profile's name and model, for what is printed."""
     profile = as_profile(cfg, name)
-    return f"{name} ({profile.provider} {profile.model_id})"
+    return f"{name} ({profile.provider} {models.model_name(profile)})"
 
 
 def roster(cfg: HarnessConfig, names: tuple[str, ...]) -> str:
@@ -217,13 +216,11 @@ def route(cfg: HarnessConfig, task: str) -> tuple[str | None, str]:
     from strands import Agent
     from strands.types.exceptions import MaxTokensReachedException
 
-    from .models import build_model
-
     names = candidates(cfg)
     cut_off = False
     try:
         # One try: a router that is down should not hold the work up for minutes of backoff.
-        router = Agent(model=build_model(as_profile(cfg, cfg.router)), callback_handler=None, retry_strategy=None,
+        router = Agent(model=models.build_model(as_profile(cfg, cfg.router)), callback_handler=None, retry_strategy=None,
                        system_prompt=ROUTER_SYSTEM)
         try:
             reply = str(router(ROUTER_ASK.format(roster=roster(cfg, names), task=task[:ROUTER_TASK_CHARS])))
@@ -265,7 +262,7 @@ def lead(cfg: HarnessConfig, task: str | None, *, saved: Path | None = None) -> 
     print(f"Routing with {describe(cfg, cfg.router)} among {', '.join(candidates(cfg))}...")
     name, why = route(cfg, task)
     if name is None:
-        print(f"! Not routed: {why}. The top-level model ({cfg.provider} {cfg.model_id}) does it.")
+        print(f"! Not routed: {why}. The top-level model ({cfg.provider} {models.model_name(cfg)}) does it.")
         return cfg, ""
     print(f"Routed to {describe(cfg, name)}" + (f": {why}" if why else "."))
     if saved is not None:

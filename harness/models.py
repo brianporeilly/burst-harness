@@ -56,7 +56,7 @@ import logging
 import os
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlsplit
@@ -275,12 +275,41 @@ def _bedrock(cfg: HarnessConfig) -> "Model":
     return BedrockModel(**kwargs)
 
 
+def _llamacpp_url(cfg: HarnessConfig) -> str:
+    return cfg.base_url or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")
+
+
 def _llamacpp(cfg: HarnessConfig) -> "Model":
     """A self-hosted llama.cpp server."""
     LlamaCppModel = _require(*REQUIRES["llamacpp"])
-    base_url = cfg.base_url or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")
-    return _passing_through(LlamaCppModel)(base_url=base_url, timeout=cfg.model_timeout,
+    cfg = replace(cfg, model_id=model_name(cfg))
+    return _passing_through(LlamaCppModel)(base_url=_llamacpp_url(cfg), timeout=cfg.model_timeout,
                                            **model_kwargs(cfg, LlamaCppModel, cap_in_params=True))
+
+
+# What a llama.cpp server said it serves, by its URL: (when asked, the name).
+_SERVED: dict[str, tuple[float, str]] = {}
+SERVED_FOR = 60  # seconds before it is asked again: the server may have been restarted with another model
+
+
+def model_name(cfg: HarnessConfig) -> str:
+    """The model `cfg` uses, as it is sent and shown.
+
+    That is model_id, except for a llama.cpp server with no model chosen: the
+    harness's default is a Claude model, so the server is asked what it serves
+    instead (a model switcher in front of llama.cpp needs the right name;
+    llama.cpp itself answers to any). Only the file's name is kept, as llama.cpp
+    names its model by the file's path; "llama.cpp" if it cannot be asked.
+    """
+    if cfg.provider != "llamacpp" or cfg.model_id != HarnessConfig.model_id:
+        return cfg.model_id
+    url = _llamacpp_url(cfg).rstrip("/")
+    asked, name = _SERVED.get(url, (0.0, ""))
+    if time.monotonic() - asked > SERVED_FOR:
+        from .session import served_model
+        name = (served_model(url + "/v1") or "llama.cpp").rsplit("/", 1)[-1].removesuffix(".gguf")
+        _SERVED[url] = (time.monotonic(), name)
+    return name
 
 
 def _passing_through(LlamaCppModel: Any) -> Any:
