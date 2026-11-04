@@ -703,6 +703,11 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
     The run is recorded (see the module's docstring) from start to finish.
     """
     check(spec)
+    from . import agents
+    try:
+        agents.check_providers(cfg)  # before a sandbox starts, not when a delegate is first called
+    except agents.AgentsError as err:
+        raise JobError(str(err)) from err
     started = time.time()
     run_id = os.environ.get(RUN_ID_ENV, "")
     run_id = run_id if RUN_ID.fullmatch(run_id) else new_run_id()

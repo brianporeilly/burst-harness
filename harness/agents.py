@@ -119,6 +119,35 @@ def check(cfg: HarnessConfig) -> None:
         raise AgentsError(f"router {cfg.router} has nothing to pick from: define other profiles, or route_to.")
 
 
+def in_use(cfg: HarnessConfig) -> list[str]:
+    """The profiles this run may call: its lead (--agent, or the router and what it picks from) and
+    whoever a possible lead delegates to. A profile only defined is left out."""
+    leads = [cfg.agent] if cfg.agent else list(candidates(cfg)) if cfg.router else []
+    used = [*leads, *([cfg.router] if cfg.router and not cfg.agent else [])]
+    used += cfg.delegate_to if not cfg.agent or not cfg.agents[cfg.agent].get("delegate_to") else ()
+    for name in leads:
+        used += tuple(cfg.agents[name].get("delegate_to") or ())
+    return list(dict.fromkeys(used))
+
+
+def check_providers(cfg: HarnessConfig) -> None:
+    """Every profile the run may call has a provider that can build a model here (its SDK installed).
+    Found at the start, rather than as a delegate or a router failing halfway through. Raises AgentsError."""
+    from .models import ProviderError, check_provider
+
+    if cfg.engine != "strands":  # Claude Code picks its own model; profiles are not used
+        return
+    problems = []
+    for name in in_use(cfg):
+        provider = str(cfg.agents[name].get("provider") or HarnessConfig().provider)
+        try:
+            check_provider(provider)
+        except ProviderError as err:
+            problems.append(f"[agents.{name}] provider {provider}: {err}")
+    if problems:
+        raise AgentsError("A profile this run may use cannot be loaded:\n  " + "\n  ".join(problems))
+
+
 def as_profile(cfg: HarnessConfig, name: str) -> HarnessConfig:
     """`cfg` with the profile's model in place of its own, and its delegate_to if it has one."""
     profile = cfg.agents[name]

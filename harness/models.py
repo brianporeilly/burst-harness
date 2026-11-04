@@ -97,6 +97,17 @@ class TargetEndpoint:
         return urlsplit(self.base_url).hostname or ""
 
 
+# Each built-in provider's model class, and the extra that installs its SDK.
+REQUIRES = {
+    "anthropic": ("strands.models.anthropic", "AnthropicModel", "anthropic"),
+    "openai": ("strands.models.openai", "OpenAIModel", "openai"),
+    "bedrock": ("strands.models.bedrock", "BedrockModel", "bedrock"),
+    "llamacpp": ("strands.models.llamacpp", "LlamaCppModel", "llamacpp"),
+    "ollama": ("strands.models.ollama", "OllamaModel", "ollama"),
+    "gemini": ("strands.models.gemini", "GeminiModel", "gemini"),
+}
+
+
 def _require(module: str, cls: str, extra: str) -> Any:
     """Import a provider class, turning a missing extra into actionable advice."""
     try:
@@ -209,7 +220,7 @@ def _anthropic(cfg: HarnessConfig) -> "Model":
     Credentials come from token_command/token_file when set (a proxy wanting a
     bearer token), else the SDK's own chain (ANTHROPIC_API_KEY).
     """
-    AnthropicModel = _require("strands.models.anthropic", "AnthropicModel", "anthropic")
+    AnthropicModel = _require(*REQUIRES["anthropic"])
     client_args: dict[str, Any] = {}
     if cfg.base_url:
         client_args["base_url"] = cfg.base_url
@@ -222,7 +233,7 @@ def _anthropic(cfg: HarnessConfig) -> "Model":
 
 def _openai(cfg: HarnessConfig) -> "Model":
     """Any OpenAI-compatible endpoint: OpenAI, vLLM, LM Studio, llama-server's /v1."""
-    OpenAIModel = _require("strands.models.openai", "OpenAIModel", "openai")
+    OpenAIModel = _require(*REQUIRES["openai"])
     base_url = cfg.base_url or os.environ.get("OPENAI_BASE_URL", "")
     api_key = secrets_.get("OPENAI_API_KEY")
     client_args: dict[str, Any] = {"api_key": api_key or "not-needed"}
@@ -232,7 +243,7 @@ def _openai(cfg: HarnessConfig) -> "Model":
 
 
 def _bedrock(cfg: HarnessConfig) -> "Model":
-    BedrockModel = _require("strands.models.bedrock", "BedrockModel", "bedrock")
+    BedrockModel = _require(*REQUIRES["bedrock"])
     kwargs = model_kwargs(cfg, BedrockModel)
     if region := os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         kwargs["region_name"] = region
@@ -241,7 +252,7 @@ def _bedrock(cfg: HarnessConfig) -> "Model":
 
 def _llamacpp(cfg: HarnessConfig) -> "Model":
     """A self-hosted llama.cpp server."""
-    LlamaCppModel = _require("strands.models.llamacpp", "LlamaCppModel", "llamacpp")
+    LlamaCppModel = _require(*REQUIRES["llamacpp"])
     base_url = cfg.base_url or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")
     return _passing_through(LlamaCppModel)(base_url=base_url, timeout=cfg.model_timeout,
                                            **model_kwargs(cfg, LlamaCppModel, cap_in_params=True))
@@ -275,13 +286,13 @@ def _passing_through(LlamaCppModel: Any) -> Any:
 
 
 def _ollama(cfg: HarnessConfig) -> "Model":
-    OllamaModel = _require("strands.models.ollama", "OllamaModel", "ollama")
+    OllamaModel = _require(*REQUIRES["ollama"])
     host = cfg.base_url or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
     return OllamaModel(host=host, **model_kwargs(cfg, OllamaModel))
 
 
 def _gemini(cfg: HarnessConfig) -> "Model":
-    GeminiModel = _require("strands.models.gemini", "GeminiModel", "gemini")
+    GeminiModel = _require(*REQUIRES["gemini"])
     client_args: dict[str, Any] = {}
     if key := secrets_.first(("GOOGLE_API_KEY", "GEMINI_API_KEY")):
         client_args["api_key"] = key
@@ -456,6 +467,15 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
             return False
 
     return LoggedRetries()
+
+
+def check_provider(name: str) -> None:
+    """Raise ProviderError unless `name` could build a model here: a built-in whose SDK is installed, or
+    a plugin that loads. What build_model would fail on later, found before a run starts."""
+    if name in BUILDERS:
+        _require(*REQUIRES[name])
+    elif _plugin(name) is None:
+        raise ProviderError(f"Unknown provider {name!r}. Available: {', '.join(available())}, or module:function.")
 
 
 def build_model(cfg: HarnessConfig) -> "Model":

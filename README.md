@@ -1010,6 +1010,15 @@ harness --config examples/agents/profiles.toml --config examples/agents/front-do
   --repo-url https://github.com/me/proj.git --target podman start fix-flake --task "..."
 ```
 
+Before a run starts, and before any sandbox, the harness checks that every
+profile the run may call can load its provider here: the lead (`--agent`, or
+the router and what it picks from) and whoever a possible lead delegates to.
+A hosted profile on `provider = "openai"` needs the `openai` extra, and
+without it the run stops with that profile's name and the missing package.
+Otherwise every delegation to it would fail and the lead would carry on
+alone. Profiles that are only defined aren't checked, and neither are runs
+with `--engine claude-code`.
+
 `HARNESS_CONFIG` is the same list (os.pathsep-separated), and `HARNESS_AGENTS`
 takes the profiles as JSON. That is how the orchestrator's bursts get them:
 set either in its environment, along with `HARNESS_ROUTER`. The burst report

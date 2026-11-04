@@ -112,10 +112,46 @@ def test_a_delegate_that_fails_is_reported_to_the_lead(tmp_path, llama, capsys):
         {"tool": "delegate", "args": {"to": "nobody", "task": "anything"}},
         {"tool": "finish_report", "args": {"report": "carried on"}},
     ])
-    spec, cfg = _job(tmp_path, {"delegate_to": ["helper"], "agents": {"helper": {"provider": "no_such_module:build"}}})
+    spec, cfg = _job(tmp_path, {"delegate_to": ["helper"], "agents": {"helper": {"provider": "tests.fake_provider:plain"}}})
     assert job.run(spec, replace(cfg, base_url=lead), acquire=_local(tmp_path)) == 0
     results = [fake_llama._text(m["content"]) for m in lead_requests[-1]["messages"] if m.get("role") == "tool"]
     assert results[0].startswith("helper failed:") and "no agent 'nobody'" in results[1]
+
+
+def test_a_profile_the_run_may_use_whose_provider_cannot_load_stops_it_at_the_start(tmp_path, capsys, monkeypatch):
+    from harness import models
+
+    def missing(module, cls, extra):
+        if extra == "openai":
+            raise models.ProviderError("OpenAIModel needs an optional dependency")
+
+    monkeypatch.setattr(models, "_require", missing)
+    hosted = {"provider": "openai", "base_url": "https://llm.example.com/v1", "model_id": "h"}
+    profiles = {"helper": hosted, "ghost": {"provider": "no_such_module:build"}, "local": {"provider": "llamacpp"},
+                "spare": hosted, "triage": {"provider": "llamacpp"}}
+
+    def check(**settings):
+        agents.check_providers(replace(HarnessConfig.load(None, {"agents": profiles}), **settings))
+
+    check()  # nothing uses them: profiles only defined are not checked
+    check(delegate_to=("local",), agent="local")
+    check(delegate_to=("helper",), engine="claude-code")  # Claude Code uses no profiles
+    with pytest.raises(agents.AgentsError, match=r"\[agents.helper\] provider openai: OpenAIModel needs"):
+        check(delegate_to=("helper",))
+    with pytest.raises(agents.AgentsError) as caught:
+        check(router="triage", route_to=("local", "ghost"))
+    assert "[agents.ghost] provider no_such_module:build: Could not load" in str(caught.value)
+    assert "helper" not in str(caught.value) and "spare" not in str(caught.value)
+    assert agents.in_use(replace(HarnessConfig.load(None, {"agents": {**profiles, "local": {
+        "provider": "llamacpp", "delegate_to": ["spare"]}}}), router="triage", route_to=("local",),
+        delegate_to=("helper",))) == ["local", "triage", "helper", "spare"]
+
+    # A job stops before its sandbox is acquired.
+    spec, cfg = _job(tmp_path, {"delegate_to": ["helper"], "agents": {"helper": hosted}})
+    acquired = []
+    with pytest.raises(job.JobError, match="cannot be loaded"):
+        job.run(spec, cfg, acquire=lambda *a: acquired.append(a))
+    assert not acquired
 
 
 def test_a_tasks_route_is_chosen_once_and_kept(tmp_path, llama, capsys):

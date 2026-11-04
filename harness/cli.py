@@ -223,6 +223,10 @@ def _open(args: argparse.Namespace) -> HarnessContext:
     cfg = HarnessConfig.load(None, overrides)
     if cfg.engine not in ENGINES:
         raise SystemExit(f"Unknown engine {cfg.engine!r}. Use {' or '.join(ENGINES)}.")
+    try:
+        agents.check_providers(cfg)  # before a sandbox starts, not when a delegate is first called
+    except agents.AgentsError as err:
+        raise SystemExit(str(err)) from err
     repo_toml_read = False
     if cfg.target == "local" and not cfg.repo_url:
         # An existing local checkout: its config file is readable before anything else.
