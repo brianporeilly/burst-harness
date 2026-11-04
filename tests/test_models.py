@@ -158,3 +158,29 @@ def test_a_server_that_went_away_is_backed_off_and_retried(caplog, monkeypatch):
     timeout = _after(httpx.ConnectTimeout("timed out"))
     asyncio.run(strategy._handle_after_model_call(timeout))
     assert not timeout.retry
+
+
+def test_strands_openai_reasoning_warning_is_said_once(caplog):
+    """Strands warns per message holding reasoning, on every request; the harness keeps the first."""
+    import logging
+
+    from strands.models.openai import OpenAIModel
+
+    from harness.models import _ReasoningWarnedOnce
+
+    strands_openai = logging.getLogger("strands.models.openai")
+    for found in [f for f in strands_openai.filters if isinstance(f, _ReasoningWarnedOnce)]:
+        strands_openai.removeFilter(found)  # once per process: start from none said
+    build_model(HarnessConfig(provider="openai", base_url="http://127.0.0.1:9/v1", model_id="m"))
+    build_model(HarnessConfig(provider="openai", base_url="http://127.0.0.1:9/v1", model_id="m"))  # one filter
+    thought = {"role": "assistant", "content": [{"reasoningContent": {"reasoningText": {"text": "hmm"}}},
+                                                {"text": "done"}]}
+    history = [{"role": "user", "content": [{"text": "go"}]}, thought, thought, thought]
+    with caplog.at_level("WARNING", logger="strands.models.openai"):
+        for _ in range(3):  # three requests, three messages with reasoning each: nine warnings from Strands
+            sent = OpenAIModel.format_request_messages(history)
+    assert sum(isinstance(f, _ReasoningWarnedOnce) for f in strands_openai.filters) == 1
+    warned = [r.getMessage() for r in caplog.records if "reasoningContent" in r.getMessage()]
+    assert len(warned) == 1 and warned[0].endswith("said once, not for every message.")
+    # Strands still drops the reasoning, and only that.
+    assert sent[1:] == [{"role": "assistant", "content": [{"text": "done", "type": "text"}]}] * 3

@@ -231,9 +231,34 @@ def _anthropic(cfg: HarnessConfig) -> "Model":
     return AnthropicModel(client_args=client_args, **model_kwargs(cfg, AnthropicModel, messages_api=True))
 
 
+class _ReasoningWarnedOnce(logging.Filter):
+    """Strands' OpenAI model warns, on every request, once for each message in the history that
+    holds reasoning, then drops the reasoning (Chat Completions has no place for it): by a run's
+    fiftieth call, fifty lines a request. The first is kept, saying so; the rest are dropped."""
+
+    MESSAGE = "reasoningContent is not supported"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.said = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.MESSAGE not in record.getMessage():
+            return True
+        if self.said:
+            return False
+        self.said = True
+        record.msg = f"{record.getMessage()} It is left out of what is sent; said once, not for every message."
+        record.args = None
+        return True
+
+
 def _openai(cfg: HarnessConfig) -> "Model":
     """Any OpenAI-compatible endpoint: OpenAI, vLLM, LM Studio, llama-server's /v1."""
     OpenAIModel = _require(*REQUIRES["openai"])
+    strands_openai = logging.getLogger("strands.models.openai")
+    if not any(isinstance(found, _ReasoningWarnedOnce) for found in strands_openai.filters):
+        strands_openai.addFilter(_ReasoningWarnedOnce())
     base_url = cfg.base_url or os.environ.get("OPENAI_BASE_URL", "")
     api_key = secrets_.get("OPENAI_API_KEY")
     client_args: dict[str, Any] = {"api_key": api_key or "not-needed"}
