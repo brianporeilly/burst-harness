@@ -26,7 +26,10 @@ class Harness:
         self.started = []  # (argv, process)
 
     def __call__(self, argv, **kwargs):
-        process = FakeProcess(argv, kwargs["stdout"].name)
+        # Through the burst wrapper, which writes the output: the harness's argv is what follows "--".
+        assert argv[1:3] == ["-m", "orchestrator.burst"] and argv[4] == "--", argv
+        output, argv = argv[3], argv[5:]
+        process = FakeProcess(argv, output)
         process.env = kwargs["env"]
         self.started.append((argv, process))
         return process

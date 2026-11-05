@@ -361,11 +361,12 @@ class TaskRunner:
             output.flush()
             # A question's run is found by its id, which is set here.
             run = {} if record.get("repo") else {job.RUN_ID_ENV: job.new_run_id()}
+            # Through orchestrator.burst, which writes the output: as a burst on a cluster will be run.
             process = subprocess.Popen(
-                self._argv(record), cwd=REPO,
-                env=credentials.for_run(credentials.for_task(self._config(record)),
-                                        {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
-                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
+                [sys.executable, "-m", "orchestrator.burst", str(directory / OUTPUT), "--", *self._argv(record)],
+                cwd=REPO, env=credentials.for_run(credentials.for_task(self._config(record)),
+                                                  {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=output, start_new_session=True,
             )
         record["bursts"].append({"started": _now(), "message": record.get("message"),
                                  **({"run": run[job.RUN_ID_ENV]} if run else {})})

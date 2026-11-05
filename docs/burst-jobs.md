@@ -152,7 +152,8 @@ thread `_wait()` runs in now; no watch to keep open.
 ## Steps
 
 1. The wrapper (`orchestrator/burst.py`), used by today's subprocesses: no
-   change in behaviour, and the SIGTERM path tested locally.
+   change in behaviour, and the SIGTERM path tested locally. Done
+   (2026-11-05), for tasks and questions; scheduled jobs come with step 6.
 2. A launcher in `tasks.py` with two kinds, subprocess and Job: start, follow,
    stop, reattach. Records keep a `launch` (kind and name) in place of `pid`.
    Tested against a fake `kubectl`, as the agent-sandbox tests do.
