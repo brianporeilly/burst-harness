@@ -1,6 +1,6 @@
 [project]
 name = "burst-harness"
-version = "0.1.2"
+version = "0.2.0"
 description = "A contained Strands task runner, and the orchestrator that runs its sessions, jobs and tasks."
 readme = "README.md"
 requires-python = ">=3.13"

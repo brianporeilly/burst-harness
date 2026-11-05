@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.2.0 (2026-11-05)
+
+### Features
+
+- **claude-code**: Claude Code leads and delegates to Strands profiles
+  ([#73](https://github.com/brianporeilly/strands-harness/pull/73),
+  [`11304f8`](https://github.com/brianporeilly/strands-harness/commit/11304f8455a5860af6be664d80a70061fe036fad))
+
+
 ## v0.1.2 (2026-11-05)
 
 ### Bug Fixes
