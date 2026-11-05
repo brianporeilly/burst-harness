@@ -135,7 +135,9 @@ def test_a_profile_the_run_may_use_whose_provider_cannot_load_stops_it_at_the_st
 
     check()  # nothing uses them: profiles only defined are not checked
     check(delegate_to=("local",), agent="local")
-    check(delegate_to=("helper",), engine="claude-code")  # Claude Code uses no profiles
+    check(router="triage", route_to=("ghost",), engine="claude-code")  # Claude Code is not routed
+    with pytest.raises(agents.AgentsError, match=r"\[agents.helper\]"):  # but it delegates
+        check(delegate_to=("helper",), engine="claude-code")
     with pytest.raises(agents.AgentsError, match=r"\[agents.helper\] provider openai: OpenAIModel needs"):
         check(delegate_to=("helper",))
     with pytest.raises(agents.AgentsError) as caught:

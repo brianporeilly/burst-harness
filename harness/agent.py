@@ -7,11 +7,13 @@ is why there is exactly one construction path.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 import signal
 import threading
 import weakref
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from strands import Agent, tool
@@ -172,6 +174,22 @@ def _interrupted(signum: int, frame: Any) -> None:
     signal.default_int_handler(signum, frame)
 
 
+@contextlib.contextmanager
+def sigint_cancels() -> Iterator[None]:
+    """While it lasts, a SIGINT cancels the agents running in call() before raising KeyboardInterrupt: for call()
+    itself, and for what waits on delegates in other threads (claude_lead.py). Only the main thread may set it, and
+    only Python's own handler is replaced; elsewhere, or within another, it does nothing."""
+    previous = None
+    if threading.current_thread() is threading.main_thread() \
+            and signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        previous = signal.signal(signal.SIGINT, _interrupted)
+    try:
+        yield
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
+
+
 def call(agent: Agent, prompt: Any = None) -> Any:
     """`agent(prompt)`, carrying on when a reply is cut off at the output limit,
     and when the harness stopped the loop to start it again (RESTART_EVERY). A
@@ -184,20 +202,13 @@ def call(agent: Agent, prompt: Any = None) -> Any:
     times in a row, the count starting again once a reply is finished. Past
     that, OutputLimit.
     """
-    # Only the main thread may set it, and only Python's own handler is replaced (a delegate's call, in another
-    # thread, is cancelled by the lead's).
-    previous = None
-    if threading.current_thread() is threading.main_thread() \
-            and signal.getsignal(signal.SIGINT) is signal.default_int_handler:
-        previous = signal.signal(signal.SIGINT, _interrupted)
     if isinstance(agent, Agent):
         _running.add(agent)
     try:
-        return _call(agent, prompt)
+        with sigint_cancels():  # a delegate's call, in another thread, is cancelled by its lead's
+            return _call(agent, prompt)
     finally:
         _running.discard(agent)
-        if previous is not None:
-            signal.signal(signal.SIGINT, previous)
 
 
 def _call(agent: Agent, prompt: Any) -> Any:
@@ -237,7 +248,20 @@ def _call(agent: Agent, prompt: Any) -> Any:
 
 
 def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]], state_dir: str) -> Any:
-    """The lead's delegate tool, for cfg.delegate_to's profiles; None when there are none.
+    """The lead's delegate tool, for cfg.delegate_to's profiles; None when there are none."""
+    delegate = delegate_function(target, cfg, usage, state_dir)
+    return tool(delegate, name="delegate", description=delegate_description(cfg)) if delegate else None
+
+
+def delegate_description(cfg: HarnessConfig) -> str:
+    return ("Hand a piece of the work to another agent, and get its report back. The agents:\n"
+            + agents.roster(cfg, cfg.delegate_to))
+
+
+def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]],
+                      state_dir: str) -> Callable[[str, str], str] | None:
+    """What a delegate call does, for cfg.delegate_to's profiles: delegate(to, task) -> the report.
+    None when there are none. A Strands lead has it as a tool; a Claude Code lead over MCP (claude_lead.py).
 
     Each call runs a fresh agent with that profile's model, the same sandbox and
     tools, and the git guardrails, and returns its final reply. Calls run one at
@@ -285,9 +309,7 @@ def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[
             text = text[:REPORT_CHARS] + "\n[harness] The rest of the report was cut."
         return text + warning
 
-    description = ("Hand a piece of the work to another agent, and get its report back. The agents:\n"
-                   + agents.roster(cfg, names))
-    return tool(delegate, name="delegate", description=description)
+    return delegate
 
 
 def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: str = "",

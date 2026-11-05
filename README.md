@@ -1020,7 +1020,17 @@ There are three ways to use them, and they combine:
   it doesn't commit. Only its final report comes back, so the lead's context
   stays small. Delegates run one at a time, because they share the checkout,
   and never delegate further. A profile's own `delegate_to` applies when it
-  leads. Works with `--engine strands` only.
+  leads.
+
+  With `--engine claude-code`, Claude Code is the lead, in headless runs
+  (`run`, `start`, `resume`, jobs) but not `chat`. The harness offers it the
+  `delegate` tool as an MCP server in the driver (the Claude Agent SDK's
+  in-process server). Its calls come back over `claude`'s own stdin and
+  stdout, through the same `podman exec` or `kubectl exec` that runs it.
+  Nothing listens in the sandbox, and no new credential goes in. Each delegate
+  runs on the driver as a Strands lead's does: the profile's model is called
+  from there, and its tools run in the sandbox. Claude Code commits as usual,
+  and the burst report adds each delegate's token use to Claude Code's own.
 
   Two profile settings shape a delegate whatever the lead's brief says.
   `prompt` is added to its instructions, so a role keeps its stance.
@@ -1074,8 +1084,9 @@ the router and what it picks from) and whoever a possible lead delegates to.
 A hosted profile on `provider = "openai"` needs the `openai` extra, and
 without it the run stops with that profile's name and the missing package.
 Otherwise every delegation to it would fail and the lead would carry on
-alone. Profiles that are only defined aren't checked, and neither are runs
-with `--engine claude-code`.
+alone. Profiles that are only defined aren't checked. With `--engine
+claude-code`, only the profiles it delegates to are checked, since it is never
+routed.
 
 `HARNESS_CONFIG` is the same list (os.pathsep-separated), and `HARNESS_AGENTS`
 takes the profiles as JSON. That is how the orchestrator's bursts get them:

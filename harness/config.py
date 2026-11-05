@@ -150,7 +150,7 @@ class HarnessConfig:
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Run as this profile rather than the top-level model (and without routing).
     agent: str = ""
-    # Profiles the lead may hand work to with its delegate tool (engine=strands).
+    # Profiles the lead may hand work to with its delegate tool (a Strands lead, or Claude Code's headless runs).
     delegate_to: tuple[str, ...] = ()
     # A profile that picks which profile does a new task or job, from route_to
     # (all profiles but the router, when empty). Skipped when a run names its

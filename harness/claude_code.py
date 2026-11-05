@@ -23,6 +23,10 @@ you supply (``claude_settings``, merged into the target's
 answers no prompts on your behalf. The git rules (git_policy.py) are added to
 every invocation as a PreToolUse hook via ``--settings``.
 
+With ``delegate_to``, Claude Code leads and hands pieces of the work to Strands
+profiles through a ``delegate`` tool: headless runs then go through the Claude
+Agent SDK, its tool answered by the driver (see claude_lead.py).
+
 Credentials: unlike the Strands engine, the agent loop runs *in* the target, so
 model credentials must be there while it runs. They are written to a 0600 file
 in the target from the driver's environment (never argv) and removed afterwards.
@@ -53,7 +57,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import credentials, git, git_policy, mcp, models, state, terminal
+from . import agents, credentials, git, git_policy, mcp, models, state, terminal
 from .agent_sandbox import label_value
 from .containers import MODEL_CREDENTIALS
 from .context import HarnessContext
@@ -145,6 +149,8 @@ class ClaudeCodeEngine:
 
     # Keeping a provider plugin's endpoint token current, from prepare() to cleanup(); None without one.
     keeper: TokenKeeper | None = None
+    # delegate(to, task) for cfg.delegate_to's profiles, from prepare(); None without them.
+    delegate: Callable[[str, str], str] | None = None
 
     def __init__(self, ctx: HarnessContext) -> None:
         if not isinstance(ctx.target, SubprocessTarget):
@@ -169,6 +175,17 @@ class ClaudeCodeEngine:
                 "(the burst-harness-sandbox image has both)."
             )
         self._exclude_outcome()
+        if cfg.delegate_to:
+            from .agent import delegate_function
+            from .claude_lead import SERVER
+
+            if SERVER in mcp.servers(cfg):
+                raise ClaudeCodeError(f"mcp {SERVER} is the name of the harness's own server, for delegate_to: "
+                                      "rename yours.")
+            state_dir = self.state_dir()
+            state_dir.mkdir(parents=True, exist_ok=True)
+            self.delegate = delegate_function(self.target, cfg, self.ctx.delegated, str(state_dir))
+            print(f"Claude Code may delegate to: {', '.join(agents.describe(cfg, n) for n in cfg.delegate_to)}.")
         if not self.remote:
             # Local: Claude runs as you, with your own ~/.claude config and
             # environment. The harness does not touch either.
@@ -250,6 +267,10 @@ class ClaudeCodeEngine:
             self.target.run_shell(f"rm -f {shlex.quote(ENV_FILE)}", check=False, cwd="/")
             self.has_env_file = False
 
+    def state_dir(self) -> Path:
+        """The driver's state for this run: where a delegate keeps what it offloads, for a local target."""
+        return self.ctx.cfg.resolve_state_dir(self.ctx.state_key)
+
     def _upload(self, path: str, content: str) -> None:
         """Write a file in the target through stdin, so contents never touch argv."""
         parent = shlex.quote(str(Path(path).parent))
@@ -287,13 +308,22 @@ class ClaudeCodeEngine:
         model = [] if any(arg == "--model" or arg.startswith("--model=") for arg in yours) else ["--model", cfg.model_id]
         # The MCP servers you configured, with their tools allowed: you chose them, and
         # nobody is there to approve each call.
-        servers = ["--mcp-config", json.dumps(mcp.claude(cfg)), "--allowedTools", ",".join(mcp.claude_tools(cfg))] \
-            if mcp.servers(cfg) else []
+        configured, allowed = (mcp.claude(cfg)["mcpServers"], mcp.claude_tools(cfg)) if mcp.servers(cfg) else ({}, [])
+        lead = ""
+        if self.delegate is not None:
+            from .agent import LEAD_PROMPT
+            from .claude_lead import SERVER, TOOL
+
+            # Answered in the driver, over this claude's stdin and stdout (claude_lead.py).
+            configured, allowed = {**configured, SERVER: {"type": "sdk", "name": SERVER}}, [*allowed, TOOL]
+            lead = LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to))
+        servers = ["--mcp-config", json.dumps({"mcpServers": configured}), "--allowedTools", ",".join(allowed)] \
+            if configured else []
         argv = [
             "claude", *args, *model,
             "--permission-mode", cfg.claude_permission_mode,
             "--settings", self.hook_settings(),
-            "--append-system-prompt", self.rules(),
+            "--append-system-prompt", self.rules() + lead,
             *servers,
             *yours,
         ]
@@ -325,11 +355,17 @@ class ClaudeCodeEngine:
             print(f"\n! No usable outcome. Uncommitted work left as-is:\n{git.dirty_summary(self.target)}", file=sys.stderr)
 
     def _run(self, prompt: str, *, resume: bool) -> bool:
-        """One `claude -p` invocation. False if claude itself failed."""
-        args = ["-p", prompt, "--output-format", "stream-json", "--verbose"]
-        if resume:
-            args.append("--continue")
-        code = self.target.stream_shell(self.command(*args), self._on_line)
+        """One `claude -p` invocation (a session through the SDK, when delegating). False if claude itself failed."""
+        args = ["--output-format", "stream-json", "--verbose", *(["--continue"] if resume else [])]
+        if self.delegate is not None:
+            from . import claude_lead
+            from .agent import delegate_description
+
+            # The prompt goes on stdin, as the SDK's first message.
+            argv = self.target._wrap(self.command(*args, *claude_lead.STREAM_INPUT), stdin=True)
+            code = claude_lead.run(argv, prompt, self._on_line, self.delegate, delegate_description(self.ctx.cfg))
+        else:
+            code = self.target.stream_shell(self.command("-p", prompt, *args), self._on_line)
         if code != 0:
             print(f"! claude exited with status {code}; not retrying.", file=sys.stderr)
             return False
@@ -410,6 +446,9 @@ class ClaudeCodeEngine:
     def interactive(self) -> None:
         """Attach this terminal to Claude Code in the target, in tmux when available."""
         ctx = self.ctx
+        if self.delegate is not None:
+            print("! A chat has no delegate tool: delegate_to is for headless runs (run, start, resume, jobs).")
+            self.delegate = None
         claude = self.command()
         use_tmux = not self.target.missing_commands(("tmux",))
         if use_tmux:
@@ -438,15 +477,17 @@ class ClaudeCodeEngine:
     # --- reporting -------------------------------------------------------
 
     def report(self) -> str:
+        from .cli import _delegated
+
         if self.result is None:
-            return "  no Claude Code result recorded"
+            return "  no Claude Code result recorded" + _delegated(self.ctx.delegated)
         usage = self.result.get("usage") or {}
         return (
             f"  {self.turns} turn(s)  input {usage.get('input_tokens', 0):,}  "
             f"output {usage.get('output_tokens', 0):,}  "
             f"cache read {usage.get('cache_read_input_tokens', 0):,}  "
             f"cost ${self.cost:.3f} (as reported by Claude Code)"
-        )
+        ) + _delegated(self.ctx.delegated)
 
 
 def _brief(value: Any, limit: int = 120) -> str:

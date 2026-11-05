@@ -69,11 +69,14 @@ CACHE_OUTSIDE_INPUT = frozenset(("anthropic", "bedrock"))
 
 def _report(agent: Any, model_id: str, provider: str = "anthropic",
             delegated: dict[str, dict[str, Any]] | None = None) -> str:
-    report = _usage(agents.usage_of(agent), model_id, provider)
-    for name, used in (delegated or {}).items():
-        report += (f"\n delegated to {name} ({used['provider']} {used['model_id']}), {used['calls']} time(s):\n"
-                   + _usage(used, str(used["model_id"]), str(used["provider"]), lead=False))
-    return report
+    return _usage(agents.usage_of(agent), model_id, provider) + _delegated(delegated)
+
+
+def _delegated(delegated: dict[str, dict[str, Any]] | None) -> str:
+    """What each delegate used, for a burst report (Strands' or Claude Code's)."""
+    return "".join(f"\n delegated to {name} ({used['provider']} {used['model_id']}), {used['calls']} time(s):\n"
+                   + _usage(used, str(used["model_id"]), str(used["provider"]), lead=False)
+                   for name, used in (delegated or {}).items())
 
 
 def _usage(usage: dict[str, Any], model_id: str, provider: str, *, lead: bool = True) -> str:

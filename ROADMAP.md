@@ -528,12 +528,19 @@ Next, in this order (2026-11-04):
    when the repo has one (`RELEASE_APP_ID`, `RELEASE_APP_KEY`), which a
    protected main can let past its rules; until then, with the workflow's
    own token. Next: home-ops pins `X.Y.Z@sha256:...` in place of `sha-...`.
-8. Claude as the lead, handing work to Strands profiles: the harness offers
-   Claude Code a `delegate` tool over MCP, through the gateway's route back to
-   the driver, which runs the profile there as a delegate is run now. No new
-   credentials go into the sandbox. After it, maybe the other way round
-   (Claude Code as a profile a Strands lead delegates to), which would put
-   Claude's token in the sandbox for the run.
+8. Claude as the lead, handing work to Strands profiles: built (2026-11-04).
+   With engine=claude-code and `delegate_to`, headless runs go through the
+   Claude Agent SDK, whose in-process MCP server offers Claude Code a
+   `delegate` tool. Its calls travel over `claude`'s own stdin and stdout,
+   through the exec that runs it, rather than a route through the gateway as
+   first planned: nothing listens in the sandbox, and no new credentials go
+   in. The driver runs each delegate as a Strands lead's (the same function).
+   The SDK is built from its source package, since its wheels carry a 125 MB
+   Claude Code binary the harness never runs. `chat` has no delegate tool.
+   Checked on podman: Haiku leading in the sandbox, one delegation to a
+   profile on a fake llama.cpp server, its report back, and a pause. After
+   it, maybe the other way round (Claude Code as a profile a Strands lead
+   delegates to), which would put Claude's token in the sandbox for the run.
 
 ## Open
 

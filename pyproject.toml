@@ -14,6 +14,8 @@ dependencies = [
     "cryptography==50.0.2",
     # Its Slack bot (orchestrator/slack.py): Socket Mode, with no dependencies of its own.
     "slack-sdk==3.46.0",
+    # Claude Code as the lead, with a delegate tool (harness/claude_lead.py). Built from source: see [tool.uv].
+    "claude-agent-sdk==0.2.170",
 ]
 
 [project.optional-dependencies]
@@ -67,3 +69,7 @@ parse_squash_commits = false
 
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"
+
+[tool.uv]
+# The SDK's wheels carry a Claude Code binary (about 125 MB) that the harness never runs: `claude` is the target's.
+no-binary-package = ["claude-agent-sdk"]

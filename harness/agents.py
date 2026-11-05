@@ -38,7 +38,8 @@ Three ways to use them, which combine:
   those profiles. Each piece runs as a fresh agent with the same sandbox and
   tools, and only its final report comes back, so the lead's context stays
   small. A profile's own delegate_to, when it has one, applies when it is the
-  lead; a delegate never delegates further. engine=strands only.
+  lead; a delegate never delegates further. With engine=claude-code, Claude
+  Code is the lead, given the tool over MCP (claude_lead.py), in headless runs.
 * router = "triage" (--router): before a new task's first burst (or a job's
   run), that profile reads the task and picks which profile of route_to (all
   but itself, when empty) does it. The choice is kept with the task, so every
@@ -134,10 +135,13 @@ def in_use(cfg: HarnessConfig) -> list[str]:
 def check_providers(cfg: HarnessConfig) -> None:
     """Every profile the run may call has a provider that can build a model here (its SDK installed).
     Found at the start, rather than as a delegate or a router failing halfway through. Raises AgentsError."""
-    if cfg.engine != "strands":  # Claude Code picks its own model; profiles are not used
-        return
+    if cfg.engine == "strands":
+        names = in_use(cfg)
+    else:  # Claude Code is its own model: what it delegates to, alone
+        lead = cfg.agents[cfg.agent].get("delegate_to") if cfg.agent else None
+        names = list(lead or cfg.delegate_to)
     problems = []
-    for name in in_use(cfg):
+    for name in names:
         provider = str(cfg.agents[name].get("provider") or HarnessConfig().provider)
         try:
             models.check_provider(provider)
