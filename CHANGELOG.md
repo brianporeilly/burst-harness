@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.1.2 (2026-11-05)
+
+### Bug Fixes
+
+- **agent**: A SIGINT stops a run at once, not when Strands' loop returns
+  ([#75](https://github.com/brianporeilly/strands-harness/pull/75),
+  [`1f5146b`](https://github.com/brianporeilly/strands-harness/commit/1f5146b2c546a2e31aa8f0c040aa8cf51c3a8fce))
+
+
 ## v0.1.1 (2026-11-05)
 
 ### Bug Fixes
