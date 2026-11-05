@@ -722,6 +722,24 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
 - **Stop** sends the burst Ctrl-C, so the harness cleans up after itself;
   **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
   off.
+- On a cluster, `--bursts job` (`ORCHESTRATOR_BURSTS=job`) runs each burst as a
+  Kubernetes Job of its own instead of a subprocess (docs/burst-jobs.md). It
+  has its own memory, and it goes on while the orchestrator restarts: a
+  restarted orchestrator follows the Jobs still running instead of starting
+  them again. The Job is made in the orchestrator's namespace, from its own
+  image. It is given no credentials, only a token good once for fetching
+  them from the orchestrator as it starts. Stop deletes the Job, and its pod
+  gets 30 seconds to clean up. Settings:
+  - `ORCHESTRATOR_BURST_VOLUME` (required): the PersistentVolumeClaim
+    (ReadWriteMany) that the state directory is on. Each burst's pod mounts
+    it at the same path.
+  - `ORCHESTRATOR_BURST_ACCOUNT`: the bursts' service account, which claims
+    and drives sandboxes (default `burst-task`).
+  - `ORCHESTRATOR_BURST_MEMORY`: the memory limit (default `2Gi`).
+  - `ORCHESTRATOR_BURST_DEADLINE`: the longest a burst can run (default `8h`).
+  - `ORCHESTRATOR_BURST_IMAGE`, `ORCHESTRATOR_BURST_NAMESPACE`,
+    `ORCHESTRATOR_BURST_HANDOFF_URL`: by default, the orchestrator's own image,
+    namespace and pod address.
 
 **API tokens.** For scripts, other machines and bots, make a token in the Settings
 tab (`POST /api/tokens` with `{"name": ...}`). It is shown once, and the

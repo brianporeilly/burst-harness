@@ -118,19 +118,22 @@ plus `_model_env()`.
 - **Image:** the orchestrator's own (read from its pod), so one pin in
   home-ops moves both. `ORCHESTRATOR_BURST_IMAGE` overrides it. A burst
   started before a rollout keeps the old image until it ends.
-- **Name:** `burst-SLUG-N` (N, the burst's number): creating it twice fails,
-  so a burst can't be started twice by a restart racing a dispatch.
+- **Name:** `burst-SLUG-N-XXXX` (N, the burst's number; four random hex
+  digits, so a task removed and made again under its name doesn't meet its
+  old Jobs, kept for a day). One burst per task is the records' rule, under
+  the runner's lock.
 - `backoffLimit: 0` (the orchestrator decides about restarts, as now),
   `ttlSecondsAfterFinished` of a day, and `activeDeadlineSeconds` as a backstop
   (`ORCHESTRATOR_BURST_DEADLINE`, default 8h).
 - **Resources:** requests and a memory limit from `ORCHESTRATOR_BURST_MEMORY`
-  (default 2Gi), with `terminationGracePeriodSeconds` = `CANCEL_GRACE` + 10.
+  (default 2Gi), with `terminationGracePeriodSeconds` = `CANCEL_GRACE`.
 - Read-only root, non-root, `HOME=/tmp`, as the orchestrator.
 
 ### 6. Stop
 
-Stop deletes the burst's pod with a grace of `CANCEL_GRACE`. Kubernetes sends
-SIGTERM; the wrapper passes it on to the harness as SIGINT, which is what
+Stop deletes the burst's Job (its pod with it, the pod's grace being
+`CANCEL_GRACE`), so the Job controller can't start another pod in its place.
+Kubernetes sends SIGTERM; the wrapper passes it on to the harness as SIGINT, which is what
 Ctrl-C and today's Stop send, so the harness releases its sandbox, or keeps
 one with work not yet pushed, without changes of its own. Past the grace,
 Kubernetes kills it, as today's timer does.
@@ -154,10 +157,15 @@ thread `_wait()` runs in now; no watch to keep open.
 1. The wrapper (`orchestrator/burst.py`), used by today's subprocesses: no
    change in behaviour, and the SIGTERM path tested locally. Done
    (2026-11-05), for tasks and questions; scheduled jobs come with step 6.
-2. A launcher in `tasks.py` with two kinds, subprocess and Job: start, follow,
-   stop, reattach. Records keep a `launch` (kind and name) in place of `pid`.
-   Tested against a fake `kubectl`, as the agent-sandbox tests do.
+2. A launcher with two kinds, subprocess and Job: start, follow, stop,
+   reattach. Records keep the Job's name in place of `pid`. Tested against a
+   fake `kubectl`. Done (2026-11-05): `orchestrator/launch.py`, turned on with
+   `--bursts job`.
 3. The credential exchange: one-time tokens, the endpoint, the wrapper's side.
+   Done with step 2, since a Job can't work without its credentials.
+   A token is kept in the orchestrator's memory, so a restart between making
+   a Job and its pod starting (seconds) fails that burst, which can then be
+   continued.
 4. home-ops: the RWX volume and the one-off copy, `burst-task` and its
    bindings, the orchestrator's new Role, the ingress rule, and
    `ORCHESTRATOR_BURSTS=job`.

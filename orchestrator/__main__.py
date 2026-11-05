@@ -67,6 +67,7 @@ from harness.session import SessionError, seconds
 from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
+from .launch import Jobs, LaunchError
 from .settings import CredentialStore, SettingsError, load_key
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
@@ -98,6 +99,10 @@ def main() -> None:
                         metavar="N", help="How many tasks run at once; the rest wait (default 1).")
     parser.add_argument("--task-ttl", default=os.environ.get("ORCHESTRATOR_TASK_TTL", "4h"), metavar="DURATION",
                         help="How long a task's sandbox claim lives, on a cluster (default 4h).")
+    parser.add_argument("--bursts", choices=("subprocess", "job"),
+                        default=os.environ.get("ORCHESTRATOR_BURSTS", "").strip() or "subprocess",
+                        help="How a task's bursts run: subprocesses of this orchestrator (default), or on a cluster "
+                             "Kubernetes Jobs of their own (ORCHESTRATOR_BURST_*; docs/burst-jobs.md).")
     parser.add_argument("--slack-user", action="append", default=[], metavar="ID",
                         help="A Slack user ID that may start tasks from Slack. Repeatable.")
     args = parser.parse_args()
@@ -109,6 +114,12 @@ def main() -> None:
     except (ZoneInfoNotFoundError, ValueError, SessionError) as err:
         parser.error(f"--timezone / --catch-up / --task-ttl: {err}")
     base = HarnessConfig.load(None, {})
+    launcher = None
+    if args.tasks and args.bursts == "job":
+        try:
+            launcher = Jobs.from_env(base, args.port)
+        except LaunchError as err:
+            parser.error(f"--bursts job: {err}")
     state = Path(base.state_dir).expanduser()
     # Before anything that runs: tasks recovered and jobs scheduled read credentials from here.
     try:
@@ -136,10 +147,15 @@ def main() -> None:
             print(f"Scheduled in {zone}, missed times run up to {args.catch_up} late"
                   + (", new jobs paused" if args.start_paused else ""))
         jobs.start()
-    tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl) if args.tasks else None
+    tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher) if args.tasks else None
     if tasks:
-        print(f"Tasks in {tasks.root}, {tasks.limit} at a time")
-        for line in tasks.recover():
+        print(f"Tasks in {tasks.root}, {tasks.limit} at a time" + (f", bursts {launcher.describe()}" if launcher else ""))
+        try:
+            recovered = tasks.recover()
+        except LaunchError as err:
+            # Not taken for bursts that are gone: starting them again beside ones still running would be worse.
+            raise SystemExit(f"tasks: could not look at the bursts left running: {err}") from err
+        for line in recovered:
             print(f"tasks: {line}")
         tasks.dispatch()
     slack = SlackBot(tasks, users_from(" ".join([*args.slack_user, os.environ.get(USERS_ENV, "")]))) if tasks else None

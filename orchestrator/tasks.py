@@ -1,7 +1,7 @@
 """Tasks, for the orchestrator: a repo and a prompt, worked on until there is a PR.
 
-A task is `harness run SLUG --task PROMPT` against a repo URL, as a subprocess,
-exactly what the command line would do, with the orchestrator's environment
+A task is `harness run SLUG --task PROMPT` against a repo URL, as a subprocess
+or on a cluster a Kubernetes Job (launch.py), exactly what the command line would do, with the orchestrator's environment
 (its credentials, its target: podman or docker here, agent-sandbox on a
 cluster). Each run of it is a burst. A burst ends in a PR, a pause (the work pushed, with
 questions in the task document), an abandon, or no terminal state at all.
@@ -11,8 +11,9 @@ picks up from the pushed branch in a fresh sandbox, so nothing waits in memory.
 The orchestrator keeps a record per task (tasks/SLUG/task.json under the state
 directory) and the bursts' output beside it. At most `limit` tasks run at once;
 the rest wait in the order they came, in their records, so a restart keeps the
-queue. A burst that was running when the orchestrator stopped is queued again
-on the next start, up to RESTARTS times, which picks the task up from its
+queue. A burst that was running when the orchestrator stopped is followed
+again if it is a Job that is still there, and otherwise queued again on the
+next start, up to RESTARTS times, which picks the task up from its
 branch: what was pushed is kept, anything not yet pushed is redone.
 
 A task with no repo is a question (harness/ask.py): each burst is
@@ -34,12 +35,10 @@ started from Slack keeps where to answer in its record (`slack`).
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -55,6 +54,7 @@ from harness.config import HarnessConfig
 
 from .backend import SpecError, check_model, model_choice, model_settings, task_providers
 from .jobs import OUTPUT, REPO, _iso, _tail, json_file
+from .launch import Launched, LaunchError, Subprocess, granted
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 # owner/repo on GitHub, or a repo's https URL.
@@ -73,8 +73,6 @@ FINISHED = ("pr", "pushed_no_pr", "paused", "abandoned")
 TASK_FILE = "task.json"
 # How many times a burst cut short by the orchestrator stopping is started again.
 RESTARTS = 2
-# How long a cancelled burst gets to release its sandbox before it is killed.
-CANCEL_GRACE = 30
 # States in which nothing is running or waiting to run.
 IDLE = ("pr", "pushed_no_pr", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled",
         "answered")
@@ -101,12 +99,14 @@ def slug_for(prompt: str) -> str:
 
 
 class TaskRunner:
-    def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600) -> None:
+    def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
+                 launcher: Any = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
+        self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
         self.root = base.resolve_state_dir("tasks")
         self.lock = threading.Lock()
-        # slug -> process, for bursts this orchestrator started and that have not ended.
-        self.running: dict[str, subprocess.Popen[bytes]] = {}
+        # slug -> burst, for bursts this orchestrator started (or followed again) and that have not ended.
+        self.running: dict[str, Launched] = {}
         # Marks the records of bursts this orchestrator started, so one left "running" by another is known.
         self.boot = secrets.token_hex(6)
         self.watchers: list[Callable[[str, dict[str, Any]], None]] = []
@@ -252,15 +252,19 @@ class TaskRunner:
                 record["state"] = "cancelled"
                 self._write(record)
                 return _summary(record)
-            process = self.running.get(slug)
-            if record["state"] != "running" or process is None:
+            launched = self.running.get(slug)
+            if record["state"] != "running" or launched is None:
                 raise TasksError(f"{slug} is not running or queued.")
             record["cancelling"] = True
             self._write(record)
-        # SIGINT, as Ctrl-C would: the harness releases its sandbox (or keeps one with uncommitted work).
-        os.killpg(process.pid, signal.SIGINT)
-        threading.Timer(CANCEL_GRACE, _kill, args=(process,)).start()
+        # The harness gets a SIGINT, as for Ctrl-C, and releases its sandbox (or keeps one with work not pushed).
+        self.launcher.stop(launched)
         return _summary(record)
+
+    def handoff(self, token: str) -> dict[str, str] | None:
+        """The credentials kept for a burst's pod under this token, once (launch.Handoffs); None if there are none."""
+        handoffs = getattr(self.launcher, "handoffs", None)
+        return handoffs.take(token) if handoffs is not None and token else None
 
     def remove(self, slug: str) -> None:
         with self.lock:
@@ -283,11 +287,19 @@ class TaskRunner:
     # --- running ---
 
     def recover(self) -> list[str]:
-        """On start: a burst another orchestrator left running is queued again, or failed after RESTARTS."""
-        done = []
+        """On start: a burst another orchestrator left running is followed again if it is still there (a Job),
+        else queued again, or failed after RESTARTS."""
+        done, followed = [], []
         with self.lock:
             for record in self._records():
                 if record.get("state") != "running" or record.get("boot") == self.boot:
+                    continue
+                if (launched := self.launcher.reattach(record)) is not None:
+                    record["boot"] = self.boot
+                    self._write(record)
+                    self.running[record["slug"]] = launched
+                    followed.append((record["slug"], launched, bool(record.get("cancelling"))))
+                    done.append(f"{record['slug']}: its burst is still there ({launched.job}), followed again")
                     continue
                 if record.get("bursts"):
                     record["bursts"][-1].update(ended=_now(), state="interrupted")
@@ -300,6 +312,10 @@ class TaskRunner:
                     record["state"] = "interrupted"
                     done.append(f"{record['slug']}: cut short by a restart {RESTARTS + 1} times, left interrupted")
                 self._write(record)
+        for slug, launched, cancelling in followed:
+            if cancelling:  # stopped before the restart: make sure of it
+                self.launcher.stop(launched)
+            threading.Thread(target=self._wait, args=(slug, launched), daemon=True).start()
         return done
 
     def dispatch(self) -> None:
@@ -359,25 +375,32 @@ class TaskRunner:
             heading = f"\n=== burst {len(record['bursts']) + 1}, {_now()}"
             output.write((heading + (f": {record['message']}" if record.get("message") else "") + " ===\n").encode())
             output.flush()
-            # A question's run is found by its id, which is set here.
-            run = {} if record.get("repo") else {job.RUN_ID_ENV: job.new_run_id()}
-            # Through orchestrator.burst, which writes the output: as a burst on a cluster will be run.
-            process = subprocess.Popen(
-                [sys.executable, "-m", "orchestrator.burst", str(directory / OUTPUT), "--", *self._argv(record)],
-                cwd=REPO, env=credentials.for_run(credentials.for_task(self._config(record)),
-                                                  {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=output, start_new_session=True,
-            )
+        # A question's run is found by its id, which is set here.
+        run = {} if record.get("repo") else {job.RUN_ID_ENV: job.new_run_id()}
+        try:
+            launched = self.launcher.start(
+                record["slug"], len(record["bursts"]) + 1, self._argv(record),
+                credentials.for_run([], {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
+                granted(credentials.for_task(self._config(record))), directory / OUTPUT)
+        except LaunchError as err:
+            with open(directory / OUTPUT, "ab") as output:
+                output.write(f"! could not start the burst: {err}\n".encode())
+            record["bursts"].append({"started": _now(), "ended": _now(), "message": record.get("message"),
+                                     "state": "failed"})
+            record.update(state="failed", message=None)
+            self._write(record)
+            self._tell("ended", {**record, "exit": None})
+            return
         record["bursts"].append({"started": _now(), "message": record.get("message"),
                                  **({"run": run[job.RUN_ID_ENV]} if run else {})})
-        record.update(state="running", boot=self.boot, pid=process.pid)
+        record.update(state="running", boot=self.boot, **launched.record())
         self._write(record)
-        self.running[record["slug"]] = process
+        self.running[record["slug"]] = launched
         self._tell("started", record)
-        threading.Thread(target=self._wait, args=(record["slug"], process), daemon=True).start()
+        threading.Thread(target=self._wait, args=(record["slug"], launched), daemon=True).start()
 
-    def _wait(self, slug: str, process: subprocess.Popen[bytes]) -> None:
-        code = process.wait()
+    def _wait(self, slug: str, launched: Launched) -> None:
+        code = self.launcher.wait(launched)
         try:
             if not self._read(slug).get("repo"):
                 self._answered(slug, code)
@@ -401,7 +424,7 @@ class TaskRunner:
                                       "agent": result["agent"]}
                 record.update(state=state, pr=result.get("pr") or record.get("pr"), message=None, cancelling=False,
                               said=result.get("said") if isinstance(result.get("said"), dict) else None)
-                record.pop("pid", None)
+                record.pop("pid", None), record.pop("job", None)
                 kept = str(result.get("target") or "")
                 if result.get("kept") and SANDBOX.fullmatch(kept):
                     record["sandbox"] = kept
@@ -436,7 +459,7 @@ class TaskRunner:
                     record["uses"] = {**record.get("uses", {}), "provider": provider, "model": model,
                                       "agent": result["agent"]}
                 record.update(state=state, message=None, cancelling=False)
-                record.pop("pid", None)
+                record.pop("pid", None), record.pop("job", None)
                 self._write(record)
                 self._tell("ended", {**record, "exit": code})
         self.dispatch()
@@ -480,14 +503,6 @@ def _summary(record: dict[str, Any]) -> dict[str, Any]:
         "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "base_branch", "draft", "branch", "created", "created_by",
         "state", "pr", "message", "restarts", "sandbox", "said")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
-
-
-def _kill(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 def _now() -> str:

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from harness import git
 from harness.config import HarnessConfig
+from orchestrator import launch as launch_module
 from orchestrator import tasks as tasks_module
 from orchestrator.app import create_app
 from orchestrator.tasks import TaskRunner, TasksError, repo_url
@@ -433,8 +434,8 @@ def test_a_task_with_no_repo_is_a_question_answered_then_followed_up(tmp_path, h
 
 def test_cancelling_a_queued_task_or_stopping_a_running_one(tmp_path, harness, monkeypatch):
     signals = []
-    monkeypatch.setattr(tasks_module.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
-    monkeypatch.setattr(tasks_module, "CANCEL_GRACE", 0.01)
+    monkeypatch.setattr(launch_module.os, "killpg", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(launch_module, "CANCEL_GRACE", 0.01)
     runner = _runner(tmp_path)
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "a"})
     runner.create({"repo": "me/proj", "prompt": "y", "slug": "b"})

@@ -38,6 +38,7 @@ from harness.exec_target import ExecError
 
 from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
+from .launch import HANDOFF_PATH, LaunchError
 from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
 from .tasks import TaskRunner, TasksError
@@ -47,7 +48,7 @@ STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
-USER_ERRORS = (SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
+USER_ERRORS = (LaunchError, SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
                JobsError, TasksError, TokenError, SettingsError)
 LOOPBACK = ("127.0.0.1", "::1")
 
@@ -60,6 +61,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Any) -> Any:
+        if request.url.path == HANDOFF_PATH:
+            return await call_next(request)  # a burst's pod, by its address: its one-time token is checked there
         scheme, _, presented = request.headers.get("authorization", "").partition(" ")
         if scheme.lower() == "bearer":
             record = tokens.check(presented) if tokens is not None else None
@@ -210,6 +213,16 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     @app.post("/api/tasks", status_code=202)
     async def create_task(request: Request) -> dict[str, Any]:
         return await run_in_threadpool(task_runner().create, await body(request), user=request.state.user)
+
+    @app.post(HANDOFF_PATH)
+    def handoff(request: Request) -> dict[str, Any]:
+        """A burst's pod trading its one-time token for its credentials (launch.py, burst.py)."""
+        scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+        values = tasks.handoff(presented.strip()) if tasks is not None and scheme.lower() == "bearer" else None
+        if values is None:
+            return JSONResponse({"error": "No credentials are kept under that token (used, expired, or not one)."},
+                                status_code=401)
+        return {"env": values}
 
     @app.get("/api/probe")
     def probe_server(base_url: str) -> dict[str, Any]:
