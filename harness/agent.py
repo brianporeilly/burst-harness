@@ -157,7 +157,8 @@ def _restart_now_and_then(event: AfterToolsEvent) -> None:
 
 def call(agent: Agent, prompt: Any = None) -> Any:
     """`agent(prompt)`, carrying on when a reply is cut off at the output limit,
-    and when the harness stopped the loop to start it again (RESTART_EVERY).
+    and when the harness stopped the loop to start it again (RESTART_EVERY). A
+    tool's own stop (a terminal state, finish_report) ends it.
 
     Strands raises at the output limit, with the partial reply in the history. That reply is
     dropped (a model shown its own cut-off reasoning tends to resume the loop it
@@ -168,6 +169,12 @@ def call(agent: Agent, prompt: Any = None) -> Any:
     if isinstance(agent, Agent) and agent not in _restarting:
         agent.hooks.add_callback(AfterToolsEvent, _restart_now_and_then)
         _restarting.add(agent)
+    last = agent.messages[-1] if agent.messages else None
+    if isinstance(prompt, str) and last is not None and last.get("role") == "user":
+        # The history ends with a user turn: the tool results a tool stopped the loop on (a terminal state, the
+        # next burst resuming after it). The prompt joins it, as two user messages in a row are refused by some.
+        last["content"] = [*last["content"], {"text": prompt}]
+        prompt = None
     cut, mark = 0, -1
     while True:
         try:

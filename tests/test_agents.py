@@ -268,7 +268,7 @@ def test_a_task_is_routed_once_and_its_lead_delegates(tmp_path, origin, llama, c
     # A later burst keeps the router's choice, without asking it again.
     assert cli.main(["--config", str(scenario), "--repo", str(work), "resume", "t1"]) == cli.EXIT_NO_TERMINAL_STATE
     assert len(asked) == 1 and "as the router chose" in capsys.readouterr().out
-    assert len(coder_requests) > 3 and len(scout_requests) == 1
+    assert len(coder_requests) == 3 and len(scout_requests) == 1  # two to its pause, which ended the burst; one more
 
 
 def test_a_profiles_role_shapes_it_as_a_delegate_and_read_only_changes_are_told(tmp_path, origin, llama, capsys):

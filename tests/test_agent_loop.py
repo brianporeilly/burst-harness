@@ -1,4 +1,6 @@
-"""harness.agent.call: a run of many tool calls, on a model that only asks for them."""
+"""harness.agent.call: a run of many tool calls, on a model that only asks for them; and a tool that stops it."""
+
+import json
 
 from strands import Agent, tool
 from strands.agent.conversation_manager import NullConversationManager
@@ -67,3 +69,41 @@ def test_a_tool_that_stops_the_loop_on_a_restart_still_stops_it():
     model = Looping(500)
     result = harness_agent.call(Agent(model=model, tools=[step], callback_handler=None), "go")
     assert model.made == harness_agent.RESTART_EVERY and result.stop_reason == "tool_use"
+
+
+def test_a_prompt_after_a_tool_stopped_the_loop_joins_its_results():
+    """A burst resuming after a terminal state: the history ends with that tool's results, a user turn."""
+    @tool(context="tool_context")
+    def step(tool_context: ToolContext) -> str:
+        """One step."""
+        tool_context.invocation_state.setdefault("request_state", {})["stop_event_loop"] = True
+        return "ok"
+
+    agent = Agent(model=Looping(2), tools=[step], callback_handler=None)
+    harness_agent.call(agent, "go")
+    assert [m["role"] for m in agent.messages] == ["user", "assistant", "user"]
+    harness_agent.call(agent, "carry on")
+    assert [m["role"] for m in agent.messages] == ["user", "assistant", "user", "assistant", "user"]
+    assert agent.messages[2]["content"][-1] == {"text": "carry on"} and "toolResult" in agent.messages[2]["content"][0]
+
+
+def test_a_session_ends_when_the_model_finishes_even_if_it_would_finish_again(tmp_path, origin, capsys):
+    """A model that called finish_with_pr over and over, the PR step failing each time, ran until it was stopped."""
+    from harness import cli
+
+    from . import fake_llama
+    from .conftest import git
+
+    finish = {"tool": "finish_with_pr", "args": {"title": "Fix it", "body": "Fixed."}}
+    server, requests = fake_llama.serve([finish] * 5 + [{"text": "Done."}])
+    try:
+        work = tmp_path / "work"
+        git(tmp_path, "clone", "-q", str(origin), str(work))
+        args = ["--provider", "llamacpp", "--base-url", f"http://127.0.0.1:{server.server_port}", "--repo", str(work)]
+        assert cli.main([*args, "start", "t1", "--task", "Fix it."]) == 0
+        out = capsys.readouterr().out
+        # Pushed, no PR (the origin is a path, no host/owner/repo): an end, after one call and one model request.
+        assert out.count("Tool #") == 1 and len(requests) == 1
+        assert json.loads(out.split("HARNESS_RESULT ", 1)[1].splitlines()[0])["state"] == "pushed_no_pr"
+    finally:
+        server.shutdown()

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from strands import tool
+from strands.types.tools import ToolContext
 
 from . import state, terminal
 from .context import HarnessContext
@@ -13,6 +16,23 @@ __all__ = ["HarnessContext", "make_tools"]
 def make_tools(ctx: HarnessContext) -> list:
     """Build the task tools bound to one run."""
     target, cfg, slug = ctx.target, ctx.cfg, ctx.slug
+
+    def end(tool_context: ToolContext, step: Callable[[], str]) -> str:
+        """A terminal state's step, which ends the run once the task has one.
+
+        Stopping the loop here, rather than leaving it to the model to end its turn, is what ends it for a model
+        that calls the tool again and again. A call after the task ended does nothing again.
+        """
+        if ctx.terminal:
+            result = f"The task already ended ({ctx.terminal}); nothing was done again. Stop here."
+        else:
+            try:
+                result = step()
+            except ValueError as err:
+                return f"Rejected: {err}"
+        if ctx.terminal:
+            tool_context.invocation_state.setdefault("request_state", {})["stop_event_loop"] = True
+        return result
 
     @tool
     def read_task_doc() -> str:
@@ -64,8 +84,8 @@ def make_tools(ctx: HarnessContext) -> list:
             return f"Rejected: {err}"
         return f"Updated {path}."
 
-    @tool
-    def finish_with_pr(title: str, body: str, next_step: str | None = None) -> str:
+    @tool(context="tool_context")
+    def finish_with_pr(title: str, body: str, tool_context: ToolContext, next_step: str | None = None) -> str:
         """Finish the task by committing, pushing, and opening a pull request.
 
         Use this only when the work is reviewable. If it is incomplete or you
@@ -76,13 +96,10 @@ def make_tools(ctx: HarnessContext) -> list:
             body: Pull request description: what changed and why.
             next_step: Optional follow-up to record in the task document.
         """
-        try:
-            return terminal.finish(ctx, title=title, body=body, next_step=next_step)
-        except ValueError as err:
-            return f"Rejected: {err}"
+        return end(tool_context, lambda: terminal.finish(ctx, title=title, body=body, next_step=next_step))
 
-    @tool
-    def pause_for_review(summary: str, next_step: str, questions: str | None = None) -> str:
+    @tool(context="tool_context")
+    def pause_for_review(summary: str, next_step: str, tool_context: ToolContext, questions: str | None = None) -> str:
         """Stop cleanly with the work committed but no pull request.
 
         Use this when the work is mid-flight, not yet usable, or blocked on a
@@ -95,13 +112,10 @@ def make_tools(ctx: HarnessContext) -> list:
             next_step: The single next actionable step.
             questions: Anything you need the user to decide.
         """
-        try:
-            return terminal.pause(ctx, summary=summary, next_step=next_step, questions=questions)
-        except ValueError as err:
-            return f"Rejected: {err}"
+        return end(tool_context, lambda: terminal.pause(ctx, summary=summary, next_step=next_step, questions=questions))
 
-    @tool
-    def abandon(reason: str) -> str:
+    @tool(context="tool_context")
+    def abandon(reason: str, tool_context: ToolContext) -> str:
         """Stop and record that this task should not continue.
 
         Commits whatever exists so nothing is stranded, and writes the reason
@@ -110,9 +124,6 @@ def make_tools(ctx: HarnessContext) -> list:
         Args:
             reason: Why the task is being abandoned.
         """
-        try:
-            return terminal.abandon(ctx, reason=reason)
-        except ValueError as err:
-            return f"Rejected: {err}"
+        return end(tool_context, lambda: terminal.abandon(ctx, reason=reason))
 
     return [read_task_doc, update_task_doc, finish_with_pr, pause_for_review, abandon]
