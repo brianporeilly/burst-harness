@@ -515,18 +515,19 @@ Next, in this order (2026-11-04):
    whether its chat template can switch thinking. Kept with the task for
    every burst, and taken by `POST /api/tasks` with a token too. Not yet: from
    Slack, and for Claude Code tasks.
-7. Versions and releases. On each merge to main, python-semantic-release
-   (the Python port of semantic-release) works out the next version from the
-   squashed commit (`feat:` minor, `fix:` and the rest patch, `!` or
-   `BREAKING CHANGE:` major), writes it into `pyproject.toml`, commits and
-   tags `vX.Y.Z`, and makes a GitHub release with notes from the commits. The
-   images workflow already tags `vX.Y.Z` images on a `v*` tag, but a tag
-   pushed with the workflow's own token starts no workflow, so the release
-   job starts the image build itself (or pushes with an app's token). PR
-   titles, which become the squashed commit, then follow Conventional
-   Commits, checked on each PR. Labels instead (patch, minor or major, patch
-   when none) would keep today's titles and need a small workflow of our own.
-   home-ops could then pin `vX.Y.Z@sha256:...` in place of `sha-...`.
+7. Versions and releases: built (2026-11-04). On each merge to main,
+   python-semantic-release works out the next version from the squashed
+   commit, the PR's title (`feat` minor, `fix` and `perf` patch, `!` or
+   `BREAKING CHANGE` major from 1.0 on; the other types release nothing),
+   commits it to `pyproject.toml`, `uv.lock` and `CHANGELOG.md`, tags
+   `vX.Y.Z`, makes the GitHub release, and builds the images for it as
+   `X.Y.Z` (a tag pushed with the workflow's own token starts no workflow,
+   so release.yml calls images.yml itself). PR titles are checked on each PR;
+   AGENTS.md (CLAUDE.md links to it) says how to write them. Tests moved to a
+   ci.yml of their own, with uv's cache. It pushes with a GitHub App's token
+   when the repo has one (`RELEASE_APP_ID`, `RELEASE_APP_KEY`), which a
+   protected main can let past its rules; until then, with the workflow's
+   own token. Next: home-ops pins `X.Y.Z@sha256:...` in place of `sha-...`.
 8. Claude as the lead, handing work to Strands profiles: the harness offers
    Claude Code a `delegate` tool over MCP, through the gateway's route back to
    the driver, which runs the profile there as a delegate is run now. No new

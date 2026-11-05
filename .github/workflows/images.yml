@@ -1,39 +1,30 @@
 name: images
 
+# A merge to main builds sha-... and main; a PR builds without pushing; a
+# release (release.yml) calls this for its version's tag.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: The release's version (X.Y.Z), built from its tag vX.Y.Z.
+        type: string
+        required: true
 
 permissions:
   contents: read
   packages: write
 
+# The tests are ci.yml's.
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.25"
-      # The Python in .python-version, and exactly what uv.lock says.
-      - run: uv sync --frozen --extra openai
-      - run: uv run --frozen pytest -q -n 4 tests
-        env:
-          GIT_AUTHOR_NAME: ci
-          GIT_AUTHOR_EMAIL: ci@example.com
-          GIT_COMMITTER_NAME: ci
-          GIT_COMMITTER_EMAIL: ci@example.com
-
   # Each image for amd64 and arm64 (a Mac), each on a runner of its own
   # architecture: no QEMU, which is slow and crashes Bun-built binaries such as
   # claude and opencode (the sandbox runs both during its build). Pushed by
   # digest only; `merge` puts the two under the tags.
   build:
-    needs: test
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -58,6 +49,8 @@ jobs:
             arch: arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version && format('v{0}', inputs.version) || '' }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: github.event_name != 'pull_request'
@@ -95,8 +88,8 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # One tag (sha-..., the branch, the version) for both architectures: a pull
-  # takes the one for its machine.
+  # One tag (sha-... and the branch, or a release's version) for both
+  # architectures: a pull takes the one for its machine.
   merge:
     needs: build
     if: github.event_name != 'pull_request'
@@ -122,9 +115,9 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
-            type=sha
-            type=ref,event=branch
-            type=semver,pattern={{version}}
+            type=sha,enable=${{ !inputs.version }}
+            type=ref,event=branch,enable=${{ !inputs.version }}
+            type=semver,pattern={{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
       - working-directory: /tmp/digests
         run: |
           mapfile -t tags < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")

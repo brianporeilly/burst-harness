@@ -38,3 +38,32 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["harness", "orchestrator"]
+
+# Releases (.github/workflows/release.yml): the next version from the commits on
+# main since the last tag, Conventional Commits: feat a minor, fix and perf a
+# patch, `!` or BREAKING CHANGE a major (from 1.0 on: below it, a minor). The
+# other types (docs, ci, chore, test, refactor...) release nothing on their own.
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+tag_format = "v{version}"
+allow_zero_version = true
+major_on_zero = false
+# [skip ci]: the version commit starts no workflow (the release builds its images itself).
+commit_message = "chore(release): v{version} [skip ci]"
+# uv.lock records the project's own version too.
+build_command = """
+    pip install -q uv==0.11.25
+    uv lock --upgrade-package burst-harness
+    git add uv.lock
+"""
+
+[tool.semantic_release.branches.main]
+match = "main"
+
+[tool.semantic_release.commit_parser_options]
+# A squash merge's commit is the PR's title; the branch's own commits listed in
+# its body do not each count.
+parse_squash_commits = false
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
