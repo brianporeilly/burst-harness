@@ -477,7 +477,8 @@ token on the cluster. Those wait for a second user.
 
 4. Maybe: on a cluster, each burst as a Kubernetes Job of the driver image
    instead of a subprocess of the orchestrator, so its memory is the burst's
-   and an orchestrator rollout does not cut it short.
+   and an orchestrator rollout does not cut it short. Designed (2026-11-05):
+   docs/burst-jobs.md.
 5. More than one model per run (2026-10-30): named profiles (`[agents.NAME]`),
    a lead that delegates pieces of work to them, and a router that picks the
    lead for a new task or job run (`harness/agents.py`), with example
