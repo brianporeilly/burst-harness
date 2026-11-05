@@ -2,6 +2,31 @@
 
 <!-- version list -->
 
+## v0.3.0 (2026-11-05)
+
+### Documentation
+
+- **orchestrator**: Design for running each burst as a Kubernetes Job
+  ([#77](https://github.com/brianporeilly/strands-harness/pull/77),
+  [`e989249`](https://github.com/brianporeilly/strands-harness/commit/e989249a0a2673338efbb2dac18cead1ea8f4e2f))
+
+- **roadmap**: Profiles and delegate_to cannot yet be set per task or in Settings
+  ([#76](https://github.com/brianporeilly/strands-harness/pull/76),
+  [`305c84d`](https://github.com/brianporeilly/strands-harness/commit/305c84d9f27a66dfe8c849edf4c9c808d0a42e12))
+
+### Features
+
+- **tasks**: On a cluster, run each burst as a Kubernetes Job
+  ([#79](https://github.com/brianporeilly/strands-harness/pull/79),
+  [`49a0241`](https://github.com/brianporeilly/strands-harness/commit/49a024136a2f035b9d63d4f9d5b80e5742120904))
+
+### Refactoring
+
+- **tasks**: Run each burst through orchestrator.burst
+  ([#78](https://github.com/brianporeilly/strands-harness/pull/78),
+  [`26fa73f`](https://github.com/brianporeilly/strands-harness/commit/26fa73f1e7312aa2da869b9a339a78bc12698c95))
+
+
 ## v0.2.0 (2026-11-05)
 
 ### Features
