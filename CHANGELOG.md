@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-11-05)
+
+### Features
+
+- **orchestrator**: Keep its own records apart from the harness's state
+  ([#80](https://github.com/brianporeilly/strands-harness/pull/80),
+  [`18ec6a8`](https://github.com/brianporeilly/strands-harness/commit/18ec6a80512017702a9078e30d77b3c983ef39c2))
+
+
 ## v0.3.0 (2026-11-05)
 
 ### Documentation
