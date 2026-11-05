@@ -538,8 +538,13 @@ Next, in this order (2026-11-04):
    The SDK is built from its source package, since its wheels carry a 125 MB
    Claude Code binary the harness never runs. `chat` has no delegate tool.
    Checked on podman: Haiku leading in the sandbox, one delegation to a
-   profile on a fake llama.cpp server, its report back, and a pause. After
-   it, maybe the other way round (Claude Code as a profile a Strands lead
+   profile on a fake llama.cpp server, its report back, and a pause; and
+   again (2026-11-05) with a real llama-server profile as the delegate.
+   Not yet on the cluster: the orchestrator takes profiles and `delegate_to`
+   only from a config file in its pod (nothing in Settings or a task sets
+   them), so a Claude-led task there has no one to delegate to. To decide
+   later: choosing them per task, or in Settings. After it, maybe the other
+   way round (Claude Code as a profile a Strands lead
    delegates to), which would put Claude's token in the sandbox for the run.
 
 ## Open
