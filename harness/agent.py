@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import signal
 import threading
 import weakref
 from typing import TYPE_CHECKING, Any
@@ -155,10 +156,27 @@ def _restart_now_and_then(event: AfterToolsEvent) -> None:
         request["stop_event_loop"] = request[RESTART] = True
 
 
+# Strands runs each agent(...) in a thread of its own and waits for it, so a
+# Ctrl-C (or the orchestrator's Stop, a SIGINT) raised KeyboardInterrupt in the
+# waiting thread only once the run had finished: up to RESTART_EVERY tool calls
+# later, and the orchestrator kills a burst it has stopped after 30s. Instead
+# every agent running in a call(), delegates too, is cancelled first: each stops
+# at its next safe point (within a model reply, or between tool calls), then
+# the KeyboardInterrupt goes on as before. A tool already running is not cut short.
+_running: "weakref.WeakSet[Agent]" = weakref.WeakSet()
+
+
+def _interrupted(signum: int, frame: Any) -> None:
+    for agent in list(_running):
+        agent.cancel()
+    signal.default_int_handler(signum, frame)
+
+
 def call(agent: Agent, prompt: Any = None) -> Any:
     """`agent(prompt)`, carrying on when a reply is cut off at the output limit,
     and when the harness stopped the loop to start it again (RESTART_EVERY). A
-    tool's own stop (a terminal state, finish_report) ends it.
+    tool's own stop (a terminal state, finish_report) ends it. A SIGINT cancels
+    it, then raises KeyboardInterrupt.
 
     Strands raises at the output limit, with the partial reply in the history. That reply is
     dropped (a model shown its own cut-off reasoning tends to resume the loop it
@@ -166,6 +184,23 @@ def call(agent: Agent, prompt: Any = None) -> Any:
     times in a row, the count starting again once a reply is finished. Past
     that, OutputLimit.
     """
+    # Only the main thread may set it, and only Python's own handler is replaced (a delegate's call, in another
+    # thread, is cancelled by the lead's).
+    previous = None
+    if threading.current_thread() is threading.main_thread() \
+            and signal.getsignal(signal.SIGINT) is signal.default_int_handler:
+        previous = signal.signal(signal.SIGINT, _interrupted)
+    if isinstance(agent, Agent):
+        _running.add(agent)
+    try:
+        return _call(agent, prompt)
+    finally:
+        _running.discard(agent)
+        if previous is not None:
+            signal.signal(signal.SIGINT, previous)
+
+
+def _call(agent: Agent, prompt: Any) -> Any:
     if isinstance(agent, Agent) and agent not in _restarting:
         agent.hooks.add_callback(AfterToolsEvent, _restart_now_and_then)
         _restarting.add(agent)

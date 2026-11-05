@@ -107,3 +107,34 @@ def test_a_session_ends_when_the_model_finishes_even_if_it_would_finish_again(tm
         assert json.loads(out.split("HARNESS_RESULT ", 1)[1].splitlines()[0])["state"] == "pushed_no_pr"
     finally:
         server.shutdown()
+
+
+def test_a_sigint_cancels_the_run_at_once_rather_than_when_strands_returns():
+    """Ctrl-C, or the orchestrator's Stop: the run used to go on to its next restart, RESTART_EVERY calls later."""
+    import asyncio
+    import os
+    import signal
+    import threading
+    import time
+
+    import pytest
+
+    class Slow(Looping):
+        async def stream(self, *args, **kwargs):
+            await asyncio.sleep(0.02)
+            async for event in super().stream(*args, **kwargs):
+                yield event
+
+    model = Slow(500)
+    agent = Agent(model=model, tools=[step], callback_handler=None, conversation_manager=NullConversationManager())
+    previous = signal.signal(signal.SIGINT, signal.default_int_handler)  # a test runner may have its own
+    try:
+        threading.Timer(0.5, os.kill, args=(os.getpid(), signal.SIGINT)).start()
+        started = time.monotonic()
+        with pytest.raises(KeyboardInterrupt):
+            harness_agent.call(agent, "go")
+        assert time.monotonic() - started < 2 and model.made < harness_agent.RESTART_EVERY // 2
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler  # put back
+        assert agent not in harness_agent._running
+    finally:
+        signal.signal(signal.SIGINT, previous)
