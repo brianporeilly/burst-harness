@@ -10,10 +10,12 @@ from __future__ import annotations
 import copy
 import logging
 import threading
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from strands import Agent, tool
 from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.hooks import AfterToolsEvent
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
 from strands.types.exceptions import MaxTokensReachedException
@@ -134,19 +136,46 @@ class OutputLimit(RuntimeError):
     """The model's replies kept being cut off at the output limit."""
 
 
-def call(agent: Agent, prompt: Any = None) -> Any:
-    """`agent(prompt)`, carrying on when a reply is cut off at the output limit.
+# Strands recurses once per tool call (event_loop_cycle -> recurse_event_loop),
+# so a run past about 310 of them ended in a RecursionError, and each tool call
+# was slower than the last as the recursion deepened. Every RESTART_EVERY tool
+# calls, once its tools have run, the loop is stopped and call() starts it again
+# from the messages it left: the model carries on as if it had not stopped.
+# Not needed once Strands loops instead (strands-agents/harness-sdk#4989).
+RESTART_EVERY = 100
+RESTART = "harness_restart"  # in request_state: the stop was the harness's, not a tool's
+_restarting: "weakref.WeakSet[Agent]" = weakref.WeakSet()
 
-    Strands raises then, with the partial reply in the history. That reply is
+
+def _restart_now_and_then(event: AfterToolsEvent) -> None:
+    state = event.invocation_state  # one per agent(...): the count starts again with each
+    state["harness_tool_cycles"] = cycles = state.get("harness_tool_cycles", 0) + 1
+    request = state.setdefault("request_state", {})
+    if cycles % RESTART_EVERY == 0 and not request.get("stop_event_loop"):  # a tool's stop is left as it is
+        request["stop_event_loop"] = request[RESTART] = True
+
+
+def call(agent: Agent, prompt: Any = None) -> Any:
+    """`agent(prompt)`, carrying on when a reply is cut off at the output limit,
+    and when the harness stopped the loop to start it again (RESTART_EVERY).
+
+    Strands raises at the output limit, with the partial reply in the history. That reply is
     dropped (a model shown its own cut-off reasoning tends to resume the loop it
     was in), the model is told why, and the run goes on: up to CUT_OFF_RETRIES
     times in a row, the count starting again once a reply is finished. Past
     that, OutputLimit.
     """
+    if isinstance(agent, Agent) and agent not in _restarting:
+        agent.hooks.add_callback(AfterToolsEvent, _restart_now_and_then)
+        _restarting.add(agent)
     cut, mark = 0, -1
     while True:
         try:
-            return agent(prompt)
+            result = agent(prompt)
+            if result.stop_reason == "tool_use" and (result.state or {}).get(RESTART):
+                prompt = None  # the tool results are the last message: the model answers them
+                continue
+            return result
         except MaxTokensReachedException:
             if agent.messages and agent.messages[-1].get("role") == "assistant":
                 agent.messages.pop()
