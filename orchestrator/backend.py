@@ -25,6 +25,8 @@ from harness import cluster_session, containers, credentials, egress, git, mcp, 
 from harness.config import HarnessConfig
 from harness.gateway_control import Gateway, GatewayError
 
+from .settings import orchestrator_dir
+
 # What a session's opencode can be given. A task can use any provider the harness has (task_providers).
 PROVIDERS = ("anthropic", "llamacpp", "openai")
 EGRESS = ("allowlist", "log")
@@ -293,7 +295,7 @@ class PodmanBackend:
 
     def spec_path(self, name: str) -> Path:
         """What a session was created with, so starting it again means the same thing."""
-        return Path(self.base.state_dir).expanduser() / "orchestrator" / f"{name}.json"
+        return orchestrator_dir(self.base) / "orchestrator" / f"{name}.json"
 
     def saved_spec(self, name: str) -> SessionSpec | None:
         path = self.spec_path(name)

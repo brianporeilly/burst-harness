@@ -8,8 +8,9 @@ questions in the task document), an abandon, or no terminal state at all.
 Continuing a task is another burst, `harness run SLUG --message REPLY`, which
 picks up from the pushed branch in a fresh sandbox, so nothing waits in memory.
 
-The orchestrator keeps a record per task (tasks/SLUG/task.json under the state
-directory) and the bursts' output beside it. At most `limit` tasks run at once;
+The orchestrator keeps a record per task (tasks/SLUG/task.json under its own
+state directory, settings.orchestrator_dir) and the bursts' output in
+tasks/SLUG/ under the harness's, which a burst run as a Job shares. At most `limit` tasks run at once;
 the rest wait in the order they came, in their records, so a restart keeps the
 queue. A burst that was running when the orchestrator stopped is followed
 again if it is a Job that is still there, and otherwise queued again on the
@@ -100,10 +101,12 @@ def slug_for(prompt: str) -> str:
 
 class TaskRunner:
     def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
-                 launcher: Any = None) -> None:
+                 launcher: Any = None, records: Path | None = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
-        self.root = base.resolve_state_dir("tasks")
+        # The records, the orchestrator's alone; the bursts' output, where the bursts write it.
+        self.outputs = base.resolve_state_dir("tasks")
+        self.root = records or self.outputs
         self.lock = threading.Lock()
         # slug -> burst, for bursts this orchestrator started (or followed again) and that have not ended.
         self.running: dict[str, Launched] = {}
@@ -129,6 +132,11 @@ class TaskRunner:
         if not SLUG.fullmatch(slug):
             raise TasksError(f"No task named {slug!r}.")
         return self.root / slug
+
+    def _output(self, slug: str) -> Path:
+        directory = self.outputs / self._dir(slug).name
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory / OUTPUT
 
     def _read(self, slug: str) -> dict[str, Any]:
         try:
@@ -168,7 +176,7 @@ class TaskRunner:
 
     def task(self, slug: str) -> dict[str, Any]:
         record = self._read(slug)
-        output = self._dir(slug) / OUTPUT
+        output = self._output(slug)
         return {**record, "output": _tail(output) if output.is_file() else None}
 
     def create(self, raw: dict[str, Any], *, user: str = "", slack: dict[str, str] | None = None) -> dict[str, Any]:
@@ -273,10 +281,10 @@ class TaskRunner:
                 raise TasksError(f"{slug} is {record['state']}: cancel it first.")
             if record.get("sandbox"):
                 self._release(slug, record["sandbox"])
-            directory = self._dir(slug)
-            for path in directory.iterdir():
-                path.unlink()
-            directory.rmdir()
+            for directory in dict.fromkeys((self._dir(slug), self._output(slug).parent)):
+                for path in directory.iterdir():
+                    path.unlink()
+                directory.rmdir()
             if not record.get("repo"):
                 shutil.rmtree(self._asked(slug), ignore_errors=True)  # its conversation, which a follow-up reads
 
@@ -369,9 +377,7 @@ class TaskRunner:
 
     def _start(self, record: dict[str, Any]) -> None:
         """Start a burst of a queued task. Called with the lock held."""
-        directory = self._dir(record["slug"])
-        directory.mkdir(parents=True, exist_ok=True)
-        with open(directory / OUTPUT, "ab") as output:
+        with open(self._output(record["slug"]), "ab") as output:
             heading = f"\n=== burst {len(record['bursts']) + 1}, {_now()}"
             output.write((heading + (f": {record['message']}" if record.get("message") else "") + " ===\n").encode())
             output.flush()
@@ -381,9 +387,9 @@ class TaskRunner:
             launched = self.launcher.start(
                 record["slug"], len(record["bursts"]) + 1, self._argv(record),
                 credentials.for_run([], {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
-                granted(credentials.for_task(self._config(record))), directory / OUTPUT)
+                granted(credentials.for_task(self._config(record))), self._output(record["slug"]))
         except LaunchError as err:
-            with open(directory / OUTPUT, "ab") as output:
+            with open(self._output(record["slug"]), "ab") as output:
                 output.write(f"! could not start the burst: {err}\n".encode())
             record["bursts"].append({"started": _now(), "ended": _now(), "message": record.get("message"),
                                      "state": "failed"})
@@ -407,7 +413,7 @@ class TaskRunner:
                 return
         except TasksError:
             pass  # removed meanwhile
-        result = _result(self._dir(slug) / OUTPUT)
+        result = _result(self._output(slug))
         done_with = None
         with self.lock:
             self.running.pop(slug, None)
@@ -440,7 +446,7 @@ class TaskRunner:
 
     def _answered(self, slug: str, code: int) -> None:
         """A question's burst ended: keep its answer, if it gave one."""
-        result = _result(self._dir(slug) / OUTPUT, JOB_RESULT)
+        result = _result(self._output(slug), JOB_RESULT)
         with self.lock:
             self.running.pop(slug, None)
             try:
@@ -466,7 +472,7 @@ class TaskRunner:
 
     def _release(self, slug: str, sandbox: str) -> None:
         """Remove a kept sandbox (`harness ... release`), noting it in the task's output."""
-        with open(self._dir(slug) / OUTPUT, "ab") as output:
+        with open(self._output(slug), "ab") as output:
             output.write(f"\n=== releasing the kept sandbox ({sandbox}) ===\n".encode())
             output.flush()
             subprocess.run([sys.executable, "-m", "harness", *shlex.split(sandbox), "release"], cwd=REPO,

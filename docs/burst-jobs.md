@@ -53,6 +53,10 @@ not enough, and the state must be readable from any node.
 - One burst per task at a time is the orchestrator's rule already, so no two
   pods write the same snapshot.
 
+In code (2026-11-05): `ORCHESTRATOR_STATE_DIR` is the orchestrator's own
+directory (by default the harness's, as before), and the bursts' output stays
+in the harness's, in `tasks/SLUG/`.
+
 Moving the existing state is a one-off copy (a Job with both volumes) when
 the change is deployed.
 

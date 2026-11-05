@@ -586,8 +586,9 @@ back to the environment's value.
 - Values are write-only. The page and `/api/settings/credentials` show where
   each value comes from and who set it when, never the value itself. API
   tokens can't reach it.
-- They're stored encrypted (Fernet) in `credentials.enc` in the state
-  directory, mode 600. The key is `ORCHESTRATOR_SECRETS_KEY`, or else
+- They're stored encrypted (Fernet) in `credentials.enc` in the
+  orchestrator's state directory (`ORCHESTRATOR_STATE_DIR`, by default the
+  harness's state directory), mode 600. The key is `ORCHESTRATOR_SECRETS_KEY`, or else
   `secrets.key`, which the orchestrator makes beside it. Setting the variable
   keeps the key away from the data; make one with `python -c "from
   cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
@@ -717,7 +718,7 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   its answers too.
 - `--task-limit` (`ORCHESTRATOR_TASK_LIMIT`, default 1) tasks run at once; the
   rest wait their turn. The queue is in the tasks' records (`tasks/SLUG/` in
-  the state directory), so it survives a restart, and a burst a restart cut
+  the orchestrator's state directory), so it survives a restart, and a burst a restart cut
   short is started again, up to twice.
 - **Stop** sends the burst Ctrl-C, so the harness cleans up after itself;
   **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
@@ -733,6 +734,10 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   - `ORCHESTRATOR_BURST_VOLUME` (required): the PersistentVolumeClaim
     (ReadWriteMany) that the state directory is on. Each burst's pod mounts
     it at the same path.
+  - `ORCHESTRATOR_STATE_DIR`: keep it off that volume, so bursts can't read
+    the orchestrator's own files: `credentials.enc`, `secrets.key`,
+    `tokens.json`, and the task and session records. The bursts' output
+    stays in `tasks/SLUG/` in the state directory, where they write it.
   - `ORCHESTRATOR_BURST_ACCOUNT`: the bursts' service account, which claims
     and drives sandboxes (default `burst-task`).
   - `ORCHESTRATOR_BURST_MEMORY`: the memory limit (default `2Gi`).
@@ -743,8 +748,8 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
 
 **API tokens.** For scripts, other machines and bots, make a token in the Settings
 tab (`POST /api/tokens` with `{"name": ...}`). It is shown once, and the
-orchestrator keeps only its SHA-256 (`tokens.json` in the state directory,
-mode 600). Revoke it there.
+orchestrator keeps only its SHA-256 (`tokens.json` in the orchestrator's
+state directory, mode 600). Revoke it there.
 
 ```bash
 curl -H "Authorization: Bearer orch_..." -H 'Content-Type: application/json' \

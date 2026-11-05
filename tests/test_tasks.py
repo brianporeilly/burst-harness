@@ -432,6 +432,27 @@ def test_a_task_with_no_repo_is_a_question_answered_then_followed_up(tmp_path, h
         runner.create({"prompt": "again", "slug": "bricks"})
 
 
+def test_the_records_can_be_kept_apart_from_the_output_bursts_write(tmp_path, harness, monkeypatch):
+    from orchestrator.settings import orchestrator_dir
+
+    base = replace(HarnessConfig.load(None, {}), state_dir=str(tmp_path / "state"))
+    assert orchestrator_dir(base) == tmp_path / "state"  # by default, the harness's
+    monkeypatch.setenv("ORCHESTRATOR_STATE_DIR", str(tmp_path / "own"))
+    assert orchestrator_dir(base) == tmp_path / "own"
+
+    runner = _runner(tmp_path, records=tmp_path / "own" / "tasks")
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "a"})
+    process = harness.started[0][1]
+    assert (tmp_path / "own" / "tasks" / "a" / "task.json").is_file()
+    assert not (tmp_path / "state" / "tasks" / "a" / "task.json").exists()
+    assert process.output == str(tmp_path / "state" / "tasks" / "a" / "output.log")  # where a Job's pod writes
+    process.finish(0, state="paused")
+    assert "working..." in _settled(runner, "a", "paused")["output"]
+    assert [r["slug"] for r in runner.tasks()] == ["a"]
+    runner.remove("a")
+    assert not (tmp_path / "own" / "tasks" / "a").exists() and not (tmp_path / "state" / "tasks" / "a").exists()
+
+
 def test_cancelling_a_queued_task_or_stopping_a_running_one(tmp_path, harness, monkeypatch):
     signals = []
     monkeypatch.setattr(launch_module.os, "killpg", lambda pid, sig: signals.append((pid, sig)))

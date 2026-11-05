@@ -68,7 +68,7 @@ from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
 from .launch import Jobs, LaunchError
-from .settings import CredentialStore, SettingsError, load_key
+from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
 from .tokens import TokenStore
@@ -120,7 +120,7 @@ def main() -> None:
             launcher = Jobs.from_env(base, args.port)
         except LaunchError as err:
             parser.error(f"--bursts job: {err}")
-    state = Path(base.state_dir).expanduser()
+    state = orchestrator_dir(base)
     # Before anything that runs: tasks recovered and jobs scheduled read credentials from here.
     try:
         key, key_note = load_key(state)
@@ -147,7 +147,8 @@ def main() -> None:
             print(f"Scheduled in {zone}, missed times run up to {args.catch_up} late"
                   + (", new jobs paused" if args.start_paused else ""))
         jobs.start()
-    tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher) if args.tasks else None
+    tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher,
+                       records=state / "tasks") if args.tasks else None
     if tasks:
         print(f"Tasks in {tasks.root}, {tasks.limit} at a time" + (f", bursts {launcher.describe()}" if launcher else ""))
         try:

@@ -33,6 +33,7 @@ from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 
 from harness import credentials, models
+from harness.config import HarnessConfig
 
 KEY_ENV = "ORCHESTRATOR_SECRETS_KEY"
 NAME = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
@@ -53,6 +54,13 @@ USES = {
 
 class SettingsError(ValueError):
     """A credential that cannot be set or cleared as asked, or a store that cannot be opened."""
+
+
+def orchestrator_dir(base: HarnessConfig) -> Path:
+    """Where the orchestrator keeps what is its alone: the credentials set in Settings, API tokens, task and
+    session records. ORCHESTRATOR_STATE_DIR, or the harness's state directory. Apart from it on a cluster,
+    where bursts run as Jobs share the harness's (docs/burst-jobs.md) and must not see these."""
+    return Path(os.environ.get("ORCHESTRATOR_STATE_DIR", "").strip() or base.state_dir).expanduser()
 
 
 def load_key(state_dir: Path) -> tuple[bytes, str]:
