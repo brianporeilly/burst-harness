@@ -304,8 +304,11 @@ def model_name(cfg: HarnessConfig) -> str:
     if cfg.provider != "llamacpp" or cfg.model_id != HarnessConfig.model_id:
         return cfg.model_id
     url = _llamacpp_url(cfg).rstrip("/")
-    asked, name = _SERVED.get(url, (0.0, ""))
-    if time.monotonic() - asked > SERVED_FOR:
+    # Never asked is not asked just now: a monotonic clock may start near 0, on a machine just started.
+    known = _SERVED.get(url)
+    if known is not None and time.monotonic() - known[0] <= SERVED_FOR:
+        name = known[1]
+    else:
         from .session import served_model
         name = (served_model(url + "/v1") or "llama.cpp").rsplit("/", 1)[-1].removesuffix(".gguf")
         _SERVED[url] = (time.monotonic(), name)

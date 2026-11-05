@@ -239,3 +239,15 @@ def test_the_served_model_is_asked_again_after_a_while(monkeypatch):
         assert len(asked) == 2
     finally:
         stop()
+
+
+def test_the_server_is_asked_on_a_machine_just_started(monkeypatch):
+    from harness import models
+
+    monkeypatch.setattr(models.time, "monotonic", lambda: 5.0)  # up for 5 seconds, as a fresh CI runner can be
+    url, asked, stop = _models_server("qwen3")
+    try:
+        assert models.model_name(HarnessConfig(provider="llamacpp", base_url=url)) == "qwen3"
+        assert asked == ["/v1/models"]
+    finally:
+        stop()
