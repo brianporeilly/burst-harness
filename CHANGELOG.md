@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-11-06)
+
+### Features
+
+- **orchestrator**: Profiles and delegate_to in Settings, and per task
+  ([#83](https://github.com/brianporeilly/strands-harness/pull/83),
+  [`994e980`](https://github.com/brianporeilly/strands-harness/commit/994e9805955403e60ffb0a882d43d247ec264b9f))
+
+
 ## v0.4.2 (2026-11-06)
 
 ### Bug Fixes
