@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.2 (2026-11-06)
+
+### Bug Fixes
+
+- **harness**: A stopped run says Stopped. rather than ending in a traceback
+  ([#82](https://github.com/brianporeilly/strands-harness/pull/82),
+  [`18bca38`](https://github.com/brianporeilly/strands-harness/commit/18bca388d2f7373b43677c472d5b3426dd111081))
+
+
 ## v0.4.1 (2026-11-06)
 
 ### Bug Fixes
