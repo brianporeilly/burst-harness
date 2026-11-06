@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.4.1 (2026-11-06)
+
+### Bug Fixes
+
+- **tasks**: Stop a burst run as a Job mid-tool, as Stop does on podman
+  ([#81](https://github.com/brianporeilly/strands-harness/pull/81),
+  [`68e5f70`](https://github.com/brianporeilly/strands-harness/commit/68e5f70349f77df00032a96a8a5887b8d20f20b7))
+
+
 ## v0.4.0 (2026-11-05)
 
 ### Features
