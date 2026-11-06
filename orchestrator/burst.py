@@ -10,7 +10,9 @@ way.
 Signals: a SIGINT for the process group (Stop, or Ctrl-C) reaches the harness
 directly, so it is not passed on again; a second one would cut short the
 harness's cleanup. A SIGTERM, which is how Kubernetes stops a pod and which
-reaches this process alone, is passed on as the SIGINT the harness acts on.
+reaches this process alone, is passed on as a SIGINT for the whole group, as
+Stop sends it: a tool the harness is running (a `kubectl exec` into its
+sandbox) has to get it too, as the harness waits for that tool to end.
 
 A burst run as a Kubernetes Job is given no credentials, only where to fetch
 them and a token good once (BURST_HANDOFF_URL, BURST_HANDOFF_TOKEN; launch.py):
@@ -51,7 +53,7 @@ def main(args: list[str]) -> int:
             return 127
         # A handler, not SIG_IGN: the harness inherits ignored signals, but handlers end at exec.
         signal.signal(signal.SIGINT, lambda signum, frame: None)
-        signal.signal(signal.SIGTERM, lambda signum, frame: child.send_signal(signal.SIGINT))
+        signal.signal(signal.SIGTERM, lambda signum, frame: os.killpg(os.getpgrp(), signal.SIGINT))
         assert child.stdout is not None
         while chunk := os.read(child.stdout.fileno(), 65536):
             _copy(log, chunk)

@@ -20,6 +20,14 @@ print(f"interrupted {len(got)} time(s)", flush=True)
 sys.exit(130 if got else 0)
 '''
 
+# Waits for a tool of its own (as the harness waits for a `kubectl exec`), which only a SIGINT for the group ends.
+WAITS_FOR_A_TOOL = r'''
+import signal, subprocess, sys
+signal.signal(signal.SIGINT, lambda *_: None)
+tool = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(20)"])
+print(f"the tool ended with {tool.wait()}", flush=True)
+'''
+
 
 def _burst(tmp_path, *command, **kwargs):
     return subprocess.Popen([sys.executable, "-m", "orchestrator.burst", str(tmp_path / "output"), "--", *command],
@@ -45,6 +53,15 @@ def test_a_sigterm_reaches_the_harness_as_one_sigint(tmp_path):
     burst.send_signal(signal.SIGTERM)  # as Kubernetes does: to the pod's first process alone
     out, _ = burst.communicate(timeout=30)
     assert burst.returncode == 130 and b"interrupted 1 time(s)" in out
+
+
+
+def test_a_sigterm_reaches_a_tool_the_harness_is_running_too(tmp_path):
+    burst = _burst(tmp_path, sys.executable, "-c", WAITS_FOR_A_TOOL)
+    _ready(burst)
+    burst.send_signal(signal.SIGTERM)
+    out, _ = burst.communicate(timeout=15)  # not the tool's 20s, nor the pod's grace
+    assert b"the tool ended with -2" in out  # its SIGINT: KeyboardInterrupt
 
 
 def test_a_sigint_for_the_group_reaches_the_harness_once_not_twice(tmp_path):
