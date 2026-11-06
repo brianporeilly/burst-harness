@@ -16,8 +16,8 @@ without that header is refused, and the header is only as good as the network
 policy that lets nothing but the proxy reach this app.
 
 Scripts, other machines and bots use an API token instead (tokens.py), which
-reaches /api/tasks only: never the Settings (settings.py), where credentials
-are set. With `local_browser` (listening beyond this machine
+reaches /api/tasks only: never the Settings (settings.py, profiles.py), where
+credentials and the profiles tasks hand work to are set. With `local_browser` (listening beyond this machine
 with no signing-in proxy), the browser's way in is for this machine alone, and
 anyone else needs a token.
 """
@@ -39,6 +39,7 @@ from harness.exec_target import ExecError
 from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
 from .launch import HANDOFF_PATH, LaunchError
+from .profiles import ProfilesError, ProfileStore
 from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
 from .tasks import TaskRunner, TasksError
@@ -49,12 +50,13 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (LaunchError, SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
-               JobsError, TasksError, TokenError, SettingsError)
+               JobsError, TasksError, TokenError, SettingsError, ProfilesError)
 LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
-               tokens: TokenStore | None = None, settings: CredentialStore | None = None, slack: SlackBot | None = None,
+               tokens: TokenStore | None = None, settings: CredentialStore | None = None,
+               profiles: ProfileStore | None = None, slack: SlackBot | None = None,
                hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
@@ -295,5 +297,33 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
             raise SettingsError(f"{name} is not set here.")
         back = "the environment's value" if credentials.source(name) else "nothing: it has no value now"
         return {"message": f"Cleared {name}; from now on it is {back}."}
+
+    # --- Settings: profiles, the other agents a task's lead may hand work to (never with a token) ---
+
+    def profile_store() -> ProfileStore:
+        if profiles is None:
+            raise ProfilesError("Settings are not on in this orchestrator.")
+        return profiles
+
+    @app.get("/api/settings/profiles")
+    def list_profiles() -> dict[str, Any]:
+        return profile_store().listing()
+
+    @app.put("/api/settings/profiles/{name}")
+    async def set_profile(name: str, request: Request) -> dict[str, str]:
+        profile_store().set(name, await body(request), user=request.state.user)
+        return {"message": f"Set {name}. Bursts that start from now on use it."}
+
+    @app.delete("/api/settings/profiles/{name}")
+    def remove_profile(name: str) -> dict[str, str]:
+        now = profile_store().remove(name)
+        return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
+
+    @app.put("/api/settings/delegate_to")
+    async def set_delegates(request: Request) -> dict[str, str]:
+        raw = await body(request)
+        profile_store().set_default(raw.get("names"), user=request.state.user)
+        return {"message": "New tasks hand work to " + (", ".join(profile_store().default()) or "no one")
+                + (" (the configuration's)." if raw.get("names") is None else ".")}
 
     return app

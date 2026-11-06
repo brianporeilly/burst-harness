@@ -595,6 +595,27 @@ back to the environment's value.
 - A key that doesn't open an existing `credentials.enc` stops the orchestrator
   from starting. It won't run without the credentials or write over them.
 
+**Profiles.** The Settings tab also defines the profiles a task's lead may
+hand work to (see "Other agents" below): a name, a model (provider, base URL,
+model id and context window, which "Read the server" fills in from a
+llama-server), what it's good at, and as a delegate its extra instructions
+and whether it is read-only. They're added to the profiles in the
+orchestrator's config file, and replace one of the same name. Settings also
+picks the delegates for new tasks; unset, they are the config file's
+`delegate_to`.
+
+- The task form lists the profiles as "Delegate to", preset to that default.
+  A task keeps the names it was made with, so continuing it hands work to the
+  same profiles (as they are defined by then). `POST /api/tasks` takes
+  `delegate_to` as a list of names; `[]` is no one.
+- A burst is given the profiles and its task's delegates in its environment
+  (`HARNESS_AGENTS`, as JSON, and `HARNESS_DELEGATE_TO`), so a burst run as a
+  Job needs no config file of the orchestrator's.
+- They're kept in `profiles.json` in the orchestrator's state directory. They
+  aren't secret: a provider's key stays in the credentials. The page can't set
+  `token_command` or `token_file`, which run a command or read a file on the
+  driver. `/api/settings/profiles` is the API, which API tokens can't reach.
+
 **What each run is handed.** A task's burst and a job's run are subprocesses,
 and each gets the orchestrator's environment with every credential taken out
 and only its own put back (`harness/credentials.py`):
@@ -1012,7 +1033,8 @@ sandbox reaches the server through the gateway.
 ### Other agents: routing and delegation (`--router`, `--delegate-to`, `--agent`)
 
 Name your models once, as `[agents.NAME]` profiles in a config file (yours, a
-`--config` file, or a job.toml; never a repo's `.harness.toml`). Each profile
+`--config` file, or a job.toml; never a repo's `.harness.toml`), or in the
+orchestrator's Settings tab ("Profiles", above). Each profile
 takes the model settings (`provider`, `base_url`, `model_id`,
 `context_window_limit`, `effort`, `model_params`...) and a `use_for` line
 saying what it is good at. A profile is a whole model: what it leaves out is

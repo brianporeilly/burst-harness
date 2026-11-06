@@ -31,7 +31,8 @@ turns them off.
 
 Settings (settings.py, the Settings tab): credentials set in the page, used
 in place of the environment's, kept encrypted with ORCHESTRATOR_SECRETS_KEY (or
-a key it makes in the state directory).
+a key it makes in the state directory). And the profiles (profiles.py) a
+task's lead may hand work to, with who new tasks hand work to by default.
 
 Slack (slack.py): with SLACK_APP_TOKEN and SLACK_BOT_TOKEN (set in Settings, or
 here), tasks are started from Slack messages and reported in their threads,
@@ -68,6 +69,7 @@ from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
 from .launch import Jobs, LaunchError
+from .profiles import ProfileStore
 from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
@@ -127,6 +129,7 @@ def main() -> None:
         settings = CredentialStore(state / "credentials.enc", key)
     except SettingsError as err:
         parser.error(str(err))
+    profiles = ProfileStore(state / "profiles.json", base)
     directories = [*args.jobs, *filter(None, os.environ.get("ORCHESTRATOR_JOBS", "").split(os.pathsep))]
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
                      start_paused=args.start_paused) if directories else None
@@ -148,7 +151,7 @@ def main() -> None:
                   + (", new jobs paused" if args.start_paused else ""))
         jobs.start()
     tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher,
-                       records=state / "tasks") if args.tasks else None
+                       records=state / "tasks", profiles=profiles) if args.tasks else None
     if tasks:
         print(f"Tasks in {tasks.root}, {tasks.limit} at a time" + (f", bursts {launcher.describe()}" if launcher else ""))
         try:
@@ -163,7 +166,8 @@ def main() -> None:
     if slack:
         slack.start()
     tokens = TokenStore(state / "tokens.json")
-    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, slack=slack, hosts=tuple(args.host),
+    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, profiles=profiles, slack=slack,
+                     hosts=tuple(args.host),
                      user_header=args.user_header, local_browser=local_browser)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
 

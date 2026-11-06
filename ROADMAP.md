@@ -541,10 +541,10 @@ Next, in this order (2026-11-04):
    Checked on podman: Haiku leading in the sandbox, one delegation to a
    profile on a fake llama.cpp server, its report back, and a pause; and
    again (2026-11-05) with a real llama-server profile as the delegate.
-   Not yet on the cluster: the orchestrator takes profiles and `delegate_to`
-   only from a config file in its pod (nothing in Settings or a task sets
-   them), so a Claude-led task there has no one to delegate to. To decide
-   later: choosing them per task, or in Settings. After it, maybe the other
+   Profiles and the default `delegate_to` are set in the orchestrator's
+   Settings, and a task picks its own delegates (2026-11-06; README
+   "Profiles"); its bursts are given them in their environment, so a burst
+   run as a Job needs no config file. After it, maybe the other
    way round (Claude Code as a profile a Strands lead
    delegates to), which would put Claude's token in the sandbox for the run.
 

@@ -132,6 +132,12 @@
         <p class="muted" id="task-params-note"></p>
         <p class="muted" id="task-params-examples"></p>
       </details>
+      <div id="task-delegates" class="hidden">
+        <label>Delegate to</label>
+        <div data-boxes class="row" style="flex-wrap:wrap"></div>
+        <p class="muted">The lead may hand pieces of the work to these profiles (Settings), each a fresh agent in the
+          same sandbox whose report comes back. Continuing the task keeps the same ones.</p>
+      </div>
       <div class="grid2">
         <label>Base branch <input type="text" name="base_branch" placeholder="default"></label>
         <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
@@ -169,6 +175,42 @@
       <datalist id="credential-names"></datalist>
       <label>Value <input type="password" name="value" required autocomplete="new-password"></label>
       <div class="row"><button class="primary" type="submit">Set</button><span class="error" id="credential-form-error"></span></div>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>Profiles</h2>
+    <p class="muted">Other agents a task's lead may hand pieces of work to: a model and what it is good at, which
+      is all the lead knows of it. Those set here are added to the orchestrator's configuration's, and replace one
+      of the same name. Bursts that start from now on use them.</p>
+    <div id="profiles"><p class="muted">Loading...</p></div>
+    <h3>Delegates for new tasks</h3>
+    <p class="muted">Who a new task's lead may hand work to, unless the task picks its own.</p>
+    <div id="delegates-default" class="row" style="flex-wrap:wrap"></div>
+    <p class="muted" id="delegates-source"></p>
+    <div class="row"><button id="delegates-save">Save</button><button id="delegates-reset">Use the configuration's</button>
+      <span class="error" id="delegates-error"></span></div>
+  </section>
+  <section class="panel">
+    <h2>Add or change a profile</h2>
+    <form id="profile-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="32" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="coder"></label>
+        <label>Provider <select name="provider"></select></label>
+      </div>
+      <div class="grid2">
+        <label>Model <input type="text" name="model_id" placeholder="the provider's default"></label>
+        <label>Base URL <input type="text" name="base_url" placeholder="http://llm.lan:8080"></label>
+      </div>
+      <div class="grid2">
+        <label>Context window (tokens) <input type="number" name="context_window_limit" min="0" placeholder="default"></label>
+        <div class="row" style="align-self:end;padding-bottom:2px"><button type="button" id="profile-probe">Read the server</button></div>
+      </div>
+      <p class="muted" id="profile-probe-note"></p>
+      <label>Good at (what the lead goes by) <textarea name="use_for" required maxlength="4000"
+        placeholder="Writing and changing code, running and fixing tests"></textarea></label>
+      <label>Extra instructions, as a delegate <textarea name="prompt" maxlength="4000" placeholder="optional"></textarea></label>
+      <label class="inline"><input type="checkbox" name="read_only"> Read-only: it looks and runs commands, but changes no files</label>
+      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="profile-form-error"></span></div>
     </form>
   </section>
   <section class="panel">
@@ -708,6 +750,7 @@ async function renderTask() {
       + "It is removed once the work is pushed, or with the task.") : null,
     t.restarts ? el("p", { class: "muted" }, `Restarted ${t.restarts} time(s) after the orchestrator stopped mid-burst.`) : null,
     settingsLine(t.settings),
+    t.delegate_to && t.delegate_to.length ? el("p", { class: "muted" }, `Hands work to: ${t.delegate_to.join(", ")}.`) : null,
     el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, t.prompt)),
     idle ? el("form", { onsubmit: (event) => { event.preventDefault();
       taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
@@ -726,6 +769,7 @@ async function renderTask() {
 
 document.getElementById("new-task").onclick = () => {
   selectedTask = null;
+  taskDelegates();
   document.getElementById("task-detail").classList.add("hidden");
   document.getElementById("task-create").classList.remove("hidden");
   refreshTasks();
@@ -890,6 +934,9 @@ taskForm.onsubmit = async (event) => {
   if (taskProvider !== "anthropic") { delete data.effort; delete data.thinking; }
   if (taskForm.engine.value === "claude-code") { delete data.max_tokens; delete data.model_params; }
   if (taskParams() === null) { error.textContent = "The extra request parameters aren't a JSON object."; return; }
+  const picker = document.getElementById("task-delegates");
+  if (!picker.classList.contains("hidden"))
+    data.delegate_to = [...picker.querySelectorAll("input:checked")].map((box) => box.value);
   try {
     const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     taskForm.reset();
@@ -940,6 +987,102 @@ document.getElementById("credential-form").onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
+// --- profiles: the task form's picker, and Settings ---
+
+const checkboxes = (names, chosen) => names.map((name) => el("label", { class: "inline" },
+  Object.assign(el("input", { type: "checkbox", value: name }), { checked: chosen.includes(name) }), name));
+
+// The profiles, as checkboxes preset to Settings' default; hidden when there are none (or no Settings).
+async function taskDelegates() {
+  const box = document.getElementById("task-delegates");
+  let found;
+  try { found = await api("/api/settings/profiles"); } catch { box.classList.add("hidden"); return; }
+  box.querySelector("[data-boxes]").replaceChildren(...checkboxes(found.profiles.map((p) => p.name), found.delegate_to));
+  box.classList.toggle("hidden", !found.profiles.length);
+}
+
+const profileForm = document.getElementById("profile-form");
+const profileLine = (p) => [p.provider || "default provider", p.model_id, p.base_url ? `at ${p.base_url}` : null,
+  p.context_window_limit ? `${p.context_window_limit.toLocaleString()} tokens` : null, p.read_only ? "read-only" : null]
+  .filter(Boolean).join(" · ");
+
+async function refreshProfiles() {
+  let found;
+  try { found = await api("/api/settings/profiles"); } catch (err) {
+    document.getElementById("profiles").replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const box = document.getElementById("profiles");
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  if (!profileForm.provider.options.length)
+    profileForm.provider.replaceChildren(el("option", { value: "" }, "Default"), ...found.providers.map((name) => el("option", { value: name }, name)));
+  box.replaceChildren(found.profiles.length ? el("table", {},
+    el("tr", {}, el("th", {}, "Name"), el("th", {}, "Model"), el("th", {}, "Changed"), el("th", {}, "")),
+    ...found.profiles.map((p) => el("tr", {},
+      el("td", {}, el("code", {}, p.name), el("div", { class: "muted" }, p.use_for || "")),
+      el("td", {}, profileLine(p), el("div", { class: "muted" }, p.source === "settings"
+        ? (p.configuration_too ? "set here, over the configuration's" : "set here") : "from the configuration")),
+      el("td", {}, p.updated ? when(p.updated) + (p.updated_by ? ` by ${p.updated_by}` : "") : ""),
+      el("td", {}, el("div", { class: "row" },
+        el("button", { onclick: () => {
+          for (const field of ["name", "provider", "model_id", "base_url", "context_window_limit", "use_for", "prompt"])
+            profileForm[field].value = p[field] ?? "";
+          profileForm.read_only.checked = !!p.read_only;
+          profileForm.scrollIntoView({ behavior: "smooth" });
+        } }, p.source === "settings" ? "Edit" : "Copy here"),
+        p.source === "settings" ? el("button", { class: "danger", onclick: async () => {
+          if (!confirm(`Remove ${p.name}?${p.configuration_too ? " The configuration's is used again." : ""}`)) return;
+          try { await api(`/api/settings/profiles/${p.name}`, { method: "DELETE" }); } catch (err) { alert(`Remove: ${err.message}`); }
+          refreshProfiles();
+        } }, "Remove") : null)))))
+    : el("p", { class: "muted" }, "No profiles yet."));
+  document.getElementById("delegates-default").replaceChildren(...(found.profiles.length
+    ? checkboxes(found.profiles.map((p) => p.name), found.delegate_to) : [el("span", { class: "muted" }, "Add a profile first.")]));
+  document.getElementById("delegates-source").textContent = found.delegate_to_source === "settings"
+    ? "Set here." : "The configuration's" + (found.delegate_to.length ? "." : ": no one.");
+}
+
+async function saveDelegates(names) {
+  const error = document.getElementById("delegates-error");
+  error.textContent = "";
+  try { await api("/api/settings/delegate_to", { method: "PUT", body: JSON.stringify({ names }) }); }
+  catch (err) { error.textContent = err.message; }
+  refreshProfiles();
+}
+document.getElementById("delegates-save").onclick = () =>
+  saveDelegates([...document.querySelectorAll("#delegates-default input:checked")].map((box) => box.value));
+document.getElementById("delegates-reset").onclick = () => saveDelegates(null);
+
+profileForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("profile-form-error");
+  error.textContent = "";
+  const data = Object.fromEntries(new FormData(profileForm));
+  data.read_only = profileForm.read_only.checked;
+  try {
+    await api(`/api/settings/profiles/${encodeURIComponent(data.name.trim())}`, { method: "PUT", body: JSON.stringify(data) });
+    profileForm.reset();
+    document.getElementById("profile-probe-note").textContent = "";
+    refreshProfiles();
+  } catch (err) { error.textContent = err.message; }
+};
+
+document.getElementById("profile-probe").onclick = async () => {
+  const note = document.getElementById("profile-probe-note");
+  const url = profileForm.base_url.value.trim();
+  if (!url) { note.textContent = "Give the server's base URL first."; return; }
+  note.textContent = `Reading ${url}...`;
+  let found;
+  try { found = await api(`/api/probe?base_url=${encodeURIComponent(url)}`); }
+  catch (err) { note.textContent = err.message; return; }
+  if (!found.found) { note.textContent = `Couldn't read it: ${found.why}.`; return; }
+  if (found.context_window && !profileForm.context_window_limit.value) profileForm.context_window_limit.value = found.context_window;
+  if (found.model && !profileForm.model_id.value) profileForm.model_id.value = found.model;
+  note.textContent = `llama-server: ${found.model || "a model"}`
+    + (found.context_window ? `, ${found.context_window.toLocaleString()} tokens per slot.` : ".");
+};
+
 // --- settings: tokens ---
 
 async function refreshTokens() {
@@ -982,7 +1125,7 @@ document.getElementById("token-form").onsubmit = async (event) => {
 };
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
-  settings: () => { refreshCredentials(); refreshTokens(); } };
+  settings: () => { refreshCredentials(); refreshProfiles(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;

@@ -56,6 +56,7 @@ from harness.config import HarnessConfig
 from .backend import SpecError, check_model, model_choice, model_settings, task_providers
 from .jobs import OUTPUT, REPO, _iso, _tail, json_file
 from .launch import Launched, LaunchError, Subprocess, granted
+from .profiles import ProfilesError, ProfileStore, check, names_given
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 # owner/repo on GitHub, or a repo's https URL.
@@ -101,8 +102,9 @@ def slug_for(prompt: str) -> str:
 
 class TaskRunner:
     def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
-                 launcher: Any = None, records: Path | None = None) -> None:
+                 launcher: Any = None, records: Path | None = None, profiles: ProfileStore | None = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
+        self.profiles = profiles  # set in Settings (profiles.py); None: the configuration's alone
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
         # The records, the orchestrator's alone; the bursts' output, where the bursts write it.
         self.outputs = base.resolve_state_dir("tasks")
@@ -221,6 +223,7 @@ class TaskRunner:
             chosen = model_choice(self.base, provider, base_url, model, context_window, settings)
         except ValueError as err:  # SpecError is one
             raise TasksError(str(err) if isinstance(err, SpecError) else "The context window is a number of tokens.") from err
+        delegate_to = self._delegates(raw)
         record = {
             "slug": slug, "repo": url, "prompt": prompt, "engine": engine, "model": model,
             "provider": provider, "base_url": base_url, "context_window": context_window, "settings": settings,
@@ -228,6 +231,7 @@ class TaskRunner:
             "uses": {"provider": chosen.get("provider", self.base.provider),
                      "model": models.model_name(replace(self.base, **chosen)),
                      "base_url": chosen.get("base_url", self.base.base_url)},
+            "delegate_to": delegate_to,
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
@@ -239,6 +243,20 @@ class TaskRunner:
             self._write(record)
         self.dispatch()
         return _summary(self._read(slug))
+
+    def _delegates(self, raw: dict[str, Any]) -> list[str] | None:
+        """Who the task's lead may hand work to: the names given, or Settings' default; kept with the task so
+        continuing it hands work to the same profiles. None without Settings' profiles: the configuration's."""
+        if self.profiles is None:
+            if raw.get("delegate_to") is not None:
+                raise TasksError("This orchestrator has no Settings, so a task cannot name its delegates.")
+            return None
+        try:
+            names = names_given(raw["delegate_to"]) if raw.get("delegate_to") is not None else self.profiles.default()
+            check(self.base, self.profiles.profiles(), names)
+        except ProfilesError as err:
+            raise TasksError(str(err)) from err
+        return list(names)
 
     def resume(self, slug: str, message: str = "") -> dict[str, Any]:
         """Queue another burst: with the user's reply, or to carry on from where it stopped."""
@@ -357,7 +375,12 @@ class TaskRunner:
     def _config(self, record: dict[str, Any]) -> HarnessConfig:
         """The orchestrator's settings with the task's model on top: what its burst runs with, for what
         it is granted (a provider plugin's credentials go to the tasks that use it)."""
-        return replace(self.base, **self._chosen(record))
+        cfg = replace(self.base, **self._chosen(record))
+        if self.profiles is not None:
+            cfg = replace(cfg, agents=self.profiles.profiles())
+        if record.get("delegate_to") is not None:
+            cfg = replace(cfg, delegate_to=tuple(record["delegate_to"]))
+        return cfg
 
     def _chosen(self, record: dict[str, Any]) -> dict[str, Any]:
         return model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
@@ -373,7 +396,12 @@ class TaskRunner:
             # its own choice, in the harness's state).
             chosen = {"agent": record["uses"]["agent"], "router": ""}
         return {f"HARNESS_{name.upper()}": str(value).lower() if isinstance(value, bool) else str(value)
-                for name, value in chosen.items()}
+                for name, value in chosen.items()} | self._profile_env(record)
+
+    def _profile_env(self, record: dict[str, Any]) -> dict[str, str]:
+        """The profiles, and who this task's lead may hand work to, as the burst's HARNESS_AGENTS and
+        HARNESS_DELEGATE_TO: a burst run as a Job has no config file of the orchestrator's to read them from."""
+        return self.profiles.environment(record.get("delegate_to")) if self.profiles is not None else {}
 
     def _start(self, record: dict[str, Any]) -> None:
         """Start a burst of a queued task. Called with the lock held."""
@@ -506,7 +534,7 @@ def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "base_branch", "draft", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "base_branch", "draft", "branch", "created", "created_by",
         "state", "pr", "message", "restarts", "sandbox", "said")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
 

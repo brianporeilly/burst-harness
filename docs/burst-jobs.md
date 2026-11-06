@@ -176,7 +176,9 @@ thread `_wait()` runs in now; no watch to keep open.
 5. On the cluster: a task stopped at the model (no key), then one on Haiku;
    Stop; and an orchestrator rollout while a burst runs, which it should
    survive.
-6. Then questions (tasks with no repo) and scheduled jobs, on the same launcher.
+6. Then scheduled jobs, on the same launcher. Questions (tasks with no repo)
+   came with step 2: they are tasks, so they already run on it (checked on
+   the cluster, 2026-11-06).
 
 ## Open
 
