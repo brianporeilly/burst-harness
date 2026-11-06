@@ -797,7 +797,12 @@ def main(argv: list[str] | None = None) -> int:
         # Through the environment, so every load (and a job's run) layers them.
         os.environ[CONFIG_FILES_ENV] = os.pathsep.join(
             [*filter(None, os.environ.get(CONFIG_FILES_ENV, "").split(os.pathsep)), *args.config])
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        # Ctrl-C, or the orchestrator's Stop: what the run held was let go of on the way here, so no traceback.
+        print("\nStopped.", file=sys.stderr)
+        return 130  # as a shell reports a SIGINT
 
 
 if __name__ == "__main__":

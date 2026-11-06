@@ -98,6 +98,14 @@ def test_session_needs_a_name_and_a_container_runtime_or_agent_sandbox(monkeypat
         cli.main(["--target", "agent-sandbox", "--namespace", "s", "session", "reap"])
 
 
+def test_a_stopped_run_says_so_rather_than_ending_in_a_traceback(capsys, monkeypatch):
+    def interrupted(args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(cli, "cmd_release", interrupted)
+    assert cli.main(["release"]) == 130
+    assert capsys.readouterr().err == "\nStopped.\n"
+
+
 def _usage(**usage):
     from types import SimpleNamespace
 
