@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.6.0 (2026-11-07)
+
+### Features
+
+- **orchestrator**: Run jobs' runs on the burst launcher, as Kubernetes Jobs on a cluster
+  ([#84](https://github.com/brianporeilly/strands-harness/pull/84),
+  [`04125fe`](https://github.com/brianporeilly/strands-harness/commit/04125fe936e456524cb1719a690e4c186ccb83bf))
+
+
 ## v0.5.0 (2026-11-06)
 
 ### Features
