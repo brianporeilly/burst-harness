@@ -475,10 +475,12 @@ Secrets on a cluster, the Keychain or a file locally), signing in with GitHub
 so a task acts as whoever started it, and a GitHub App instead of a personal
 token on the cluster. Those wait for a second user.
 
-4. Maybe: on a cluster, each burst as a Kubernetes Job of the driver image
+4. On a cluster, each burst as a Kubernetes Job of the driver image
    instead of a subprocess of the orchestrator, so its memory is the burst's
    and an orchestrator rollout does not cut it short. Designed (2026-11-05):
-   docs/burst-jobs.md.
+   docs/burst-jobs.md. Live on the cluster (2026-11-06), with a run to the
+   end, Stop, and a rollout mid-burst checked; jobs' runs on it too
+   (2026-11-06).
 5. More than one model per run (2026-10-30): named profiles (`[agents.NAME]`),
    a lead that delegates pieces of work to them, and a router that picks the
    lead for a new task or job run (`harness/agents.py`), with example
@@ -528,7 +530,7 @@ Next, in this order (2026-11-04):
    ci.yml of their own, with uv's cache. It pushes with a GitHub App's token
    when the repo has one (`RELEASE_APP_ID`, `RELEASE_APP_KEY`), which a
    protected main can let past its rules; until then, with the workflow's
-   own token. Next: home-ops pins `X.Y.Z@sha256:...` in place of `sha-...`.
+   own token. home-ops pins `X.Y.Z@sha256:...`, the release and its digest.
 8. Claude as the lead, handing work to Strands profiles: built (2026-11-04).
    With engine=claude-code and `delegate_to`, headless runs go through the
    Claude Agent SDK, whose in-process MCP server offers Claude Code a

@@ -2,6 +2,7 @@
 handed over once, followed to its end, stopped, and followed again by a restarted orchestrator."""
 
 import json
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -276,3 +277,128 @@ def test_a_wrapper_that_cannot_fetch_its_credentials_does_not_start_the_harness(
                            capture_output=True, timeout=60)
     assert burst.returncode == 1 and b"started" not in burst.stdout
     assert "could not fetch the burst's credentials" in (tmp_path / "out").read_text()
+
+
+# --- a job's runs, on the same launcher ---
+
+def _job_dirs(tmp_path):
+    """One job as a ConfigMap mounts it: each file a link into ..data, which links to a timestamped directory."""
+    watcher = tmp_path / "jobs" / "watcher"
+    if watcher.is_dir():
+        return watcher.parent  # the same orchestrator's, after a restart
+    (watcher / "..2026_11_06_01").mkdir(parents=True)
+    (watcher / "..2026_11_06_01" / "prompt.md").write_text("Look at the cluster.")
+    (watcher / "..2026_11_06_01" / "job.toml").write_text(
+        '[job]\ntrigger = "0 8 * * *"\n[job.secrets.gh]\nenv = "GITHUB_TOKEN"\nhost = "api.github.com"\n')
+    (watcher / "..data").symlink_to("..2026_11_06_01")
+    for name in ("prompt.md", "job.toml"):
+        (watcher / name).symlink_to(f"..data/{name}")
+    return tmp_path / "jobs"
+
+
+def _job_runner(tmp_path, jobs=None):
+    from orchestrator.jobs import JobRunner
+
+    return JobRunner([_job_dirs(tmp_path)], launcher=jobs or _jobs(tmp_path))
+
+
+def _job_settled(runner, running):
+    import time
+
+    for _ in range(200):
+        if ("watcher" in runner.running) == running:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"watcher is {'not ' if running else ''}running")
+
+
+def test_a_job_run_is_a_job_of_its_own_with_the_job_copied_beside_its_record(tmp_path, cluster, monkeypatch):
+    from harness import job
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-not-real")
+    runner = _job_runner(tmp_path)
+    run_id = runner.run("watcher")
+    name, made = cluster.only()
+    assert name.startswith("job-watcher-") and made["manifest"]["metadata"]["labels"]["burst-harness/job"] == "watcher"
+    (container,) = made["manifest"]["spec"]["template"]["spec"]["containers"]
+    # Run from a copy on the state volume: the pod has no ConfigMap of the orchestrator's.
+    run_dir = job.runs_dir(runner._loaded(runner._path("watcher"))[1], "watcher") / run_id
+    assert container["command"][-3:] == ["job", "run", str(run_dir / "watcher")]
+    assert container["command"][3] == str(run_dir / "output.log")
+    assert sorted(p.name for p in (run_dir / "watcher").iterdir()) == ["job.toml", "prompt.md"]
+    assert not (run_dir / "watcher" / "job.toml").is_symlink()
+    assert job.load(run_dir / "watcher").secrets[0].env == "GITHUB_TOKEN"
+    # Its credentials only under a token, as a task's.
+    env = {e["name"]: e["value"] for e in container["env"]}
+    assert env[job.RUN_ID_ENV] == run_id and "GITHUB_TOKEN" not in env
+    # What its job.toml names, and its model's key (the job's model is the default, Anthropic's).
+    assert runner.handoff(env["BURST_HANDOFF_TOKEN"]) == {"GITHUB_TOKEN": "ghp-test-not-real",
+                                                          "ANTHROPIC_API_KEY": "sk-test-not-real"}
+    assert "sk-test-not-real" not in json.dumps(made["manifest"])
+    assert json.loads((run_dir / "launch.json").read_text()) == {"job": name}
+
+    assert runner.job("watcher")["running"]
+    with pytest.raises(Exception, match="already running"):
+        runner.run("watcher")
+    cluster.end(name, 0, run_dir / "output.log")
+    _job_settled(runner, running=False)
+
+
+def test_a_restarted_orchestrator_follows_a_job_run_still_under_way(tmp_path, cluster, monkeypatch):
+    from harness import job
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-not-real")
+    first = _job_runner(tmp_path, replace(_jobs(tmp_path), poll=3600))
+    run_id = first.run("watcher")
+    name, _ = cluster.only()
+    cfg = first._loaded(first._path("watcher"))[1]
+    # The harness, in the pod, says it is under way, with a pid of its own pod's.
+    job._write_run(job.runs_dir(cfg, "watcher") / run_id, {"id": run_id, "job": "watcher", "state": "running",
+                                                           "pid": os.getpid(), "started": "2026-11-06T16:00:00Z"})
+
+    second = _job_runner(tmp_path)  # after a rollout, before it has looked
+    assert second.job("watcher")["runs"][0]["state"] == "interrupted"
+    assert second.recover() == [f"watcher: run {run_id} is still under way ({name}), followed again"]
+    assert second.job("watcher")["runs"][0]["state"] == "running" and second.job("watcher")["running"]
+    with pytest.raises(Exception, match="already running"):
+        second.run("watcher")  # nor would the schedule start another beside it
+    cluster.end(name, 0, job.runs_dir(cfg, "watcher") / run_id / "output.log")
+    _job_settled(second, running=False)
+    assert list(cluster.jobs) == [name]
+
+
+def test_a_job_run_whose_job_is_gone_is_interrupted_not_followed(tmp_path, cluster, monkeypatch):
+    from harness import job
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-not-real")
+    first = _job_runner(tmp_path, replace(_jobs(tmp_path), poll=3600))
+    run_id = first.run("watcher")
+    name, _ = cluster.only()
+    cfg = first._loaded(first._path("watcher"))[1]
+    job._write_run(job.runs_dir(cfg, "watcher") / run_id, {"id": run_id, "job": "watcher", "state": "running"})
+    cluster.jobs.clear()  # its node lost
+    second = _job_runner(tmp_path)
+    assert second.recover() == [f"watcher: run {run_id}'s Job ({name}) is gone, left interrupted"]
+    run = second.run_detail("watcher", run_id)
+    assert run["state"] == "interrupted" and "Job is gone" in run["reason"]
+    assert not second.job("watcher")["running"]
+
+
+def test_a_job_run_that_cannot_be_made_says_why(tmp_path, cluster, monkeypatch):
+    from orchestrator.jobs import JobsError
+
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp-test-not-real")
+    runner = _job_runner(tmp_path)
+    cluster.fail = "the server is unreachable"
+    with pytest.raises(JobsError, match="the server is unreachable"):
+        runner.run("watcher")
+    assert not runner.running
+
+
+def test_a_job_runs_pod_trades_its_token_with_tasks_off(tmp_path, cluster):
+    runner = _job_runner(tmp_path)
+    client = TestClient(create_app(FakeBackend(), runner, hosts=("orchestrator.lan",), user_header="Remote-User"),
+                        base_url="http://10.1.2.3:8700")
+    token = runner.launcher.handoffs.offer({"GITHUB_TOKEN": "ghp-test-not-real"})
+    assert client.post(HANDOFF_PATH, headers={"Authorization": f"Bearer {token}"}).json() == \
+        {"env": {"GITHUB_TOKEN": "ghp-test-not-real"}}

@@ -616,8 +616,8 @@ picks the delegates for new tasks; unset, they are the config file's
   `token_command` or `token_file`, which run a command or read a file on the
   driver. `/api/settings/profiles` is the API, which API tokens can't reach.
 
-**What each run is handed.** A task's burst and a job's run are subprocesses,
-and each gets the orchestrator's environment with every credential taken out
+**What each run is handed.** A task's burst and a job's run are subprocesses
+(or, with `--bursts job`, Kubernetes Jobs), and each gets the orchestrator's environment with every credential taken out
 and only its own put back (`harness/credentials.py`):
 
 - a task: the git token, the model's keys, the cluster gateway's token, and
@@ -642,8 +642,8 @@ python -m orchestrator --jobs ~/Developer/code/strands-harness-jobs
 
 `--jobs` is a job's directory or one of them (repeatable). The Jobs tab lists
 each job with its last outcome and what its secrets need from the orchestrator's
-environment, runs one on demand (`harness job run`, as a subprocess, with the
-orchestrator's environment), and shows every run: its report, its output, and
+environment, runs one on demand (`harness job run`, as a task's burst is run: a
+subprocess, or a Kubernetes Job with `--bursts job`), and shows every run: its report, its output, and
 the hosts its gateway let through or refused. Runs started from the command
 line are there too.
 
@@ -744,11 +744,14 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
 - **Stop** sends the burst Ctrl-C, so the harness cleans up after itself;
   **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
   off.
-- On a cluster, `--bursts job` (`ORCHESTRATOR_BURSTS=job`) runs each burst as a
-  Kubernetes Job of its own instead of a subprocess (docs/burst-jobs.md). It
-  has its own memory, and it goes on while the orchestrator restarts: a
-  restarted orchestrator follows the Jobs still running instead of starting
-  them again. The Job is made in the orchestrator's namespace, from its own
+- On a cluster, `--bursts job` (`ORCHESTRATOR_BURSTS=job`) runs each burst,
+  and each job's run (scheduled or not), as a Kubernetes Job of its own
+  instead of a subprocess (docs/burst-jobs.md). It has its own memory, and it
+  goes on while the orchestrator restarts: a restarted orchestrator follows
+  the Jobs still running instead of starting them again. A job's directory is
+  copied into its run's, on the shared volume, and run from there, so the pod
+  needs none of the orchestrator's mounts for it. Paths a `job.toml` gives
+  outside its directory aren't copied. The Job is made in the orchestrator's namespace, from its own
   image. It is given no credentials, only a token good once for fetching
   them from the orchestrator as it starts. Stop deletes the Job, and its pod
   gets 30 seconds to clean up. Settings:

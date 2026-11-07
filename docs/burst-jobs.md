@@ -1,6 +1,7 @@
 # Bursts as Kubernetes Jobs
 
-A design, not yet built (2026-11-05). ROADMAP.md, phase 9, step 4.
+Built and running on the cluster (2026-11-06); designed 2026-11-05.
+ROADMAP.md, phase 9, step 4.
 
 ## Why
 
@@ -176,7 +177,12 @@ thread `_wait()` runs in now; no watch to keep open.
 5. On the cluster: a task stopped at the model (no key), then one on Haiku;
    Stop; and an orchestrator rollout while a burst runs, which it should
    survive.
-6. Then scheduled jobs, on the same launcher. Questions (tasks with no repo)
+6. Then jobs' runs, scheduled or by hand, on the same launcher: done
+   (2026-11-06). The pod has the state volume but not the orchestrator's job
+   directories (ConfigMaps on the cluster), so a run's job is copied into its
+   run directory and run from there; `launch.json` beside the run's record
+   names its Job, which a restarted orchestrator follows again, and a run
+   whose Job is gone shows as interrupted. Questions (tasks with no repo)
    came with step 2: they are tasks, so they already run on it (checked on
    the cluster, 2026-11-06).
 

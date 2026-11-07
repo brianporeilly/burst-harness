@@ -54,8 +54,8 @@ from harness import ask, credentials, git, job, models
 from harness.config import HarnessConfig
 
 from .backend import SpecError, check_model, model_choice, model_settings, task_providers
-from .jobs import OUTPUT, REPO, _iso, _tail, json_file
-from .launch import Launched, LaunchError, Subprocess, granted
+from .jobs import OUTPUT, _iso, _tail, json_file
+from .launch import REPO, Launched, LaunchError, Subprocess, granted
 from .profiles import ProfilesError, ProfileStore, check, names_given
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")

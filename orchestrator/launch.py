@@ -1,8 +1,8 @@
-"""How a task's burst is run: a subprocess of the orchestrator, or on a cluster a Kubernetes Job of its own
-(docs/burst-jobs.md).
+"""How a task's burst, or a job's run, is run: a subprocess of the orchestrator, or on a cluster a Kubernetes
+Job of its own (docs/burst-jobs.md).
 
-Either way the burst is `python -m orchestrator.burst OUTPUT -- ARGV` (burst.py), which appends the harness's
-output to the task's file, where the orchestrator reads its result, and exits with its status.
+Either way it is `python -m orchestrator.burst OUTPUT -- ARGV` (burst.py), which appends the harness's
+output to the task's file (or the run's), where the orchestrator reads its result, and exits with its status.
 
 As a Job, the burst is a pod with its own memory, which goes on while the orchestrator restarts: a running
 burst's record names its Job, and a restarted orchestrator follows it again (`reattach`). The pod mounts the
@@ -34,8 +34,9 @@ from harness.config import HarnessConfig
 from harness.session import SessionError, seconds
 
 from .burst import HANDOFF_TOKEN_ENV, HANDOFF_URL_ENV
-from .jobs import REPO
 
+# Where the harness is run from: this checkout, or the image's copy of it.
+REPO = Path(__file__).resolve().parent.parent
 # How long a stopped burst gets to release its sandbox before it is killed.
 CANCEL_GRACE = 30
 # Where a burst's pod trades its token for its credentials, on the orchestrator (app.py).
@@ -73,7 +74,7 @@ class Subprocess:
     kind = "subprocess"
 
     def start(self, slug: str, number: int, argv: list[str], env: dict[str, str], granted: dict[str, str],
-              output: Path) -> Launched:
+              output: Path, *, kind: str = "task") -> Launched:
         with open(output, "ab") as log:
             process = subprocess.Popen(
                 [sys.executable, "-m", "orchestrator.burst", str(output), "--", *argv], cwd=REPO,
@@ -179,11 +180,13 @@ class Jobs:
         return f"as Jobs in {self.namespace} ({self.image}, up to {self.memory})"
 
     def start(self, slug: str, number: int, argv: list[str], env: dict[str, str], granted: dict[str, str],
-              output: Path) -> Launched:
-        name = f"burst-{slug}-{number}-{secrets.token_hex(2)}"
+              output: Path, *, kind: str = "task") -> Launched:
+        """kind: "task", a task's burst number `number` (burst-SLUG-N-XXXX), or "job", a run of the job `slug`
+        (job-NAME-XXXX)."""
+        name = f"burst-{slug}-{number}-{secrets.token_hex(2)}" if kind == "task" else f"job-{slug}-{secrets.token_hex(2)}"
         token = self.handoffs.offer(granted)
-        manifest = self.manifest(name, slug, argv, {**env, HANDOFF_URL_ENV: self.handoff_url,
-                                                    HANDOFF_TOKEN_ENV: token}, output)
+        manifest = self.manifest(name, (f"burst-harness/{kind}", slug), argv,
+                                 {**env, HANDOFF_URL_ENV: self.handoff_url, HANDOFF_TOKEN_ENV: token}, output)
         try:
             self._kubectl("create", "-f", "-", stdin=json.dumps(manifest))
         except LaunchError:
@@ -191,9 +194,9 @@ class Jobs:
             raise
         return Launched(job=name)
 
-    def manifest(self, name: str, slug: str, argv: list[str], env: dict[str, str], output: Path) -> dict[str, Any]:
-        labels = {"app.kubernetes.io/name": "burst-harness", "app.kubernetes.io/component": "burst",
-                  "burst-harness/task": slug}
+    def manifest(self, name: str, label: tuple[str, str], argv: list[str], env: dict[str, str],
+                 output: Path) -> dict[str, Any]:
+        labels = {"app.kubernetes.io/name": "burst-harness", "app.kubernetes.io/component": "burst", label[0]: label[1]}
         state_dir = str(Path(self.cfg.state_dir).expanduser())
         return {
             "apiVersion": "batch/v1",

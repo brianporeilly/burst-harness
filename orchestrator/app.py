@@ -218,9 +218,11 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
 
     @app.post(HANDOFF_PATH)
     def handoff(request: Request) -> dict[str, Any]:
-        """A burst's pod trading its one-time token for its credentials (launch.py, burst.py)."""
+        """A burst's pod, or a job run's, trading its one-time token for its credentials (launch.py, burst.py)."""
         scheme, _, presented = request.headers.get("authorization", "").partition(" ")
-        values = tasks.handoff(presented.strip()) if tasks is not None and scheme.lower() == "bearer" else None
+        # Tasks and jobs share one launcher, and so its tokens, when both are on.
+        runner = tasks if tasks is not None else jobs
+        values = runner.handoff(presented.strip()) if runner is not None and scheme.lower() == "bearer" else None
         if values is None:
             return JSONResponse({"error": "No credentials are kept under that token (used, expired, or not one)."},
                                 status_code=401)

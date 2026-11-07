@@ -103,8 +103,8 @@ def main() -> None:
                         help="How long a task's sandbox claim lives, on a cluster (default 4h).")
     parser.add_argument("--bursts", choices=("subprocess", "job"),
                         default=os.environ.get("ORCHESTRATOR_BURSTS", "").strip() or "subprocess",
-                        help="How a task's bursts run: subprocesses of this orchestrator (default), or on a cluster "
-                             "Kubernetes Jobs of their own (ORCHESTRATOR_BURST_*; docs/burst-jobs.md).")
+                        help="How a task's bursts and a job's runs run: subprocesses of this orchestrator (default), "
+                             "or on a cluster Kubernetes Jobs of their own (ORCHESTRATOR_BURST_*; docs/burst-jobs.md).")
     parser.add_argument("--slack-user", action="append", default=[], metavar="ID",
                         help="A Slack user ID that may start tasks from Slack. Repeatable.")
     args = parser.parse_args()
@@ -116,8 +116,9 @@ def main() -> None:
     except (ZoneInfoNotFoundError, ValueError, SessionError) as err:
         parser.error(f"--timezone / --catch-up / --task-ttl: {err}")
     base = HarnessConfig.load(None, {})
+    directories = [*args.jobs, *filter(None, os.environ.get("ORCHESTRATOR_JOBS", "").split(os.pathsep))]
     launcher = None
-    if args.tasks and args.bursts == "job":
+    if args.bursts == "job" and (args.tasks or directories):
         try:
             launcher = Jobs.from_env(base, args.port)
         except LaunchError as err:
@@ -130,9 +131,8 @@ def main() -> None:
     except SettingsError as err:
         parser.error(str(err))
     profiles = ProfileStore(state / "profiles.json", base)
-    directories = [*args.jobs, *filter(None, os.environ.get("ORCHESTRATOR_JOBS", "").split(os.pathsep))]
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
-                     start_paused=args.start_paused) if directories else None
+                     start_paused=args.start_paused, launcher=launcher) if directories else None
     backend = ClusterBackend(base) if base.target == "agent-sandbox" else PodmanBackend(base)
     where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
@@ -145,10 +145,17 @@ def main() -> None:
         print(f"Orchestrator on http://127.0.0.1:{args.port}/ (this machine only), {where}")
     print(f"Credentials set in Settings: {state / 'credentials.enc'}, {key_note}")
     if jobs:
-        print(f"Jobs from {', '.join(str(d) for d in jobs.directories)}: {', '.join(jobs.discover()) or 'none found'}")
+        print(f"Jobs from {', '.join(str(d) for d in jobs.directories)}: {', '.join(jobs.discover()) or 'none found'}"
+              + (f", runs {launcher.describe()}" if launcher else ""))
         if jobs.schedule:
             print(f"Scheduled in {zone}, missed times run up to {args.catch_up} late"
                   + (", new jobs paused" if args.start_paused else ""))
+        try:
+            followed = jobs.recover()  # before the schedule: a run still under way is not started again
+        except LaunchError as err:
+            raise SystemExit(f"jobs: could not look at the runs left under way: {err}") from err
+        for line in followed:
+            print(f"jobs: {line}")
         jobs.start()
     tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher,
                        records=state / "tasks", profiles=profiles) if args.tasks else None

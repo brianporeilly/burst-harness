@@ -220,7 +220,7 @@ def test_a_run_whose_process_is_gone_is_interrupted(jobs_client):
 
 
 def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
-    from orchestrator import jobs as jobs_module
+    from orchestrator import launch as launch_module
 
     monkeypatch.setenv("GH_TOKEN", "orchestrators")
     monkeypatch.setenv("KUBE_TOKEN", "watchers")
@@ -235,7 +235,7 @@ def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
             import time
             time.sleep(0.5)
 
-    monkeypatch.setattr(jobs_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(launch_module.subprocess, "Popen", FakeProcess)
     assert jobs_client.post("/api/jobs/digest/run").status_code == 403  # no X-Orchestrator header
     refused = jobs_client.post("/api/jobs/digest/run", headers=CHANGE)
     assert refused.status_code == 400 and "GITHUB_TOKEN" in refused.json()["error"]
@@ -251,7 +251,7 @@ def test_running_a_job_starts_the_harness_once(jobs_client, monkeypatch):
 
 
 def test_a_job_run_gets_the_secrets_its_job_names(jobs_client, monkeypatch):
-    from orchestrator import jobs as jobs_module
+    from orchestrator import launch as launch_module
 
     started = []
 
@@ -262,7 +262,7 @@ def test_a_job_run_gets_the_secrets_its_job_names(jobs_client, monkeypatch):
         def wait(self):
             pass
 
-    monkeypatch.setattr(jobs_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(launch_module.subprocess, "Popen", FakeProcess)
     monkeypatch.setenv("GITHUB_TOKEN", "digests")
     monkeypatch.setenv("HARNESS_GIT_TOKEN", "tasks")
     monkeypatch.setenv("SLACK_BOT_TOKEN", "slack")
@@ -373,7 +373,7 @@ def test_a_due_job_that_cannot_run_is_tried_once_per_time(tmp_path, monkeypatch)
 def test_a_scheduled_run_says_so_in_its_environment(jobs_client, monkeypatch):
     from datetime import UTC, datetime
 
-    from orchestrator import jobs as jobs_module
+    from orchestrator import launch as launch_module
 
     started = []
 
@@ -384,7 +384,7 @@ def test_a_scheduled_run_says_so_in_its_environment(jobs_client, monkeypatch):
         def wait(self):
             pass
 
-    monkeypatch.setattr(jobs_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(launch_module.subprocess, "Popen", FakeProcess)
     jobs_client.runner.run("watcher", scheduled_for=datetime(2026, 10, 25, 16, tzinfo=UTC))
     assert started[0][jobs_client.job.TRIGGER_ENV] == "schedule"
     assert started[0][jobs_client.job.SCHEDULED_FOR_ENV] == "2026-10-25T16:00:00Z"
