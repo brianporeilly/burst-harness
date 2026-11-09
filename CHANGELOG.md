@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.9.1 (2026-11-09)
+
+### Bug Fixes
+
+- **orchestrator**: Settings keeps what a job names as a credential, such as an OAuth client id
+  ([#88](https://github.com/brianporeilly/strands-harness/pull/88),
+  [`ffd2663`](https://github.com/brianporeilly/strands-harness/commit/ffd266364335ca7586d9bacefbda570de8f320c1))
+
+
 ## v0.9.0 (2026-11-09)
 
 ### Features
