@@ -177,3 +177,18 @@ def test_a_job_with_a_refresh_token_needs_its_client_and_says_what_is_missing(tm
     monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "1//refresh-not-real")
     with pytest.raises(job.JobError, match="GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET"):
         job.check(job.load(_mail_job(tmp_path / "c", auth)))
+
+
+def test_over_ssh_the_address_the_browser_ends_on_is_pasted_back(tmp_path, auth, capsys):
+    def paste():
+        (link,) = [word for word in capsys.readouterr().out.split() if word.startswith("https://accounts.")]
+        query = {k: v[0] for k, v in parse_qs(urlsplit(link).query).items()}
+        return f"  {query['redirect_uri']}?code=the-code&state={query['state']}&scope=x\n"
+
+    out = oauth.sign_in(_client_file(tmp_path, auth), tmp_path / "token.txt", paste=paste)
+    assert out.read_text() == "1//refresh-not-real\n"
+    assert FakeAuth.received[0]["redirect_uri"].startswith("http://127.0.0.1:")
+    with pytest.raises(oauth.OAuthError, match="state differs"):
+        oauth.sign_in(_client_file(tmp_path, auth), tmp_path / "other.txt",
+                      paste=lambda: "http://127.0.0.1:1/?code=the-code&state=someone-elses")
+    assert not (tmp_path / "other.txt").exists()

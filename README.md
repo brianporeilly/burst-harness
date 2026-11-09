@@ -948,6 +948,10 @@ refresh token comes from signing in once, on a machine with a browser:
 uv run harness oauth ~/Downloads/client_secret_....json --out refresh-token.txt
 ```
 
+Over ssh, with no browser on that machine, add `--paste`: open the link it
+prints in a browser anywhere, sign in, and paste back the address the browser
+ends on (a 127.0.0.1 page that does not load; its code is what is exchanged).
+
 The client is a Google Cloud OAuth client of the "Desktop app" kind, in a
 project with the Gmail and Calendar APIs on. The command asks to read Gmail
 and Calendar (`--scope` for others), writes the refresh token to the file

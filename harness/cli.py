@@ -610,7 +610,8 @@ def cmd_oauth(args: argparse.Namespace) -> int:
     from . import oauth
 
     try:
-        out = oauth.sign_in(Path(args.client_file), Path(args.out), tuple(args.scope) or oauth.DEFAULT_SCOPES)
+        out = oauth.sign_in(Path(args.client_file), Path(args.out), tuple(args.scope) or oauth.DEFAULT_SCOPES,
+                            paste=(lambda: input("Address: ")) if args.paste else None)
     except oauth.OAuthError as err:
         raise SystemExit(str(err)) from err
     print(f"Saved the refresh token to {out}, readable by you alone. Set it where the job's credentials are read "
@@ -809,6 +810,8 @@ def main(argv: list[str] | None = None) -> int:
     sign.add_argument("--out", default="refresh-token.txt", help="Where to write it (default refresh-token.txt).")
     sign.add_argument("--scope", action="append", default=[],
                       help="A scope to ask for (repeatable; default: read Gmail and Google Calendar).")
+    sign.add_argument("--paste", action="store_true",
+                      help="Sign in in a browser elsewhere and paste back the address it ends on (over ssh).")
     sign.set_defaults(func=cmd_oauth)
 
     release = sub.add_parser("release",help="Remove a kept target (--claim, or --docker-container).")
