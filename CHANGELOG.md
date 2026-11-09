@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-11-09)
+
+### Features
+
+- **jobs**: Harness oauth --paste, to sign in over ssh with a browser elsewhere
+  ([#87](https://github.com/brianporeilly/strands-harness/pull/87),
+  [`9172c15`](https://github.com/brianporeilly/strands-harness/commit/9172c158f4f50aa7bb907a8a0c2dcc8f596211b9))
+
+
 ## v0.7.0 (2026-11-09)
 
 ### Features
