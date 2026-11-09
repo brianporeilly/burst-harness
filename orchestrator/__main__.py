@@ -74,6 +74,7 @@ from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
 from .tokens import TokenStore
+from .version import line as version_line
 
 
 def main() -> None:
@@ -137,12 +138,12 @@ def main() -> None:
     where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
         names = ", ".join(args.host) or "this machine"
-        print(f"Orchestrator on {args.listen}:{args.port} for {names}, signed in by {args.user_header}, {where}")
+        print(f"Orchestrator {version_line()} on {args.listen}:{args.port} for {names}, signed in by {args.user_header}, {where}")
     elif local_browser:
-        print(f"Orchestrator on {args.listen}:{args.port}: the browser from this machine only "
+        print(f"Orchestrator {version_line()} on {args.listen}:{args.port}: the browser from this machine only "
               f"(http://127.0.0.1:{args.port}/), the Tasks API from anywhere with a token (plain HTTP), {where}")
     else:
-        print(f"Orchestrator on http://127.0.0.1:{args.port}/ (this machine only), {where}")
+        print(f"Orchestrator {version_line()} on http://127.0.0.1:{args.port}/ (this machine only), {where}")
     print(f"Credentials set in Settings: {state / 'credentials.enc'}, {key_note}")
     if jobs:
         print(f"Jobs from {', '.join(str(d) for d in jobs.directories)}: {', '.join(jobs.discover()) or 'none found'}"

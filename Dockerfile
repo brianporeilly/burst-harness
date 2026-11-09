@@ -51,6 +51,10 @@ ENV HARNESS_STATE_DIR=/state \
     VIRTUAL_ENV=/opt/harness/.venv \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
+# The commit this was built from, for the orchestrator's /version (images.yml sets it). Last, so a new
+# commit rebuilds nothing above.
+ARG REVISION=""
+ENV BURST_HARNESS_REVISION=$REVISION
 RUN mkdir -p /state /workspace && useradd -m -u 1000 agent \
  && chown -R agent:agent /state /workspace /opt/harness
 USER agent

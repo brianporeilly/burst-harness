@@ -780,9 +780,13 @@ curl -H "Authorization: Bearer orch_..." -H 'Content-Type: application/json' \
   http://orchestrator:8700/api/tasks -d '{"repo": "you/proj", "prompt": "..."}'
 ```
 
-- A token reaches `/api/tasks` and below, and nothing else: not sessions, jobs,
-  the page, or tokens, which only someone signed in (or on this machine) can
-  make or revoke. A task it starts shows `created_by` as "you via NAME".
+- A token reaches `/api/tasks` and below, and `/version`, and nothing else: not
+  sessions, jobs, the page, or tokens, which only someone signed in (or on this
+  machine) can make or revoke. A task it starts shows `created_by` as "you via NAME".
+- `GET /version` says what is running: `{"version": "0.9.1", "revision": "<commit>"}`.
+  The version is the release's, and the commit is the one its image was built
+  from, or a checkout's (with `"dirty": true` if it has changes not committed).
+  The page shows both beside its title, and the log's first line has them too.
 - With a token, requests skip the Host check and the `X-Orchestrator` header.
   Both of those stop a web page from using your browser's way in, and a
   browser never sends a token by itself.

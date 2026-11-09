@@ -44,6 +44,7 @@ from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
 from .tasks import TaskRunner, TasksError
 from .tokens import TokenError, TokenStore, user_of
+from .version import about
 
 STATIC = Path(__file__).parent / "static"
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
@@ -71,8 +72,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
             if record is None:
                 return JSONResponse({"error": "That token is not valid (revoked, or mistyped)."}, status_code=401)
             path = request.url.path
-            if path != "/api/tasks" and not path.startswith("/api/tasks/"):
-                return JSONResponse({"error": "A token reaches /api/tasks only."}, status_code=403)
+            if path != "/api/tasks" and not path.startswith("/api/tasks/") and path != "/version":
+                return JSONResponse({"error": "A token reaches /api/tasks (and /version) only."}, status_code=403)
             request.state.user = user_of(record)
             return await call_next(request)
         if local_browser and (request.client is None or request.client.host not in LOOPBACK):
@@ -99,9 +100,14 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     async def index() -> FileResponse:
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store"})
 
+    @app.get("/version")
+    def version() -> dict[str, Any]:
+        return about()
+
     @app.get("/api/info")
     def info(request: Request) -> dict[str, Any]:
-        return {**backend.info(), "user": request.state.user, "slack": slack.status if slack else None}
+        return {**backend.info(), "user": request.state.user, "slack": slack.status if slack else None,
+                "version": about()}
 
     @app.get("/api/sessions")
     def sessions() -> list[dict[str, Any]]:
