@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-11-09)
+
+### Features
+
+- **jobs**: OAuth refresh-token secrets, and harness oauth to sign in once
+  ([#85](https://github.com/brianporeilly/strands-harness/pull/85),
+  [`3a34dbc`](https://github.com/brianporeilly/strands-harness/commit/3a34dbc90e4dbedd0900fc61bd4b8162b799fc80))
+
+
 ## v0.6.0 (2026-11-07)
 
 ### Features
