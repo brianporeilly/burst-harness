@@ -279,23 +279,26 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
             raise SettingsError("Settings are not on in this orchestrator.")
         return settings
 
-    @app.get("/api/settings/credentials")
-    def list_credentials() -> list[dict[str, Any]]:
+    def named_credentials() -> list[str]:
         # What this orchestrator's sessions, tasks and jobs would use: its MCP servers' keys, its jobs' secrets.
         base = getattr(backend, "base", None)
-        names = [*(name for name in credentials.GIT if os.environ.get(name)),
-                 *(mcp.key_var(name) for name in (mcp.servers(base) if base else {})),
-                 *(jobs.secret_names() if jobs else [])]
-        return credential_store().listing(names)
+        return [*(name for name in credentials.GIT if os.environ.get(name)),
+                *(mcp.key_var(name) for name in (mcp.servers(base) if base else {})),
+                *(jobs.secret_names() if jobs else [])]
+
+    @app.get("/api/settings/credentials")
+    def list_credentials() -> list[dict[str, Any]]:
+        return credential_store().listing(named_credentials())
 
     @app.put("/api/settings/credentials/{name}")
     async def set_credential(name: str, request: Request) -> dict[str, str]:
-        credential_store().set(name, str((await body(request)).get("value") or ""), user=request.state.user)
+        credential_store().set(name, str((await body(request)).get("value") or ""), user=request.state.user,
+                               named=named_credentials())
         return {"message": f"Set {name}. What starts from now on uses it."}
 
     @app.delete("/api/settings/credentials/{name}")
     def clear_credential(name: str) -> dict[str, str]:
-        if not credential_store().clear(name):
+        if not credential_store().clear(name, named=named_credentials()):
             raise SettingsError(f"{name} is not set here.")
         back = "the environment's value" if credentials.source(name) else "nothing: it has no value now"
         return {"message": f"Cleared {name}; from now on it is {back}."}

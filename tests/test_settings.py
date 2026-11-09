@@ -114,3 +114,26 @@ def test_an_installed_plugins_credentials_are_offered_and_may_be_kept(tmp_path, 
     assert credentials.get("EXAMPLE_CLIENT_ID") == "client"
     with pytest.raises(SettingsError, match="not a credential"):
         store.set("EXAMPLE_ISSUER_URL", "https://ai.example.com")
+
+
+def test_what_a_job_names_as_its_credentials_may_be_kept_though_it_looks_harmless(tmp_path, monkeypatch):
+    from orchestrator.jobs import JobRunner
+
+    monkeypatch.delenv("EXAMPLE_OAUTH_CLIENT_ID", raising=False)
+    job = tmp_path / "jobs" / "brief"
+    job.mkdir(parents=True)
+    (job / "prompt.md").write_text("Brief me.\n")
+    (job / "job.toml").write_text('[job]\nmode = "report"\n[job.secrets.mail]\nenv = "EXAMPLE_REFRESH_TOKEN"\n'
+                                  'host = "mail.example.com"\ntoken_url = "https://auth.example.com/token"\n'
+                                  'client_id_env = "EXAMPLE_OAUTH_CLIENT_ID"\n')
+    store = CredentialStore(tmp_path / "credentials.enc", load_key(tmp_path)[0])
+    browser = TestClient(create_app(FakeBackend(), JobRunner([tmp_path / "jobs"]), settings=store),
+                         base_url="http://127.0.0.1")
+    assert "EXAMPLE_OAUTH_CLIENT_ID" in {row["name"] for row in browser.get("/api/settings/credentials").json()}
+    assert browser.put("/api/settings/credentials/EXAMPLE_OAUTH_CLIENT_ID", json={"value": "id.example.com"},
+                       headers=CHANGE).status_code == 200
+    assert credentials.get("EXAMPLE_OAUTH_CLIENT_ID") == "id.example.com"
+    assert browser.delete("/api/settings/credentials/EXAMPLE_OAUTH_CLIENT_ID", headers=CHANGE).status_code == 200
+    # A name no job names, that does not look secret, is still turned away.
+    refused = browser.put("/api/settings/credentials/EXAMPLE_ISSUER_URL", json={"value": "x"}, headers=CHANGE)
+    assert refused.status_code == 400 and "not a credential" in refused.json()["error"]

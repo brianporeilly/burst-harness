@@ -129,8 +129,10 @@ class CredentialStore:
                          "environment_too": bool(record) and bool(os.environ.get(name, "").strip())})
         return rows
 
-    def set(self, name: str, value: str, *, user: str = "") -> None:
-        check_name(name)
+    def set(self, name: str, value: str, *, user: str = "", named: Iterable[str] = ()) -> None:
+        """`named`: what this orchestrator's jobs and MCP servers name as credentials, kept here whatever they
+        look like (a job's OAuth client id)."""
+        check_name(name, named)
         value = value.strip()
         if not value:
             raise SettingsError("Give a value. To go back to the environment's, clear it instead.")
@@ -141,9 +143,9 @@ class CredentialStore:
             records[name] = {"value": value, "updated": _now(), "updated_by": user}
             self._save(records)
 
-    def clear(self, name: str) -> bool:
+    def clear(self, name: str, *, named: Iterable[str] = ()) -> bool:
         """Forget the stored value. False if there was none."""
-        check_name(name)
+        check_name(name, named)
         with self.lock:
             records = self._load()
             if records.pop(name, None) is None:
@@ -152,13 +154,15 @@ class CredentialStore:
         return True
 
 
-def check_name(name: str) -> None:
+def check_name(name: str, named: Iterable[str] = ()) -> None:
     if not NAME.fullmatch(name):
         raise SettingsError("A credential's name is an environment variable's: capitals, digits and _.")
-    # A provider plugin's own (a client id, an issuer URL) may be kept here too, though they look harmless.
-    if not credentials.is_secret(name) and name not in models.plugin_credentials():
-        raise SettingsError(f"{name} is not a credential (a name ending in _TOKEN, _KEY, _SECRET and so on, or one "
-                            "the harness knows). Settings that are not secret stay in the configuration.")
+    # A provider plugin's own (a client id, an issuer URL) may be kept here too, though they look harmless, and so
+    # may whatever a job names as its credentials.
+    if not credentials.is_secret(name) and name not in models.plugin_credentials() and name not in set(named):
+        raise SettingsError(f"{name} is not a credential (a name ending in _TOKEN, _KEY, _SECRET and so on, one "
+                            "the harness knows, or one a job names). Settings that are not secret stay in the "
+                            "configuration.")
 
 
 def _now() -> str:
