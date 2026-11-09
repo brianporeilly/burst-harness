@@ -930,15 +930,15 @@ token share one exchange, so a job can read Gmail and Calendar on one sign-in:
 env = "GOOGLE_REFRESH_TOKEN"
 host = "gmail.googleapis.com"
 token_url = "https://oauth2.googleapis.com/token"
-client_id_env = "GOOGLE_CLIENT_ID"
-client_secret_env = "GOOGLE_CLIENT_SECRET"
+client_id_env = "GOOGLE_OAUTH_CLIENT_ID"
+client_secret_env = "GOOGLE_OAUTH_CLIENT_SECRET"
 
 [job.secrets.calendar]
 env = "GOOGLE_REFRESH_TOKEN"
 host = "www.googleapis.com"
 token_url = "https://oauth2.googleapis.com/token"
-client_id_env = "GOOGLE_CLIENT_ID"
-client_secret_env = "GOOGLE_CLIENT_SECRET"
+client_id_env = "GOOGLE_OAUTH_CLIENT_ID"
+client_secret_env = "GOOGLE_OAUTH_CLIENT_SECRET"
 ```
 
 An access token lasts about an hour, which a run must finish within. The
@@ -961,9 +961,11 @@ screen is in "Testing", Google expires its refresh tokens after 7 days:
 publish it ("In production"; unverified is fine for your own account) to
 keep one.
 
-Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub) and
+Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub),
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
-read-only ServiceAccount from its `rbac.yaml`).
+read-only ServiceAccount from its `rbac.yaml`), and
+`examples/jobs/daily-brief` (today's Google Calendar and the Gmail that may
+need you, on one sign-in, for a model of your own to read).
 
 Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
 "allowlist"`. A job's settings sit between your config file and `HARNESS_*`.

@@ -28,8 +28,8 @@ A job is a directory, kept in its own repo (one per instance, personal or work):
     env = "GOOGLE_REFRESH_TOKEN"   # an OAuth refresh token (`harness oauth` gets one)
     host = "gmail.googleapis.com"
     token_url = "https://oauth2.googleapis.com/token"
-    client_id_env = "GOOGLE_CLIENT_ID"
-    client_secret_env = "GOOGLE_CLIENT_SECRET"
+    client_id_env = "GOOGLE_OAUTH_CLIENT_ID"
+    client_secret_env = "GOOGLE_OAUTH_CLIENT_SECRET"
 
 A secret with no `host` is passed into the sandbox instead, as `sandbox_env`.
 

@@ -1,0 +1,44 @@
+# A morning brief: today's calendar (in order, with clashes and invitations
+# not yet answered) and the mail since yesterday that may need you, with mailing
+# lists and notifications counted rather than listed.
+#
+# One sign-in reads both (README, "OAuth"): a Google Cloud OAuth client of the
+# "Desktop app" kind, then
+#
+#   harness oauth client_secret_....json --out refresh-token.txt
+#
+# and GOOGLE_REFRESH_TOKEN (that file's), GOOGLE_OAUTH_CLIENT_ID and
+# GOOGLE_OAUTH_CLIENT_SECRET (the client's) where the driver reads credentials: the
+# orchestrator's Settings, or the environment for `harness job run`.
+#
+# Set your timezone in prompt.md.
+
+# Mail is read by the model, so keep it on a model of your own: the strands
+# engine (the default) calls it from the driver, and nothing else sees it.
+#   provider = "llamacpp"
+#   base_url = "http://llm.lan:8080"
+#   model_id = "qwen3-14b"
+
+# The sandbox reaches only Google's APIs, which the secrets below add.
+egress_allow = []
+
+[job]
+trigger = "30 6 * * *"
+# The gateway lets the sandbox read and nothing else: whatever a message says,
+# this job cannot send, archive or delete.
+mode = "report"
+output = ["stdout", "file:~/.burst-harness/reports/daily-brief/%Y-%m-%d.md"]
+
+[job.secrets.mail]
+env = "GOOGLE_REFRESH_TOKEN"
+host = "gmail.googleapis.com"
+token_url = "https://oauth2.googleapis.com/token"
+client_id_env = "GOOGLE_OAUTH_CLIENT_ID"
+client_secret_env = "GOOGLE_OAUTH_CLIENT_SECRET"
+
+[job.secrets.calendar]
+env = "GOOGLE_REFRESH_TOKEN"
+host = "www.googleapis.com"
+token_url = "https://oauth2.googleapis.com/token"
+client_id_env = "GOOGLE_OAUTH_CLIENT_ID"
+client_secret_env = "GOOGLE_OAUTH_CLIENT_SECRET"
