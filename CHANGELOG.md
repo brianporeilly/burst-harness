@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.10.0 (2026-11-09)
+
+### Features
+
+- **orchestrator**: /version, and the page and log say the release and commit running
+  ([#89](https://github.com/brianporeilly/strands-harness/pull/89),
+  [`7f09556`](https://github.com/brianporeilly/strands-harness/commit/7f09556e1a157fbe1ef8ed44946791c9cea21c99))
+
+
 ## v0.9.1 (2026-11-09)
 
 ### Bug Fixes
