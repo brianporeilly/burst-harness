@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.9.0 (2026-11-09)
+
+### Features
+
+- **jobs**: A daily-brief example job, today's calendar and the mail that may need you
+  ([#86](https://github.com/brianporeilly/strands-harness/pull/86),
+  [`33e08c6`](https://github.com/brianporeilly/strands-harness/commit/33e08c638b2f9e0dbfa4f345a54591404636fec5))
+
+
 ## v0.8.0 (2026-11-09)
 
 ### Features
