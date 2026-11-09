@@ -323,7 +323,10 @@ with one more table, this is not the separate YAML spec ruled out above.
   hijacked report job therefore cannot archive, merge or post.
 - **Secrets:** named, and injected by the gateway where possible: GitHub and
   Slack tokens, and Gmail OAuth with the `gmail.modify` scope. Gmail needs
-  something new: the gateway refreshing an access token from a refresh token.
+  something new: an access token from a refresh token. Done (2026-11-07) on
+  the driver rather than the gateway: a secret with `token_url` is exchanged
+  as the run starts, and the gateway adds the access token as any other
+  (a run is shorter than its hour). `harness oauth` signs in once.
 - **Output:** the job writes its report to a file. The driver posts it to
   Slack, stdout or similar, the same way it opens PRs today, so the sandbox
   needs no token that can post.
@@ -375,7 +378,8 @@ loses nothing, because nothing is waiting.
    added at `host:port`, the server verified against its own CA, report mode
    refusing anything but reads. Its script boils the cluster down to what is
    wrong before the model sees it.
-4. Gmail: report-only triage and an action-needed digest first. Then cleanup
+4. Gmail: report-only triage and an action-needed digest first. Mail is read
+   by a local model (decided 2026-11-07), so it stays on the network. Then cleanup
    as a dry run with approvals, then with actions enabled. Every action gets a
    label (`bot/archived`, `bot/trashed`), and nothing is ever sent or drafted.
    On the cluster, this waits for phase 6's gateway.

@@ -919,6 +919,44 @@ names the server's own CA when it is not a public one, for the gateway to
 verify it with -- a Kubernetes API server, say. The gateway chooses its
 certificate by the host it allowed, so an IP address works.
 
+**OAuth (Gmail, Google Calendar, ...).** With `token_url`, `env` holds a
+refresh token. As the run starts, the driver exchanges it there, with the
+client's id and secret (`client_id_env`, `client_secret_env`), for an access
+token, and that is what the gateway adds. Secrets naming the same refresh
+token share one exchange, so a job can read Gmail and Calendar on one sign-in:
+
+```toml
+[job.secrets.mail]
+env = "GOOGLE_REFRESH_TOKEN"
+host = "gmail.googleapis.com"
+token_url = "https://oauth2.googleapis.com/token"
+client_id_env = "GOOGLE_CLIENT_ID"
+client_secret_env = "GOOGLE_CLIENT_SECRET"
+
+[job.secrets.calendar]
+env = "GOOGLE_REFRESH_TOKEN"
+host = "www.googleapis.com"
+token_url = "https://oauth2.googleapis.com/token"
+client_id_env = "GOOGLE_CLIENT_ID"
+client_secret_env = "GOOGLE_CLIENT_SECRET"
+```
+
+An access token lasts about an hour, which a run must finish within. The
+refresh token comes from signing in once, on a machine with a browser:
+
+```bash
+uv run harness oauth ~/Downloads/client_secret_....json --out refresh-token.txt
+```
+
+The client is a Google Cloud OAuth client of the "Desktop app" kind, in a
+project with the Gmail and Calendar APIs on. The command asks to read Gmail
+and Calendar (`--scope` for others), writes the refresh token to the file
+(readable by you alone; it never prints it), and you set it, with the
+client's id and secret, in the orchestrator's Settings. While the consent
+screen is in "Testing", Google expires its refresh tokens after 7 days:
+publish it ("In production"; unverified is fine for your own account) to
+keep one.
+
 Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub) and
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
 read-only ServiceAccount from its `rbac.yaml`).

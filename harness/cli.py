@@ -605,6 +605,20 @@ def cmd_ask(args: argparse.Namespace) -> int:
     return ask.run(args.slug, args.task, args.message, _overrides(args))
 
 
+def cmd_oauth(args: argparse.Namespace) -> int:
+    """Sign in once, for a job's refresh token: see oauth.py."""
+    from . import oauth
+
+    try:
+        out = oauth.sign_in(Path(args.client_file), Path(args.out), tuple(args.scope) or oauth.DEFAULT_SCOPES)
+    except oauth.OAuthError as err:
+        raise SystemExit(str(err)) from err
+    print(f"Saved the refresh token to {out}, readable by you alone. Set it where the job's credentials are read "
+          "(the orchestrator's Settings, as the job's env, such as GOOGLE_REFRESH_TOKEN), with the client's id "
+          f"and secret from {args.client_file}, then delete {out}.")
+    return 0
+
+
 def cmd_release(args: argparse.Namespace) -> int:
     """Remove a target a run kept: a sandbox claim, or a container with its egress sidecar."""
     cfg = HarnessConfig.load(None, _overrides(args))
@@ -788,6 +802,14 @@ def main(argv: list[str] | None = None) -> int:
     question.add_argument("--task", help="The question. Needed only for the first run.")
     question.add_argument("--message", help="A follow-up, answered with the earlier questions and answers in view.")
     question.set_defaults(func=cmd_ask)
+
+    sign = sub.add_parser("oauth", help="Sign in once, for the refresh token a job's secret is exchanged from "
+                                         "(token_url). Writes it to a file; never prints it.")
+    sign.add_argument("client_file", help="The OAuth client's JSON, of the \"Desktop app\" kind.")
+    sign.add_argument("--out", default="refresh-token.txt", help="Where to write it (default refresh-token.txt).")
+    sign.add_argument("--scope", action="append", default=[],
+                      help="A scope to ask for (repeatable; default: read Gmail and Google Calendar).")
+    sign.set_defaults(func=cmd_oauth)
 
     release = sub.add_parser("release",help="Remove a kept target (--claim, or --docker-container).")
     release.set_defaults(func=cmd_release)

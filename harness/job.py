@@ -24,7 +24,20 @@ A job is a directory, kept in its own repo (one per instance, personal or work):
     host = "10.0.0.5:6443"         # host:port for anything but 443
     ca_file = "~/.kube/ca.crt"     # the server's own CA, if it is not a public one
 
+    [job.secrets.mail]
+    env = "GOOGLE_REFRESH_TOKEN"   # an OAuth refresh token (`harness oauth` gets one)
+    host = "gmail.googleapis.com"
+    token_url = "https://oauth2.googleapis.com/token"
+    client_id_env = "GOOGLE_CLIENT_ID"
+    client_secret_env = "GOOGLE_CLIENT_SECRET"
+
 A secret with no `host` is passed into the sandbox instead, as `sandbox_env`.
+
+With `token_url`, `env` holds an OAuth refresh token. As the run starts, the
+driver exchanges it at token_url (with the client's id and secret, from the
+driver's variables named) for an access token, which is what the gateway
+adds. Secrets naming the same refresh token share one exchange. An access
+token lasts about an hour, so this suits runs shorter than that.
 
 Report mode is enforced by the gateway, not the prompt: every request the
 sandbox makes may only read (GET, HEAD, OPTIONS), so a job that reads a
@@ -79,7 +92,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from strands.types.tools import ToolContext
 
@@ -144,6 +157,14 @@ class Secret:
     value: str = "Bearer {}"
     sandbox_env: str = ""
     ca_file: str = ""
+    token_url: str = ""
+    client_id_env: str = ""
+    client_secret_env: str = ""
+
+    @property
+    def envs(self) -> tuple[str, ...]:
+        """The driver's variables it is read from: the secret, and an OAuth client's id and secret."""
+        return tuple(v for v in (self.env, self.client_id_env, self.client_secret_env) if v)
 
     @property
     def hostname(self) -> str:
@@ -158,16 +179,57 @@ class Secret:
 
     def rule(self) -> dict[str, object]:
         """The gateway rule that adds it, on every request to its host."""
-        rule: dict[str, object] = {"host": self.hostname, "headers": {self.header: self.value.format(credentials.get(self.env))}}
+        rule: dict[str, object] = {"host": self.hostname, "headers": {self.header: self.value.format(self.resolved())}}
         if self.port != 443:
             rule["port"] = self.port
         return rule
+
+    def resolved(self) -> str:
+        """What the gateway adds: the credential, or with token_url the access token it is exchanged for."""
+        if not self.token_url:
+            return credentials.get(self.env)
+        key = (self.token_url, self.env, self.client_id_env)
+        if key not in _ACCESS_TOKENS:
+            _ACCESS_TOKENS[key] = _refresh(self)
+        return _ACCESS_TOKENS[key]
 
     def upstream_ca(self) -> dict[str, str] | None:
         """The gateway's EGRESS_UPSTREAM_CA entry for the host, from ca_file."""
         if not self.ca_file:
             return None
         return {"host": self.hostname, "ca": Path(self.ca_file).expanduser().read_text()}
+
+
+# Access tokens this run was given for refresh tokens, by (token_url, env, client_id_env): one exchange each.
+_ACCESS_TOKENS: dict[tuple[str, str, str], str] = {}
+
+
+def _refresh(secret: Secret) -> str:
+    """An access token for the secret's refresh token, from its token_url. Raises JobError, naming no value."""
+    form = {"grant_type": "refresh_token", "refresh_token": credentials.get(secret.env),
+            "client_id": credentials.get(secret.client_id_env)}
+    if secret.client_secret_env:
+        form["client_secret"] = credentials.get(secret.client_secret_env)
+    request = urllib.request.Request(secret.token_url, data=urlencode(form).encode(),
+                                     headers={"Content-Type": "application/x-www-form-urlencoded",
+                                              "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            token = json.loads(response.read()).get("access_token")
+    except urllib.error.HTTPError as err:
+        try:
+            said = json.loads(err.read())
+        except ValueError:
+            said = {}
+        why = ": ".join(str(said[k]) for k in ("error", "error_description") if said.get(k)) or f"HTTP {err.code}"
+        raise JobError(f"[job.secrets.{secret.name}]: {secret.token_url} refused ${secret.env} ({why}). If it was "
+                       f"revoked or has expired, sign in again (harness oauth) and set {secret.env}.") from None
+    except (OSError, ValueError) as err:
+        raise JobError(f"[job.secrets.{secret.name}]: could not exchange ${secret.env} at {secret.token_url}: "
+                       f"{type(err).__name__}: {err}") from None
+    if not isinstance(token, str) or not token:
+        raise JobError(f"[job.secrets.{secret.name}]: {secret.token_url} gave no access_token.")
+    return token
 
 
 @dataclass(frozen=True)
@@ -191,6 +253,11 @@ class JobSpec:
     @property
     def asking(self) -> bool:
         return self.root != "jobs"
+
+    @property
+    def secret_envs(self) -> list[str]:
+        """Every driver variable its secrets are read from, once each."""
+        return list(dict.fromkeys(v for s in self.secrets for v in s.envs))
 
     @property
     def scripts(self) -> Path | None:
@@ -322,12 +389,13 @@ def _secrets(value: Any) -> tuple[Secret, ...]:
     for name, item in value.items():
         if not isinstance(item, dict) or not isinstance(item.get("env"), str):
             raise JobError(f"[job.secrets.{name}] needs env = \"VAR\": the driver's variable holding it.")
-        if unknown := sorted(set(item) - {"env", "host", "header", "value", "sandbox_env", "ca_file"}):
+        if unknown := sorted(set(item) - {"env", "host", "header", "value", "sandbox_env", "ca_file", "token_url",
+                                          "client_id_env", "client_secret_env"}):
             raise JobError(f"[job.secrets.{name}]: unknown setting(s) {', '.join(unknown)}.")
         if not all(isinstance(v, str) for v in item.values()):
             raise JobError(f"[job.secrets.{name}]: every setting is a string.")
         secret = Secret(name=name, **item)
-        for var in (secret.env, secret.sandbox_env):
+        for var in (secret.env, secret.sandbox_env, secret.client_id_env, secret.client_secret_env):
             if var and not ENV_NAME.fullmatch(var):
                 raise JobError(f"[job.secrets.{name}]: {var!r} is not an environment variable name.")
         if not re.fullmatch(r"[A-Za-z0-9-]+", name):
@@ -338,6 +406,13 @@ def _secrets(value: Any) -> tuple[Secret, ...]:
         if secret.host and (not re.fullmatch(r"[A-Za-z0-9.-]+(:[0-9]{1,5})?", secret.host) or "{}" not in secret.value):
             raise JobError(f"[job.secrets.{name}]: host is a hostname (or hostname:port), and value contains {{}} "
                            "for the secret.")
+        if secret.token_url or secret.client_id_env or secret.client_secret_env:
+            url = urlsplit(secret.token_url)
+            local = url.scheme == "http" and url.hostname in ("127.0.0.1", "localhost")  # a test's server
+            if not secret.host or not secret.client_id_env or not (url.scheme == "https" or local) or not url.hostname:
+                raise JobError(f"[job.secrets.{name}]: a refresh token needs host (where the gateway adds the access "
+                               "token), an https token_url, and client_id_env (client_secret_env if the client has "
+                               "a secret).")
         if secret.ca_file:
             if not secret.host:
                 raise JobError(f"[job.secrets.{name}]: ca_file is the CA of the host the gateway adds it at; set host.")
@@ -384,7 +459,7 @@ def config(spec: JobSpec, overrides: dict[str, Any] | None = None) -> HarnessCon
 
 def check(spec: JobSpec) -> None:
     """Fail before starting anything if a credential or output's setting is missing from the driver."""
-    missing = [s.env for s in spec.secrets if not credentials.get(s.env)]
+    missing = [name for name in spec.secret_envs if not credentials.get(name)]
     for item in spec.outputs:
         if item == "slack" and not credentials.get("SLACK_WEBHOOK_URL"):
             missing.append("SLACK_WEBHOOK_URL")
@@ -418,6 +493,7 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
     for s in spec.secrets:
         where = f"added by the gateway at {s.host}" if s.host else f"passed into the sandbox as {s.sandbox_env}"
         where += f", verified with {s.ca_file}" if s.ca_file else ""
+        where += f", exchanged for an access token at {s.token_url}" if s.token_url else ""
         lines.append(f"  secret   {s.name}: ${s.env}, {where}")
     if spec.scripts:
         lines.append(f"  scripts  {spec.scripts} -> {WORKDIR}/{SCRIPTS_DIR}")

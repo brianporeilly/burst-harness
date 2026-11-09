@@ -101,7 +101,7 @@ class JobRunner:
         names = []
         for path in self.discover().values():
             spec, _, _ = self._loaded(path)
-            names += [s.env for s in spec.secrets] if spec else []
+            names += spec.secret_envs if spec else []
         return list(dict.fromkeys(names))
 
     def _summary(self, name: str, path: Path) -> dict[str, Any]:
@@ -110,7 +110,7 @@ class JobRunner:
         if spec is None:
             return item
         runs = job.list_runs(cfg, name, limit=20)
-        missing = [s.env for s in spec.secrets if not credentials.get(s.env)]
+        missing = [name for name in spec.secret_envs if not credentials.get(name)]
         item.update(
             trigger=spec.trigger, mode=spec.mode, engine=cfg.engine, model=f"{cfg.provider} {models.model_name(cfg)}",
             outputs=list(spec.outputs), missing=missing,
@@ -205,7 +205,7 @@ class JobRunner:
         spec, cfg, error = self._loaded(path)
         if spec is None:
             raise JobsError(error)
-        if missing := [s.env for s in spec.secrets if not credentials.get(s.env)]:
+        if missing := [name for name in spec.secret_envs if not credentials.get(name)]:
             raise JobsError(f"The orchestrator's environment is missing {', '.join(missing)}, which {name} needs. "
                             "Set it where the orchestrator is started.")
         with self.lock:
@@ -217,7 +217,7 @@ class JobRunner:
             if self.launcher.kind == "job":
                 path = _copy(path, directory / path.name)  # a Job's pod has the state directory, not ours
             # Only what this job is granted, not every credential the orchestrator holds.
-            names = credentials.for_job(cfg, [s.env for s in spec.secrets], spec.outputs)
+            names = credentials.for_job(cfg, spec.secret_envs, spec.outputs)
             env = credentials.for_run([], {
                 job.RUN_ID_ENV: run_id, "PYTHONUNBUFFERED": "1",
                 job.TRIGGER_ENV: "schedule" if scheduled_for else "manual",
