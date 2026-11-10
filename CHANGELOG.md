@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.13.0 (2026-11-10)
+
+### Features
+
+- **jobs**: Act mode, plans a person approves and an apply command that does only that
+  ([#92](https://github.com/brianporeilly/strands-harness/pull/92),
+  [`f0028e7`](https://github.com/brianporeilly/strands-harness/commit/f0028e7e43f698948685202cf74e7d2502fed708))
+
+
 ## v0.12.0 (2026-11-10)
 
 ### Features
