@@ -92,6 +92,8 @@ def test_a_tasks_bursts_are_given_the_profiles_and_its_own_delegates(tmp_path, h
 
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "alone", "delegate_to": []})
     assert harness.started[1][1].env["HARNESS_DELEGATE_TO"] == ""  # no one, whatever the default
+    harness.started[0][1].finish(0, state="paused")  # lead has coder's llama.cpp server, which both needs
+    _settled(runner, "lead", "paused")
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "both", "delegate_to": ["coder", "reviewer"]})
     assert harness.started[2][1].env["HARNESS_DELEGATE_TO"] == "coder,reviewer"
     with pytest.raises(TasksError, match="names no profile: nobody"):

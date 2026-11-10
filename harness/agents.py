@@ -132,14 +132,19 @@ def in_use(cfg: HarnessConfig) -> list[str]:
     return list(dict.fromkeys(used))
 
 
+def callable_profiles(cfg: HarnessConfig) -> list[str]:
+    """The profiles a run on this engine may call: in_use on strands; on Claude Code, which is its own
+    model, what it delegates to alone."""
+    if cfg.engine == "strands":
+        return in_use(cfg)
+    lead = cfg.agents[cfg.agent].get("delegate_to") if cfg.agent else None
+    return list(lead or cfg.delegate_to)
+
+
 def check_providers(cfg: HarnessConfig) -> None:
     """Every profile the run may call has a provider that can build a model here (its SDK installed).
     Found at the start, rather than as a delegate or a router failing halfway through. Raises AgentsError."""
-    if cfg.engine == "strands":
-        names = in_use(cfg)
-    else:  # Claude Code is its own model: what it delegates to, alone
-        lead = cfg.agents[cfg.agent].get("delegate_to") if cfg.agent else None
-        names = list(lead or cfg.delegate_to)
+    names = callable_profiles(cfg)
     problems = []
     for name in names:
         provider = str(cfg.agents[name].get("provider") or HarnessConfig().provider)

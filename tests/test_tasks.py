@@ -297,6 +297,8 @@ def test_a_task_keeps_its_model_settings_for_every_burst(tmp_path, harness, monk
     env = harness.started[-1][1].env
     assert "HARNESS_PROVIDER" not in env and env["HARNESS_ROUTER"] == ""
     assert json.loads(env["HARNESS_MODEL_PARAMS"]) == {"chat_template_kwargs": {"enable_thinking": False}}
+    harness.started[-1][1].finish(0, state="paused")  # it has typhon, which the next one needs (servers.py)
+    _settled(runner, "warm", "paused")
     # None given: nothing set, as before.
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "plain", "effort": "", "thinking": "", "model_params": ""})
     env = harness.started[-1][1].env

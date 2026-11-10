@@ -31,6 +31,10 @@ gives up, or the task is removed, the orchestrator releases it.
 Whatever wants to hear about a task's bursts (the Slack bot, slack.py) is
 told with `watch`: each burst's start and end, with the task's record. A task
 started from Slack keeps where to answer in its record (`slack`).
+
+A burst that will call a llama.cpp server of ours takes it first (servers.py). While another run has it, or
+it is busy, the task stays queued with the reason in its record (`server_wait`), and is tried again when a
+server is given back, and every RETRY seconds (`start`), since what keeps a server busy may not be ours.
 """
 
 from __future__ import annotations
@@ -57,6 +61,7 @@ from .backend import SpecError, check_model, model_choice, model_settings, task_
 from .jobs import OUTPUT, _iso, _tail, json_file
 from .launch import REPO, Launched, LaunchError, Subprocess, granted
 from .profiles import ProfilesError, ProfileStore, check, names_given
+from .servers import ModelServers, servers_for
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 # owner/repo on GitHub, or a repo's https URL.
@@ -101,8 +106,11 @@ def slug_for(prompt: str) -> str:
 
 
 class TaskRunner:
+    RETRY = 30
+
     def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
-                 launcher: Any = None, records: Path | None = None, profiles: ProfileStore | None = None) -> None:
+                 launcher: Any = None, records: Path | None = None, profiles: ProfileStore | None = None,
+                 servers: ModelServers | None = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
         self.profiles = profiles  # set in Settings (profiles.py); None: the configuration's alone
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
@@ -115,6 +123,7 @@ class TaskRunner:
         # Marks the records of bursts this orchestrator started, so one left "running" by another is known.
         self.boot = secrets.token_hex(6)
         self.watchers: list[Callable[[str, dict[str, Any]], None]] = []
+        self.servers = servers or ModelServers()
 
     def watch(self, watcher: Callable[[str, dict[str, Any]], None]) -> None:
         """Call watcher("started" or "ended", record) for each burst. It must not block: it may be called
@@ -324,6 +333,7 @@ class TaskRunner:
                     record["boot"] = self.boot
                     self._write(record)
                     self.running[record["slug"]] = launched
+                    self.servers.hold(f"task {record['slug']}", servers_for(self._config(record)))
                     followed.append((record["slug"], launched, bool(record.get("cancelling"))))
                     done.append(f"{record['slug']}: its burst is still there ({launched.job}), followed again")
                     continue
@@ -345,11 +355,35 @@ class TaskRunner:
         return done
 
     def dispatch(self) -> None:
-        """Start queued tasks, oldest first, while fewer than `limit` are running."""
+        """Start queued tasks, oldest first, while fewer than `limit` are running. One whose model server is
+        taken or busy stays queued, and the next is looked at."""
         with self.lock:
             queued = sorted((r for r in self._records() if r.get("state") == "queued"), key=lambda r: r.get("queued", 0))
-            for record in queued[:max(0, self.limit - len(self.running))]:
+            for record in queued:
+                if len(self.running) >= self.limit:
+                    break
+                why = self.servers.take(f"task {record['slug']}", servers_for(self._config(record)))
+                if why:
+                    if record.get("server_wait") != why:
+                        record["server_wait"] = why
+                        self._write(record)
+                    continue
+                record.pop("server_wait", None)
                 self._start(record)
+
+    def start(self) -> None:
+        """Look at the queue every RETRY seconds, in a thread of its own, for tasks waiting on a model server
+        that something other than this orchestrator keeps busy."""
+        def loop() -> None:
+            while True:
+                time.sleep(self.RETRY)
+                try:
+                    if any(r.get("server_wait") and r.get("state") == "queued" for r in self._records()):
+                        self.dispatch()
+                except Exception as err:  # noqa: BLE001 -- the next look tries again
+                    print(f"tasks: {type(err).__name__}: {err}", flush=True)
+
+        threading.Thread(target=loop, name="task-queue", daemon=True).start()
 
     def _argv(self, record: dict[str, Any]) -> list[str]:
         argv = [sys.executable, "-m", "harness", "--engine", record["engine"], "--claim-ttl", str(self.claim_ttl)]
@@ -424,6 +458,7 @@ class TaskRunner:
             record.update(state="failed", message=None)
             self._write(record)
             self._tell("ended", {**record, "exit": None})
+            self.servers.give_back(f"task {record['slug']}", wake=False)  # the lock is held: dispatch goes on
             return
         record["bursts"].append({"started": _now(), "message": record.get("message"),
                                  **({"run": run[job.RUN_ID_ENV]} if run else {})})
@@ -435,6 +470,7 @@ class TaskRunner:
 
     def _wait(self, slug: str, launched: Launched) -> None:
         code = self.launcher.wait(launched)
+        self.servers.give_back(f"task {slug}")
         try:
             if not self._read(slug).get("repo"):
                 self._answered(slug, code)
@@ -535,7 +571,7 @@ def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
         "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "base_branch", "draft", "branch", "created", "created_by",
-        "state", "pr", "message", "restarts", "sandbox", "said")} | {"bursts": len(record.get("bursts", [])),
+        "state", "pr", "message", "restarts", "sandbox", "said", "server_wait")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
 
 

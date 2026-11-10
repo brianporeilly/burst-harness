@@ -565,7 +565,8 @@ async function refreshJobs() {
       j.engine, j.trigger === "manual" ? "manual" : `cron ${j.trigger}`, scheduleText(j.schedule),
       j.last_success ? `last good ${when(j.last_success.started)}` : "no good run yet",
     ].filter(Boolean).join(" · ")),
-    j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null)));
+    j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null,
+    j.waiting ? el("div", { class: "muted", title: j.waiting }, `Due, waiting: ${j.waiting}`) : null)));
   if (selectedJob) renderJob();
 }
 
@@ -671,7 +672,8 @@ async function refreshTasks() {
       class: "session" + (t.slug === selectedTask ? " selected" : ""), onclick: () => selectTask(t.slug) },
     el("div", { class: "row spread" }, el("span", { class: "name" }, t.slug), taskChip(t.state)),
     el("div", { class: "muted" }, [t.repo ? t.repo.replace(/^https:\/\/(github\.com\/)?/, "").replace(/\.git$/, "") : "question",
-                                    modelLabel(t), when(t.created)].join(" · ")))));
+                                    modelLabel(t), when(t.created)].join(" · ")),
+    t.state === "queued" && t.server_wait ? el("div", { class: "muted" }, `Waiting: ${t.server_wait}`) : null)));
   if (selectedTask) renderTask();
 }
 

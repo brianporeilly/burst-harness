@@ -11,6 +11,16 @@ GIT_ENV = {
 
 
 @pytest.fixture(autouse=True)
+def _model_servers_idle(monkeypatch):
+    """The orchestrator asks no real llama.cpp server whether it is busy (orchestrator/servers.py)."""
+    try:
+        from orchestrator import servers
+    except ImportError:  # without the orchestrator's extra
+        return
+    monkeypatch.setattr(servers, "busy_slots", lambda server: 0)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_env(monkeypatch, tmp_path):
     """No ambient tokens, HARNESS_* settings, or user config leak into a test."""
     for name in list(os.environ):

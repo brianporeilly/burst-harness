@@ -22,6 +22,10 @@ default 1h) is run late, once; one missed for longer is skipped. With
 --start-paused (ORCHESTRATOR_START_PAUSED=1), a job starts paused until it is
 resumed in the Jobs tab. See jobs.py.
 
+Runs that call a llama.cpp server take turns on it, across jobs and tasks. With
+--wait-for-idle-servers (ORCHESTRATOR_WAIT_FOR_IDLE_SERVERS=1), one also waits
+while the server's /health says it is busy with someone else's. See servers.py.
+
 Tasks (tasks.py): a repo and a prompt, worked on in a sandbox until there is a
 PR, with this orchestrator's credentials and target (podman or docker here,
 never this machine itself). --task-limit (ORCHESTRATOR_TASK_LIMIT, default 1)
@@ -73,6 +77,7 @@ from .profiles import ProfileStore
 from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
+from .servers import ModelServers
 from .tokens import TokenStore
 from .version import line as version_line
 
@@ -96,6 +101,9 @@ def main() -> None:
                         help="How late a missed time is still run (default 1h).")
     parser.add_argument("--start-paused", action="store_true", default=_flag("ORCHESTRATOR_START_PAUSED"),
                         help="A job starts paused until it is resumed.")
+    parser.add_argument("--wait-for-idle-servers", action="store_true",
+                        default=_flag("ORCHESTRATOR_WAIT_FOR_IDLE_SERVERS"),
+                        help="A run also waits while its llama.cpp server is busy with someone else's requests.")
     parser.add_argument("--tasks", action=argparse.BooleanOptionalAction, default=not _flag("ORCHESTRATOR_NO_TASKS"),
                         help="Take tasks: a repo and a prompt, worked on until there is a PR (default on).")
     parser.add_argument("--task-limit", type=int, default=int(os.environ.get("ORCHESTRATOR_TASK_LIMIT") or 1),
@@ -132,8 +140,10 @@ def main() -> None:
     except SettingsError as err:
         parser.error(str(err))
     profiles = ProfileStore(state / "profiles.json", base)
+    # Our own llama.cpp servers, one run at a time across jobs and tasks (servers.py).
+    servers = ModelServers(wait_for_idle=args.wait_for_idle_servers)
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
-                     start_paused=args.start_paused, launcher=launcher) if directories else None
+                     start_paused=args.start_paused, launcher=launcher, servers=servers) if directories else None
     backend = ClusterBackend(base) if base.target == "agent-sandbox" else PodmanBackend(base)
     where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
@@ -145,6 +155,7 @@ def main() -> None:
     else:
         print(f"Orchestrator {version_line()} on http://127.0.0.1:{args.port}/ (this machine only), {where}")
     print(f"Credentials set in Settings: {state / 'credentials.enc'}, {key_note}")
+    print("llama.cpp servers: one run at a time" + (", once idle" if servers.wait_for_idle else ""))
     if jobs:
         print(f"Jobs from {', '.join(str(d) for d in jobs.directories)}: {', '.join(jobs.discover()) or 'none found'}"
               + (f", runs {launcher.describe()}" if launcher else ""))
@@ -159,7 +170,7 @@ def main() -> None:
             print(f"jobs: {line}")
         jobs.start()
     tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher,
-                       records=state / "tasks", profiles=profiles) if args.tasks else None
+                       records=state / "tasks", profiles=profiles, servers=servers) if args.tasks else None
     if tasks:
         print(f"Tasks in {tasks.root}, {tasks.limit} at a time" + (f", bursts {launcher.describe()}" if launcher else ""))
         try:
@@ -169,7 +180,9 @@ def main() -> None:
             raise SystemExit(f"tasks: could not look at the bursts left running: {err}") from err
         for line in recovered:
             print(f"tasks: {line}")
+        servers.on_release.append(tasks.dispatch)  # a job's run ending frees a server a task may wait for
         tasks.dispatch()
+        tasks.start()
     slack = SlackBot(tasks, users_from(" ".join([*args.slack_user, os.environ.get(USERS_ENV, "")]))) if tasks else None
     if slack:
         slack.start()

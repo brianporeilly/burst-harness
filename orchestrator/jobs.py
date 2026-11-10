@@ -26,6 +26,10 @@ made up. A job still running when it is due again is not run twice. A job can
 be paused, which is kept beside its runs (jobs/NAME/schedule.json); one with
 nothing kept starts paused when `start_paused` is set, so a new job runs only
 once someone resumes it.
+
+A run that will call a llama.cpp server of ours takes it first (servers.py): while another run has it, or it
+is busy, a scheduled run is tried again on each tick (within `catch_up`), and one started by hand is refused
+with the reason.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ from typing import Any
 from harness import credentials, cron, job, models
 
 from .launch import Launched, LaunchError, Subprocess, granted
+from .servers import ModelServers, servers_for
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 OUTPUT = "output.log"
@@ -56,6 +61,10 @@ class JobsError(ValueError):
     """A job or run that does not exist, or cannot be started now."""
 
 
+class ServerBusy(JobsError):
+    """A model server the run needs is in use or busy: try again later."""
+
+
 SCHEDULE_FILE = "schedule.json"
 
 
@@ -63,7 +72,8 @@ class JobRunner:
     TICK = 30
 
     def __init__(self, directories: list[Path], *, schedule: bool = False, zone: tzinfo = UTC,
-                 catch_up: timedelta = timedelta(hours=1), start_paused: bool = False, launcher: Any = None) -> None:
+                 catch_up: timedelta = timedelta(hours=1), start_paused: bool = False, launcher: Any = None,
+                 servers: ModelServers | None = None) -> None:
         self.directories = [Path(d).expanduser().resolve() for d in directories]
         self.lock = threading.Lock()
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
@@ -72,6 +82,8 @@ class JobRunner:
         self.schedule, self.zone, self.catch_up, self.start_paused = schedule, zone, catch_up, start_paused
         # name -> the due time last acted on, so one that could not run (a secret missing) is tried once.
         self.tried: dict[str, datetime] = {}
+        self.servers = servers or ModelServers()
+        self.waiting: dict[str, str] = {}  # name -> why its due run has not started yet (a model server)
 
     def discover(self) -> dict[str, Path]:
         found: dict[str, Path] = {}
@@ -106,7 +118,8 @@ class JobRunner:
 
     def _summary(self, name: str, path: Path) -> dict[str, Any]:
         spec, cfg, error = self._loaded(path)
-        item: dict[str, Any] = {"name": name, "path": str(path), "error": error, "running": name in self.running}
+        item: dict[str, Any] = {"name": name, "path": str(path), "error": error, "running": name in self.running,
+                                "waiting": self.waiting.get(name, "")}
         if spec is None:
             return item
         runs = job.list_runs(cfg, name, limit=20)
@@ -162,9 +175,20 @@ class JobRunner:
                 continue  # it has run since it was due (by us, by hand, or before a restart)
             self.tried[name] = due
             try:
-                done.append(f"{name}: due {_iso(due)}, started run {self.run(name, scheduled_for=due)}")
+                run_id = self.run(name, scheduled_for=due)
+            except ServerBusy as err:
+                del self.tried[name]  # tried again on the next tick, while it is within catch_up
+                if self.waiting.get(name) != str(err):
+                    done.append(f"{name}: due {_iso(due)}, waiting: {err}")
+                self.waiting[name] = str(err)
+                continue
             except JobsError as err:
                 done.append(f"{name}: due {_iso(due)}, not run: {err}")
+            else:
+                done.append(f"{name}: due {_iso(due)}, started run {run_id}")
+            self.waiting.pop(name, None)
+        for name in [n for n in self.waiting if n not in self.discover()]:
+            del self.waiting[name]
         return done
 
     def start(self) -> None:
@@ -211,6 +235,8 @@ class JobRunner:
         with self.lock:
             if name in self.running or self._summary(name, path)["running"]:
                 raise JobsError(f"{name} is already running.")
+            if why := self.servers.take(f"job {name}", servers_for(cfg)):
+                raise ServerBusy(f"{name} waits for its model server: {why}.")
             run_id = job.new_run_id()
             directory = job.runs_dir(cfg, name) / run_id
             directory.mkdir(parents=True, exist_ok=True)
@@ -228,6 +254,7 @@ class JobRunner:
             except LaunchError as err:
                 with open(directory / OUTPUT, "ab") as output:
                     output.write(f"! could not start the run: {err}\n".encode())
+                self.servers.give_back(f"job {name}", wake=False)  # the lock is held
                 raise JobsError(f"Could not start {name}: {err}") from err
             if launched.job:
                 (directory / LAUNCH_FILE).write_text(json.dumps(launched.record()))
@@ -240,6 +267,7 @@ class JobRunner:
         with self.lock:
             if self.running.get(name, ("", None))[1] is launched:
                 del self.running[name]
+        self.servers.give_back(f"job {name}")
 
     def recover(self) -> list[str]:
         """On start: follow again the Jobs of runs another orchestrator left under way. A run whose Job is gone
@@ -262,6 +290,7 @@ class JobRunner:
                     continue
                 with self.lock:
                     self.running[name] = (str(record["id"]), launched)
+                self.servers.hold(f"job {name}", servers_for(cfg))
                 threading.Thread(target=self._wait, args=(name, launched), daemon=True).start()
                 done.append(f"{name}: run {record['id']} is still under way ({launched.job}), followed again")
         return done

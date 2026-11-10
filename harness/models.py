@@ -275,15 +275,17 @@ def _bedrock(cfg: HarnessConfig) -> "Model":
     return BedrockModel(**kwargs)
 
 
-def _llamacpp_url(cfg: HarnessConfig) -> str:
+def llamacpp_url(cfg: HarnessConfig) -> str:
+    """Where a llamacpp model is served."""
     return cfg.base_url or os.environ.get("LLAMACPP_BASE_URL", "http://localhost:8080")
+
 
 
 def _llamacpp(cfg: HarnessConfig) -> "Model":
     """A self-hosted llama.cpp server."""
     LlamaCppModel = _require(*REQUIRES["llamacpp"])
     cfg = replace(cfg, model_id=model_name(cfg))
-    return _passing_through(LlamaCppModel)(base_url=_llamacpp_url(cfg), timeout=cfg.model_timeout,
+    return _passing_through(LlamaCppModel)(base_url=llamacpp_url(cfg), timeout=cfg.model_timeout,
                                            **model_kwargs(cfg, LlamaCppModel, cap_in_params=True))
 
 
@@ -303,7 +305,7 @@ def model_name(cfg: HarnessConfig) -> str:
     """
     if cfg.provider != "llamacpp" or cfg.model_id != HarnessConfig.model_id:
         return cfg.model_id
-    url = _llamacpp_url(cfg).rstrip("/")
+    url = llamacpp_url(cfg).rstrip("/")
     # Never asked is not asked just now: a monotonic clock may start near 0, on a machine just started.
     known = _SERVED.get(url)
     if known is not None and time.monotonic() - known[0] <= SERVED_FOR:

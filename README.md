@@ -670,6 +670,20 @@ python -m orchestrator --jobs ~/jobs --schedule --timezone America/Anchorage --c
   and runs on its schedule only once someone resumes it.
 - A run's record says what started it: `"trigger": "schedule"` with
   `scheduled_for`, or `"manual"`.
+- **llama.cpp servers take turns.** A run that will call one (its own model,
+  or a profile it may route or hand work to, `provider = "llamacpp"`) takes
+  the server first, across jobs, tasks and questions, and gives it back when
+  it ends. One GPU and two long contexts can crash the server.
+  - **While another run has it**, a due job waits. It's tried again on each
+    tick within `--catch-up`, and the Jobs tab says why.
+  - **"Run now"** on a server in use is refused, with the reason.
+  - **Tasks** stay queued with the reason (`server_wait`), and start when the
+    server is free.
+  - **`--wait-for-idle-servers`** (`ORCHESTRATOR_WAIT_FOR_IDLE_SERVERS=1`): a
+    run also waits while the server's `/health` says slots are processing,
+    such as someone else's benchmark. That's checked only when a run starts,
+    so something that starts afterwards can still overlap it. Off by default:
+    only this orchestrator's runs take turns.
 
 **Tasks.** The Tasks tab (or `POST /api/tasks`) takes a repo and a prompt and
 works on it until there is a PR, without anyone watching. With no repo, the
