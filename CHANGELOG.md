@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.11.0 (2026-11-10)
+
+### Features
+
+- **orchestrator**: Llama.cpp servers take turns, one run at a time and only once idle
+  ([#90](https://github.com/brianporeilly/strands-harness/pull/90),
+  [`d883a6f`](https://github.com/brianporeilly/strands-harness/commit/d883a6ff468697797829be781633d4168950c4df))
+
+
 ## v0.10.0 (2026-11-09)
 
 ### Features
