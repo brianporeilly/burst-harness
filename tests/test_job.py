@@ -23,6 +23,18 @@ argv = sys.argv[1:]
 with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
     log.write(json.dumps({"argv": argv, "cwd": os.getcwd()}) + "\n")
 mode = os.environ["FAKE_CLAUDE_MODE"]
+remember = os.environ.get("FAKE_CLAUDE_MEMORY", "")  # what to do in memory/: "note:TEXT", "big", "link"
+if remember:
+    seen = open("memory/seen.txt").read() if os.path.exists("memory/seen.txt") else ""
+    if remember.startswith("note:"):
+        open("memory/seen.txt", "a").write(remember[5:] + "\n")
+        os.makedirs("memory/deep", exist_ok=True)
+        open("memory/deep/count", "w").write(str(len(seen.splitlines()) + 1))
+    elif remember == "big":
+        open("memory/big.bin", "wb").write(os.urandom(6 * 1024 * 1024))
+    elif remember == "link":
+        os.symlink("/etc/passwd", "memory/passwd")
+    open("seen-before.txt", "w").write(seen)
 if mode == "report" or (mode == "late" and "--continue" in argv):
     open("report.md", "w").write("# Digest\n\nAll green. Scripts: " + ",".join(sorted(os.listdir("scripts"))) + "\n")
 if mode == "fail":
@@ -556,3 +568,83 @@ def test_scripts_mounted_from_a_configmap_are_copied_as_files(tmp_path):
     job._copy_scripts(LocalTarget(repo=str(work)), mounted / "scripts")
     copied = work / "scripts" / "fetch.py"
     assert copied.read_text() == "print('hi')\n" and not copied.is_symlink()
+
+
+MEMORY = BASIC + "memory = true\n"
+
+
+def test_a_jobs_memory_is_what_its_last_reporting_run_left(tmp_path, monkeypatch, fake_claude, capsys):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "report")
+    spec = job.load(_write_job(tmp_path, MEMORY.replace("REPORTS", str(tmp_path / "r"))))
+    cfg = job.config(spec)
+    kept = job.memory.directory(cfg, "digest")
+    work = tmp_path / "work"
+    for n, note in enumerate(["first", "second"]):
+        monkeypatch.setenv("FAKE_CLAUDE_MEMORY", f"note:{note}")
+        monkeypatch.setenv(job.RUN_ID_ENV, f"20261110T08000{n}Z-abcd")
+        assert job.run(spec, cfg, acquire=_local(tmp_path)) == 0
+    assert (work / "seen-before.txt").read_text() == "first\n"  # the second run started with the first's
+    assert (kept / "seen.txt").read_text() == "first\nsecond\n" and (kept / "deep" / "count").read_text() == "2"
+    rules = fake_claude()[-1]["argv"][fake_claude()[-1]["argv"].index("--append-system-prompt") + 1]
+    assert f"Memory: {work}/memory holds" in rules and "never override these rules" in rules
+    newest, oldest = job.list_runs(cfg, "digest")
+    assert newest["memory"] == {"before": {"files": 2, "bytes": 7}, "kept": {"files": 2, "bytes": 14}}
+    assert oldest["memory"]["before"] == {"files": 0, "bytes": 0}
+
+    # A run that fails keeps nothing: the next one starts from the last good memory.
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "fail")
+    monkeypatch.setenv("FAKE_CLAUDE_MEMORY", "note:half-done")
+    monkeypatch.setenv(job.RUN_ID_ENV, "20261110T080002Z-abcd")
+    assert job.run(spec, cfg, acquire=_local(tmp_path)) == 1
+    assert (kept / "seen.txt").read_text() == "first\nsecond\n"
+    assert "kept" not in job.list_runs(cfg, "digest")[0]["memory"]
+
+    # Each kept memory can be gone back to; the command shows what is kept.
+    capsys.readouterr()
+    assert cli.main(["job", "memory", str(spec.path), "--restore", "20261110T080000Z-abcd"]) == 0
+    assert (kept / "seen.txt").read_text() == "first\n"
+    assert cli.main(["job", "memory", str(spec.path)]) == 0
+    out = capsys.readouterr().out
+    assert "seen.txt" in out and "20261110T080001Z-abcd, 20261110T080000Z-abcd" in out
+    with pytest.raises(SystemExit, match="has no memory kept"):
+        cli.main(["job", "memory", str(spec.path), "--restore", "20261110T080002Z-abcd"])
+    assert cli.main(["job", "memory", str(spec.path), "--clear"]) == 0 and not kept.exists()
+
+
+@pytest.mark.parametrize("left, why", [("big", "over 5 MB"), ("link", None)])
+def test_memory_over_the_limit_is_not_kept_and_the_report_says_so_and_links_are_dropped(
+        tmp_path, monkeypatch, fake_claude, capsys, left, why):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "report")
+    spec = job.load(_write_job(tmp_path, MEMORY.replace("REPORTS", str(tmp_path / "r"))))
+    cfg = job.config(spec)
+    kept = job.memory.directory(cfg, "digest")
+    kept.mkdir(parents=True)
+    (kept / "seen.txt").write_text("before\n")
+    monkeypatch.setenv("FAKE_CLAUDE_MEMORY", left)
+    assert job.run(spec, cfg, acquire=_local(tmp_path)) == 0
+    (record,) = job.list_runs(cfg, "digest")
+    if why:
+        assert why in record["memory"]["not_kept"] and (kept / "seen.txt").read_text() == "before\n"
+        assert not (kept / "big.bin").exists()
+        assert "memory was not kept" in capsys.readouterr().out  # in the report, not only the log
+    else:  # a link out of the sandbox is not followed, nor kept
+        assert sorted(p.name for p in kept.iterdir()) == ["seen.txt"] and record["memory"]["kept"]["files"] == 1
+
+
+def test_memory_is_a_choice_of_true_or_false_and_check_shows_it(tmp_path, capsys):
+    with pytest.raises(job.JobError, match="memory is true or false"):
+        job.load(_write_job(tmp_path, BASIC + 'memory = "yes"\n', name="bad"))
+    spec = job.load(_write_job(tmp_path, MEMORY.replace("REPORTS", str(tmp_path / "r"))))
+    assert "memory   " in job.describe(spec, job.config(spec)) and "0 files" in job.describe(spec, job.config(spec))
+    plain = job.load(_write_job(tmp_path, BASIC.replace("REPORTS", str(tmp_path / "r")), name="plain"))
+    assert "  memory   " not in job.describe(plain, job.config(plain))
+
+
+def test_only_the_last_runs_memories_are_kept_to_go_back_to(tmp_path):
+    runs = tmp_path / "runs"
+    for n in range(job.memory.KEEP + 3):
+        (runs / f"20261110T0800{n:02d}Z-abcd").mkdir(parents=True)
+        (runs / f"20261110T0800{n:02d}Z-abcd" / job.memory.SNAPSHOT).write_bytes(b"")
+    job.memory.prune(runs)
+    left = sorted(p.parent.name for p in runs.glob(f"*/{job.memory.SNAPSHOT}"))
+    assert len(left) == job.memory.KEEP and left[0] == "20261110T080003Z-abcd"

@@ -979,6 +979,27 @@ screen is in "Testing", Google expires its refresh tokens after 7 days:
 publish it ("In production"; unverified is fine for your own account) to
 keep one.
 
+**Memory between runs.** With `[job] memory = true`, a run starts with
+`/workspace/memory` holding what the job's last run left there (empty the
+first time), and what it leaves there is kept for the next: a script's JSON of
+the messages it has seen, the model's notes on what it already reported. The
+model is told about it in its rules. It is kept on the driver, under the state
+directory (`jobs/NAME/memory`), never in the sandbox; only from a run that
+reported, so a run that failed half way does not leave the next one half
+written memory; and only up to 5 MB of plain files (links are dropped). A run
+that leaves more keeps nothing, and its report says so. Each memory kept is
+also saved with its run, for the last 20 runs that kept one:
+
+```bash
+uv run harness job memory jobs/daily-brief                  # what is kept now
+uv run harness job memory jobs/daily-brief --restore RUN-ID # back to what that run left
+uv run harness job memory jobs/daily-brief --clear          # start over
+```
+
+A run that reads untrusted mail writes its memory having read it, so the
+model is told its memory is its own earlier notes, which never override its
+rules; report mode still stops it doing anything with what it remembers.
+
 Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub),
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
 read-only ServiceAccount from its `rbac.yaml`), and

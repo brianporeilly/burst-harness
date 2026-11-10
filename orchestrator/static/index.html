@@ -641,6 +641,7 @@ async function renderRun(name, id) {
     el("h3", {}, "Run ", el("code", {}, r.id), " ", runChip(r.state)),
     r.reason ? el("p", { class: "error" }, r.reason) : null,
     r.delivery_errors ? el("p", { class: "error" }, `Delivery: ${r.delivery_errors.join("; ")}`) : null,
+    r.memory ? el("p", { class: r.memory.not_kept ? "error" : "muted" }, memoryLine(r.memory)) : null,
     r.report != null ? el("pre", { class: "text" }, r.report)
       : el("p", { class: "muted" }, r.state === "running" || r.state === "starting" ? "Running..." : "No report."),
     hosts.length || egress.refused_count ? el("div", {},
@@ -651,6 +652,14 @@ async function renderRun(name, id) {
     r.output != null ? el("details", { "data-output": "" }, el("summary", {}, "Output"), el("pre", { class: "text" }, r.output)) : null,
   );
   if (openOutput) box.querySelector("details[data-output]").open = true;
+}
+
+// What a run of a job with [job] memory = true started with, and kept for the next.
+function memoryLine(m) {
+  const size = (s) => `${s.files} file${s.files === 1 ? "" : "s"}, ${s.bytes < 1024 ? `${s.bytes} bytes` : `${Math.round(s.bytes / 1024)} KB`}`;
+  const before = m.before ? `Memory: started with ${size(m.before)}` : "Memory";
+  if (m.not_kept) return `${before}; not kept: ${m.not_kept}.`;
+  return m.kept ? `${before}; kept ${size(m.kept)} for the next run.` : `${before}; nothing kept (no report).`;
 }
 
 // --- tasks ---

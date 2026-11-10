@@ -595,9 +595,39 @@ def cmd_job(args: argparse.Namespace) -> int:
             if not runs:
                 print(f"No runs of {spec.name} yet.")
             return 0
+        if args.action == "memory":
+            return _job_memory(spec, cfg, args)
         return job.run(spec, cfg)
     except (job.JobError, containers.ContainerError) as err:
         raise SystemExit(str(err)) from err
+
+
+def _job_memory(spec: job.JobSpec, cfg: Any, args: argparse.Namespace) -> int:
+    """What a job keeps between runs: show it, --clear it, or --restore a run's."""
+    from . import memory
+
+    where = memory.directory(cfg, spec.name)
+    if args.clear:
+        memory.clear(cfg, spec.name)
+        print(f"Cleared {spec.name}'s memory: its next run starts with none.")
+        return 0
+    if args.restore:
+        try:
+            kept = memory.restore(cfg, spec.name, job.runs_dir(cfg, spec.name), args.restore)
+        except memory.JobMemoryError as err:
+            raise SystemExit(str(err)) from err
+        print(f"{spec.name}'s memory is what run {args.restore} left: {kept['files']} files, {kept['bytes']} bytes.")
+        return 0
+    if not spec.memory:
+        print(f"{spec.name} keeps no memory ([job] memory = true in its job.toml to keep it).")
+    files = sorted(p for p in where.rglob("*") if p.is_file()) if where.is_dir() else []
+    for path in files:
+        print(f"{path.stat().st_size:>9}  {path.relative_to(where)}")
+    print(f"{len(files)} files in {where}." if files else f"Nothing kept in {where}.")
+    kept = [r["id"] for r in job.list_runs(cfg, spec.name) if (job.runs_dir(cfg, spec.name) / r["id"] / memory.SNAPSHOT).is_file()]
+    if kept:
+        print(f"Runs whose memory can be restored (--restore RUN-ID): {', '.join(kept)}")
+    return 0
 
 
 def cmd_ask(args: argparse.Namespace) -> int:
@@ -790,11 +820,14 @@ def main(argv: list[str] | None = None) -> int:
     eg.set_defaults(func=cmd_egress)
 
     jb = sub.add_parser("job", help="Run a job: a directory with job.toml and prompt.md, ending in a report.")
-    jb.add_argument("action", choices=["run", "check", "runs"],
+    jb.add_argument("action", choices=["run", "check", "runs", "memory"],
                     help="run: one run, in a fresh container, its report sent to the job's outputs. "
                          "check: show what a run would use, and what is missing. "
-                         "runs: its recent runs.")
+                         "runs: its recent runs. "
+                         "memory: what it keeps from one run to the next ([job] memory = true).")
     jb.add_argument("dir", help="The job's directory.")
+    jb.add_argument("--restore", metavar="RUN_ID", help="For memory: go back to what that run left.")
+    jb.add_argument("--clear", action="store_true", help="For memory: forget it all.")
     jb.set_defaults(func=cmd_job)
 
     question = sub.add_parser("ask", help="A task with no repo, ending in an answer rather than a PR: a question, "
