@@ -23,6 +23,8 @@ argv = sys.argv[1:]
 with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
     log.write(json.dumps({"argv": argv, "cwd": os.getcwd()}) + "\n")
 mode = os.environ["FAKE_CLAUDE_MODE"]
+if os.environ.get("FAKE_CLAUDE_PLAN"):  # an act-mode job's plan, as is
+    open("plan.json", "w").write(os.environ["FAKE_CLAUDE_PLAN"])
 remember = os.environ.get("FAKE_CLAUDE_MEMORY", "")  # what to do in memory/: "note:TEXT", "big", "link"
 if remember:
     seen = open("memory/seen.txt").read() if os.path.exists("memory/seen.txt") else ""
@@ -95,7 +97,7 @@ def test_example_job_loads_and_describes(monkeypatch):
 
 
 @pytest.mark.parametrize("table, error", [
-    ('mode = "act"', "not supported yet"),
+    ('mode = "act"', "goes with apply"),
     ('mode = "maybe"', "report"),
     ('trigger = "every day"', "cron"),
     ('trigger = "webhook"', "control plane"),
@@ -276,7 +278,7 @@ def test_cli_check(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("GITHUB_TOKEN", "t")
     assert cli.main(["job", "check", str(EXAMPLE)]) == 0
     assert "Job repo-digest" in capsys.readouterr().out
-    with pytest.raises(SystemExit, match="not supported yet"):
+    with pytest.raises(SystemExit, match="goes with apply"):
         cli.main(["job", "check", str(_write_job(tmp_path, '[job]\nmode = "act"\n'))])
 
 

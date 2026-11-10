@@ -597,9 +597,43 @@ def cmd_job(args: argparse.Namespace) -> int:
             return 0
         if args.action == "memory":
             return _job_memory(spec, cfg, args)
+        if args.action in ("plans", "approve", "reject"):
+            return _job_plans(spec, cfg, args)
+        if args.action == "apply":
+            return job.apply(spec, cfg, args.plan or "")
         return job.run(spec, cfg)
     except (job.JobError, containers.ContainerError) as err:
         raise SystemExit(str(err)) from err
+
+
+def _job_plans(spec: job.JobSpec, cfg: Any, args: argparse.Namespace) -> int:
+    """An act-mode job's plans: list them, or approve or reject items of one (the newest by default)."""
+    import getpass
+
+    from . import plans
+
+    try:
+        if args.action != "plans":
+            run_id = args.plan or plans.load(cfg, spec.name)["run"]
+            decision = "approve" if args.action == "approve" else "reject"
+            plan = plans.decide(cfg, spec.name, run_id, {item: decision for item in args.items or ["*"]},
+                                by=f"cli:{getpass.getuser()}")
+            shown = [plan]
+        else:
+            shown = [plans.load(cfg, spec.name, args.plan)] if args.plan else plans.list_plans(cfg, spec.name, limit=5)
+    except plans.PlanError as err:
+        raise SystemExit(str(err)) from err
+    marks = {"approve": "+", "reject": "-", None: "?"}
+    for plan in shown:
+        print(f"Plan from run {plan['run']}: {plan['state']}"
+              + (f", open until {plan['expires']}" if plan["state"] == "open" else ""))
+        for item in plan["items"]:
+            print(f"  [{marks[item['decision']]}] {item['id']}: {item['title']}")
+    if not shown:
+        print(f"{spec.name} has no plans." + ("" if spec.mode == "act" else " (Only a job with mode = \"act\" makes them.)"))
+    elif shown[0]["state"] == "open" and all(i["decision"] for i in shown[0]["items"]):
+        print(f"Every item is decided: `harness job apply {args.dir}` does what was approved.")
+    return 0
 
 
 def _job_memory(spec: job.JobSpec, cfg: Any, args: argparse.Namespace) -> int:
@@ -820,12 +854,17 @@ def main(argv: list[str] | None = None) -> int:
     eg.set_defaults(func=cmd_egress)
 
     jb = sub.add_parser("job", help="Run a job: a directory with job.toml and prompt.md, ending in a report.")
-    jb.add_argument("action", choices=["run", "check", "runs", "memory"],
+    jb.add_argument("action", choices=["run", "check", "runs", "memory", "plans", "approve", "reject", "apply"],
                     help="run: one run, in a fresh container, its report sent to the job's outputs. "
                          "check: show what a run would use, and what is missing. "
                          "runs: its recent runs. "
-                         "memory: what it keeps from one run to the next ([job] memory = true).")
+                         "memory: what it keeps from one run to the next ([job] memory = true). "
+                         "plans: what a job in act mode proposed; approve, reject: items of its newest plan (all "
+                         "that are left, with none named); apply: do what was approved.")
     jb.add_argument("dir", help="The job's directory.")
+    jb.add_argument("items", nargs="*", help="For approve and reject: the plan's item ids (default: all left).")
+    jb.add_argument("--plan", metavar="RUN_ID", help="For plans, approve, reject, apply: the plan from that run "
+                    "(default: the newest).")
     jb.add_argument("--restore", metavar="RUN_ID", help="For memory: go back to what that run left.")
     jb.add_argument("--clear", action="store_true", help="For memory: forget it all.")
     jb.set_defaults(func=cmd_job)

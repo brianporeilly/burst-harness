@@ -343,6 +343,12 @@ which goes into the job's state and out to Slack. Approving it, by sender or
 category, records the decision through the control plane. The next run, or
 one the approval triggers, carries out only what was approved. A restart
 loses nothing, because nothing is waiting.
+Done in the harness (2026-11-09): `mode = "act"` runs are read-only and
+write `plan.json`; the plan is kept in the job's state, its items approved or
+rejected (`harness job approve|reject`), and `harness job apply` runs the
+job's `apply` command on the approved items, with no model and only
+`apply_writes` let through. The orchestrator's Jobs tab and Slack buttons
+come next.
 
 **Steps:**
 

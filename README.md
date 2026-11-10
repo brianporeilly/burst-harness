@@ -1000,6 +1000,48 @@ A run that reads untrusted mail writes its memory having read it, so the
 model is told its memory is its own earlier notes, which never override its
 rules; report mode still stops it doing anything with what it remembers.
 
+**Act mode: plans and approvals.** A job that should do something (archive
+mail, label it) never lets the model do it. With `mode = "act"`, a run is as
+read-only as a report job's: besides its report, it writes a plan,
+`/workspace/plan.json`, of up to 50 items, each with an `id`, a `title` and
+`detail` saying exactly what will be done, and `data` for the job's script:
+
+```json
+{"items": [{"id": "sender:news@example.com",
+            "title": "Archive 40 messages from news@example.com",
+            "detail": "Weekly digests, the newest from today",
+            "data": {"ids": ["18c1...", "18c2..."]}}]}
+```
+
+The plan is kept under the state directory (`jobs/NAME/plans/RUN-ID.json`),
+and the report says it waits for approval. Each item is approved or rejected,
+and recorded with who decided and when; nothing waits in memory. Then `apply`,
+the job's own command, does what was approved: in a fresh sandbox, with the
+approved items in `approved.json`, no model, and the gateway letting through
+only `apply_writes`. Its output is reported like a run's.
+
+```toml
+[job]
+mode = "act"
+apply = "python3 scripts/apply.py approved.json"
+apply_writes = [{host = "gmail.googleapis.com", method = "POST", path = "/gmail/v1/users/me/messages/batchModify"}]
+plan_ttl = "1d"     # how long a plan stays open (default 1d)
+```
+
+```bash
+uv run harness job plans jobs/mail-sorter                 # the newest plans, and what was decided
+uv run harness job approve jobs/mail-sorter ID [ID...]    # those items (all that are left, with none named)
+uv run harness job reject jobs/mail-sorter                # the rest
+uv run harness job apply jobs/mail-sorter                 # do what was approved
+```
+
+A plan is applied once, and only when every item is decided. A newer plan
+supersedes an open one, and an open plan expires after `plan_ttl`, as what it
+was made from moves on. Rejecting every item closes it. The model writes
+`data`, and a person approves by the title and detail, so the apply script
+should check `data` against them where it can (that a message is from the
+sender the item names), and only do what can be undone.
+
 Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub),
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
 read-only ServiceAccount from its `rbac.yaml`), and
@@ -1010,8 +1052,7 @@ Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
 "allowlist"`. A job's settings sit between your config file and `HARNESS_*`.
 Headless Claude Code runs only the tools it is allowed (`claude_args =
 "--allowedTools ..."`, or `claude_settings`). `[job] trigger` (cron or
-`manual`) is read by the orchestrator's scheduler, not by `run`; `mode = "act"` is
-refused until approvals exist. See ROADMAP.md, phase 8.
+`manual`) is read by the orchestrator's scheduler, not by `run`. See ROADMAP.md, phase 8.
 
 `mode = "report"` is enforced by the gateway, not by the prompt. It terminates
 all of the sandbox's TLS and lets through only requests that read (GET, HEAD,
