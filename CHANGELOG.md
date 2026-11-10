@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.12.0 (2026-11-10)
+
+### Features
+
+- **jobs**: Memory between runs, [job] memory = true
+  ([#91](https://github.com/brianporeilly/strands-harness/pull/91),
+  [`e894f53`](https://github.com/brianporeilly/strands-harness/commit/e894f53d8e0f1c037d6080b2a79eb0defd1ca5da))
+
+
 ## v0.11.0 (2026-11-10)
 
 ### Features
