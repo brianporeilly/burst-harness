@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.15.0 (2026-11-11)
+
+### Features
+
+- **jobs**: Mail-sorter, an inbox tidied only as far as a person approves
+  ([#94](https://github.com/brianporeilly/strands-harness/pull/94),
+  [`1716586`](https://github.com/brianporeilly/strands-harness/commit/17165861d3b33811de10bf214029050b83f266cd))
+
+
 ## v0.14.0 (2026-11-11)
 
 ### Features
