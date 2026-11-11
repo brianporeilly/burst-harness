@@ -59,6 +59,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
   .error { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); }
   .tabs { display: flex; gap: 4px; }
@@ -566,7 +567,9 @@ async function refreshJobs() {
       j.last_success ? `last good ${when(j.last_success.started)}` : "no good run yet",
     ].filter(Boolean).join(" · ")),
     j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null,
-    j.waiting ? el("div", { class: "muted", title: j.waiting }, `Due, waiting: ${j.waiting}`) : null)));
+    j.waiting ? el("div", { class: "muted", title: j.waiting }, `Due, waiting: ${j.waiting}`) : null,
+    j.plan ? el("div", { class: "chip warn" }, j.plan.state === "applying" ? "applying its plan"
+      : j.plan.undecided ? `plan: ${j.plan.undecided} of ${j.plan.items} to decide` : "plan decided, not applied") : null)));
   if (selectedJob) renderJob();
 }
 
@@ -588,7 +591,8 @@ async function renderJob() {
   if (!selectedRun && j.runs && j.runs.length) selectedRun = j.runs[0].id;
   // Redrawn only when something shown has changed, so an open section or a scrolled report stays put.
   const key = JSON.stringify([j.name, j.running, j.missing, j.error, j.schedule, selectedRun,
-                              (j.runs || []).map((r) => [r.id, r.state])]);
+                              (j.runs || []).map((r) => [r.id, r.state]),
+                              (j.plans || []).map((p) => [p.run, p.state, p.items.map((i) => i.decision)])]);
   if (box.dataset.key === key) { if (selectedRun) renderRun(j.name, selectedRun); return; }
   box.dataset.key = key;
   const runButton = el("button", { class: "primary", onclick: async () => {
@@ -618,12 +622,53 @@ async function renderJob() {
       `The orchestrator's environment is missing ${j.missing.join(", ")}. Set it where the orchestrator is started.`) : null,
     j.describe ? el("pre", { class: "text" }, j.describe) : null,
     j.prompt ? el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, j.prompt)) : null,
+    ...(j.plans && j.plans.length ? [el("h3", {}, "Plans"), ...j.plans.map((p, n) => planBox(j, p, n === 0))] : []),
     el("h3", {}, "Runs"),
     rows.length ? el("table", {}, el("tr", {}, el("th", {}, "Started"), el("th", {}, "Outcome"), el("th", {}, "Took"), el("th", {}, "")), rows)
       : el("p", { class: "muted" }, "No runs yet."),
     el("div", { id: "run-detail" }),
   );
   if (selectedRun) renderRun(j.name, selectedRun);
+}
+
+// A plan an act-mode job proposed: its items, to approve or reject while it is open (harness/plans.py). The
+// newest is open; older ones fold away.
+const PLAN_STATES = { open: "deciding", applying: "applying", applied: "applied", apply_failed: "apply failed",
+  rejected: "all rejected", superseded: "superseded", expired: "expired" };
+function planBox(j, p, newest) {
+  const open = p.state === "open";
+  const decide = async (decisions) => {
+    try {
+      const done = await api(`/api/jobs/${j.name}/plans/${p.run}/decide`, { method: "POST", body: JSON.stringify({ decisions }) });
+      if (done.apply_error) alert(`Decided, but not applied yet: ${done.apply_error}`);
+    } catch (err) { alert(`Decide: ${err.message}`); }
+    refreshJobs();
+  };
+  const undecided = p.items.filter((i) => !i.decision).length;
+  const decidedText = (i) => i.decision === "approve" ? "approved" : "rejected";
+  const items = p.items.map((i) => el("tr", {},
+    el("td", {}, el("strong", {}, i.title), i.detail ? el("div", { class: "muted pre" }, i.detail) : null,
+       el("div", { class: "muted" }, el("code", {}, i.id))),
+    el("td", {}, i.decision
+      ? el("span", { class: "chip " + (i.decision === "approve" ? "ok" : "bad"), title: `${i.by || ""} ${i.at || ""}` }, decidedText(i))
+      : open ? el("div", { class: "row" },
+          el("button", { class: "primary", onclick: () => decide({ [i.id]: "approve" }) }, "Approve"),
+          el("button", { onclick: () => decide({ [i.id]: "reject" }) }, "Reject")) : "")));
+  const actions = open && undecided ? el("div", { class: "row" },
+      el("button", { class: "primary", onclick: () => decide({ "*": "approve" }) }, `Approve the ${undecided} left`),
+      el("button", { onclick: () => decide({ "*": "reject" }) }, `Reject the ${undecided} left`))
+    : open ? el("button", { class: "primary", onclick: async () => {
+        try { selectedRun = (await api(`/api/jobs/${j.name}/plans/${p.run}/apply`, { method: "POST" })).run; }
+        catch (err) { alert(`Apply: ${err.message}`); }
+        refreshJobs();
+      } }, "Apply what was approved") : null;
+  const body = [
+    el("p", { class: "muted" }, `From run ${p.run}: ${PLAN_STATES[p.state] || p.state}`,
+       open ? `, open until ${new Date(p.expires).toLocaleString()}` : "",
+       p.apply_run ? `, applied by run ${p.apply_run}` : "", p.reason ? `: ${p.reason}` : "", "."),
+    el("table", {}, items), actions];
+  return newest ? el("div", { class: "plan" }, ...body)
+    : el("details", {}, el("summary", {}, `Plan from run ${p.run}: ${PLAN_STATES[p.state] || p.state}`), ...body);
 }
 
 async function renderRun(name, id) {

@@ -27,6 +27,11 @@ be paused, which is kept beside its runs (jobs/NAME/schedule.json); one with
 nothing kept starts paused when `start_paused` is set, so a new job runs only
 once someone resumes it.
 
+A job in act mode proposes plans (harness/plans.py): they are listed here, their items decided (by the page,
+the API or Slack's buttons, slack.py), and once every item of a plan is decided with something approved, the
+apply run is started (`harness job apply DIR --plan RUN-ID`): as any run, but calling no model. Watchers
+(`watch`) hear when a plan opens, is decided, and is applied.
+
 A run that will call a llama.cpp server of ours takes it first (servers.py): while another run has it, or it
 is busy, a scheduled run is tried again on each tick (within `catch_up`), and one started by hand is refused
 with the reason.
@@ -45,7 +50,9 @@ from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
-from harness import credentials, cron, job, models
+from collections.abc import Callable
+
+from harness import credentials, cron, job, models, plans
 
 from .launch import Launched, LaunchError, Subprocess, granted
 from .servers import ModelServers, servers_for
@@ -84,6 +91,9 @@ class JobRunner:
         self.tried: dict[str, datetime] = {}
         self.servers = servers or ModelServers()
         self.waiting: dict[str, str] = {}  # name -> why its due run has not started yet (a model server)
+        # Called (name, event, plan) when a plan is "proposed", "decided", "applying" or ends ("applied",
+        # "apply_failed"); outside the lock, from the thread that did it.
+        self.watchers: list[Callable[[str, str, dict[str, Any]], None]] = []
 
     def discover(self) -> dict[str, Path]:
         found: dict[str, Path] = {}
@@ -130,6 +140,9 @@ class JobRunner:
             last_run=self._alive(cfg, runs[0]) if runs else None,
             last_success=next((r for r in runs if r.get("state") == "reported"), None),
         )
+        if spec.mode == "act":
+            newest = plans.list_plans(cfg, name, limit=1)
+            item["plan"] = _plan_line(newest[0]) if newest and newest[0]["state"] in ("open", "applying") else None
         item["running"] = item["running"] or bool(runs and self._alive(cfg, runs[0]).get("state") == "running")
         if spec.trigger != "manual":
             due = cron.next_due(cron.parse(spec.trigger), self.zone, datetime.now(UTC))
@@ -218,13 +231,14 @@ class JobRunner:
             item["describe"] = job.describe(spec, cfg)
             item["prompt"] = spec.prompt
             item["runs"] = [self._alive(cfg, r) for r in job.list_runs(cfg, name)]
+            item["plans"] = plans.list_plans(cfg, name, limit=5) if spec.mode == "act" else []
             if name in self.running and not any(r["id"] == self.running[name][0] for r in item["runs"]):
                 item["runs"].insert(0, {"id": self.running[name][0], "job": name, "state": "starting"})
         return item
 
-    def run(self, name: str, *, scheduled_for: datetime | None = None) -> str:
+    def run(self, name: str, *, scheduled_for: datetime | None = None, applying: str = "") -> str:
         """Start a run; its id. One run of a job at a time. `scheduled_for`: the scheduler's,
-        for the time it was due."""
+        for the time it was due. `applying`: the run that applies that run's plan (apply())."""
         path = self._path(name)
         spec, cfg, error = self._loaded(path)
         if spec is None:
@@ -235,9 +249,15 @@ class JobRunner:
         with self.lock:
             if name in self.running or self._summary(name, path)["running"]:
                 raise JobsError(f"{name} is already running.")
-            if why := self.servers.take(f"job {name}", servers_for(cfg)):
+            if why := self.servers.take(f"job {name}", [] if applying else servers_for(cfg)):  # applying: no model
                 raise ServerBusy(f"{name} waits for its model server: {why}.")
             run_id = job.new_run_id()
+            if applying:  # marked now, so it is neither decided nor applied again while the run starts
+                try:
+                    plans.change(cfg, name, applying, lambda plan: plans.start_applying(plan, run_id))
+                except plans.PlanError as err:
+                    self.servers.give_back(f"job {name}", wake=False)
+                    raise JobsError(str(err)) from err
             directory = job.runs_dir(cfg, name) / run_id
             directory.mkdir(parents=True, exist_ok=True)
             if self.launcher.kind == "job":
@@ -246,28 +266,105 @@ class JobRunner:
             names = credentials.for_job(cfg, spec.secret_envs, spec.outputs)
             env = credentials.for_run([], {
                 job.RUN_ID_ENV: run_id, "PYTHONUNBUFFERED": "1",
-                job.TRIGGER_ENV: "schedule" if scheduled_for else "manual",
+                job.TRIGGER_ENV: "schedule" if scheduled_for else "approval" if applying else "manual",
                 **({job.SCHEDULED_FOR_ENV: _iso(scheduled_for)} if scheduled_for else {})})
             try:
-                launched = self.launcher.start(name, 0, [sys.executable, "-m", "harness", "job", "run", str(path)],
+                how = ["apply", str(path), "--plan", applying] if applying else ["run", str(path)]
+                launched = self.launcher.start(name, 0, [sys.executable, "-m", "harness", "job", *how],
                                                env, granted(names), directory / OUTPUT, kind="job")
             except LaunchError as err:
                 with open(directory / OUTPUT, "ab") as output:
                     output.write(f"! could not start the run: {err}\n".encode())
                 self.servers.give_back(f"job {name}", wake=False)  # the lock is held
+                if applying:
+                    plans.change(cfg, name, applying, plans.reopen)
                 raise JobsError(f"Could not start {name}: {err}") from err
             if launched.job:
                 (directory / LAUNCH_FILE).write_text(json.dumps(launched.record()))
             self.running[name] = (run_id, launched)
-        threading.Thread(target=self._wait, args=(name, launched), daemon=True).start()
+        threading.Thread(target=self._wait, args=(name, launched, run_id), daemon=True).start()
+        if applying:
+            self._tell(name, "applying", {**plans.load(cfg, name, applying), "state": "applying", "apply_run": run_id})
         return run_id
 
-    def _wait(self, name: str, launched: Launched) -> None:
+    def _wait(self, name: str, launched: Launched, run_id: str) -> None:
         self.launcher.wait(launched)
         with self.lock:
             if self.running.get(name, ("", None))[1] is launched:
                 del self.running[name]
         self.servers.give_back(f"job {name}")
+        self._ended(name, run_id)
+
+    # --- plans ---
+    def _ended(self, name: str, run_id: str) -> None:
+        """After a run: tell the watchers of the plan it proposed, or of the one it applied."""
+        spec, cfg, _ = self._loaded(self._path(name)) if name in self.discover() else (None, None, "")
+        if spec is None or spec.mode != "act":
+            return
+        try:
+            record = json_file(job.runs_dir(cfg, name) / run_id / "run.json")
+            if record.get("applies"):
+                plan = plans.load(cfg, name, str(record["applies"]))
+                if plan["state"] == "applying" and plan.get("apply_run") == run_id:  # it ended without saying
+                    plan = plans.change(cfg, name, plan["run"], lambda p: p.update(
+                        state="apply_failed", reason=record.get("reason") or "the apply run ended without an outcome"))
+                self._tell(name, plan["state"], plan)
+            elif (record.get("plan") or {}).get("items"):
+                self._tell(name, "proposed", plans.load(cfg, name, run_id))
+        except (OSError, ValueError, plans.PlanError) as err:
+            print(f"jobs: {name}: after run {run_id}: {err}", flush=True)
+
+    def _tell(self, name: str, event: str, plan: dict[str, Any]) -> None:
+        for watcher in self.watchers:
+            try:
+                watcher(name, event, plan)
+            except Exception as err:  # noqa: BLE001 -- one watcher's trouble is not the others'
+                print(f"jobs: telling of {name}'s plan {plan.get('run')}: {err}", flush=True)
+
+    def watch(self, watcher: Callable[[str, str, dict[str, Any]], None]) -> None:
+        self.watchers.append(watcher)
+
+    def _act(self, name: str) -> Any:
+        spec, cfg, error = self._loaded(self._path(name))
+        if spec is None:
+            raise JobsError(error)
+        if spec.mode != "act":
+            raise JobsError(f"{name} is not in act mode: it makes no plans.")
+        return cfg
+
+    def plan(self, name: str, run_id: str) -> dict[str, Any]:
+        try:
+            return plans.load(self._act(name), name, run_id)
+        except plans.PlanError as err:
+            raise JobsError(str(err)) from err
+
+    def note(self, name: str, run_id: str, **fields: Any) -> None:
+        """Keep something of a plan's own beside it (the Slack message it was posted as)."""
+        plans.change(self._act(name), name, run_id, lambda plan: plan.update(fields))
+
+    def decide(self, name: str, run_id: str, decisions: dict[str, str], *, by: str) -> dict[str, Any]:
+        """Approve or reject items of a plan ("*" for all that are left). Once every item is decided and something
+        was approved, its apply run is started: the plan comes back with `apply_run`, or with `apply_error` if it
+        could not start (the job is running): apply() then starts it."""
+        cfg = self._act(name)
+        if not isinstance(decisions, dict) or not decisions:
+            raise JobsError("Say what to decide: {\"decisions\": {\"ITEM\": \"approve\" or \"reject\", \"*\": ...}}.")
+        try:
+            plan = plans.decide(cfg, name, run_id, {str(k): str(v) for k, v in decisions.items()}, by=by)
+        except plans.PlanError as err:
+            raise JobsError(str(err)) from err
+        self._tell(name, "decided", plan)
+        if plan["state"] == "open" and all(item["decision"] for item in plan["items"]):
+            try:
+                plan = {**plan, "state": "applying", "apply_run": self.run(name, applying=run_id)}
+            except JobsError as err:
+                plan = {**plan, "apply_error": str(err)}
+        return plan
+
+    def apply(self, name: str, run_id: str) -> str:
+        """Start applying a decided plan (when deciding could not: the job was running). The run's id."""
+        self._act(name)
+        return self.run(name, applying=run_id)
 
     def recover(self) -> list[str]:
         """On start: follow again the Jobs of runs another orchestrator left under way. A run whose Job is gone
@@ -291,7 +388,7 @@ class JobRunner:
                 with self.lock:
                     self.running[name] = (str(record["id"]), launched)
                 self.servers.hold(f"job {name}", servers_for(cfg))
-                threading.Thread(target=self._wait, args=(name, launched), daemon=True).start()
+                threading.Thread(target=self._wait, args=(name, launched, str(record["id"])), daemon=True).start()
                 done.append(f"{name}: run {record['id']} is still under way ({launched.job}), followed again")
         return done
 
@@ -332,6 +429,12 @@ class JobRunner:
             "report": report.read_text() if report.is_file() else None,
             "output": _tail(output) if output.is_file() else None,
         }
+
+
+def _plan_line(plan: dict[str, Any]) -> dict[str, Any]:
+    """A plan in a job's summary: whose it is, how far it is decided."""
+    return {"run": plan["run"], "state": plan["state"], "items": len(plan["items"]), "expires": plan.get("expires"),
+            "undecided": sum(1 for item in plan["items"] if item["decision"] is None)}
 
 
 def json_file(path: Path) -> dict[str, Any]:

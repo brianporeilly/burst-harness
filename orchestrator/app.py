@@ -196,6 +196,21 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     def run_detail(name: str, run_id: str) -> dict[str, Any]:
         return runner().run_detail(name, run_id)
 
+    @app.get("/api/jobs/{name}/plans/{run_id}")
+    def plan_detail(name: str, run_id: str) -> dict[str, Any]:
+        return runner().plan(name, run_id)
+
+    @app.post("/api/jobs/{name}/plans/{run_id}/decide")
+    async def decide_plan(name: str, run_id: str, request: Request) -> dict[str, Any]:
+        """{"decisions": {"ITEM": "approve" | "reject", "*": ... for all that are left}}. When it leaves every
+        item decided with something approved, the apply run starts (the plan's apply_run)."""
+        decisions = (await body(request)).get("decisions")
+        return await run_in_threadpool(runner().decide, name, run_id, decisions, by=request.state.user or "page")
+
+    @app.post("/api/jobs/{name}/plans/{run_id}/apply", status_code=202)
+    def apply_plan(name: str, run_id: str) -> dict[str, str]:
+        return {"name": name, "run": runner().apply(name, run_id)}
+
     # --- tasks ---
 
     def task_runner() -> TaskRunner:

@@ -176,6 +176,25 @@ def decide(cfg: HarnessConfig, name: str, run_id: str, decisions: dict[str, str]
     return change(cfg, name, run_id, how)
 
 
+def start_applying(plan: dict[str, Any], run_id: str) -> None:
+    """Mark a plan applying by that run, if it can be: open with every item decided (or already marked for it,
+    by the orchestrator that started the run)."""
+    if plan["state"] == "applying" and plan.get("apply_run") == run_id:
+        return
+    if plan["state"] != "open":
+        raise PlanError(f"The plan from run {plan['run']} is {plan['state']}: there is nothing to apply.")
+    if any(item["decision"] is None for item in plan["items"]):
+        raise PlanError(f"The plan from run {plan['run']} has items not decided yet: approve or reject each "
+                        "(or all of what is left) first.")
+    plan.update(state="applying", apply_run=run_id)
+
+
+def reopen(plan: dict[str, Any]) -> None:
+    """An apply that never started: the plan can be applied again."""
+    plan.update(state="open")
+    plan.pop("apply_run", None)
+
+
 def approved(plan: dict[str, Any]) -> list[dict[str, Any]]:
     """What the apply script is given: the approved items' id, title and data."""
     return [{"id": i["id"], "title": i["title"], "data": i["data"]} for i in plan["items"] if i["decision"] == "approve"]

@@ -848,6 +848,14 @@ Reply in the thread to continue the task. In a channel, mention the bot in the
 thread; in a direct message, just reply. `status`, `cancel` and `continue`
 (another burst, with no reply) also work there.
 
+A job in act mode that posts to a channel (`slack:CHANNEL`) has its plans
+posted there too, each item with Approve and Reject, and buttons for all that
+are left. Only the listed users' clicks count. The message shows each decision
+and who made it, then how applying went. Once every item is decided with
+something approved, the apply run starts. The app needs Interactivity on (the
+manifest has it; an app made from an older one needs it turned on, with no
+request URL).
+
 A task started from Slack is the same as one from the Tasks tab, with
 `created_by` set to `slack:<member ID>`.
 
@@ -1034,6 +1042,12 @@ uv run harness job approve jobs/mail-sorter ID [ID...]    # those items (all tha
 uv run harness job reject jobs/mail-sorter                # the rest
 uv run harness job apply jobs/mail-sorter                 # do what was approved
 ```
+
+In the orchestrator, the Jobs tab shows a job's plans, with Approve and
+Reject for each item (and the API: `POST /api/jobs/NAME/plans/RUN-ID/decide`
+with `{"decisions": {"ID": "approve", "*": "reject"}}`), and Slack can too
+(below). Deciding the last item starts the apply run, which calls no model, so
+it does not wait for a model server.
 
 A plan is applied once, and only when every item is decided. A newer plan
 supersedes an open one, and an open plan expires after `plan_ttl`, as what it

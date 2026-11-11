@@ -31,10 +31,17 @@ The task's bursts are reported in the thread: each start, then how it ended (a
 PR, a pause and its questions, a question, a failure and the end of its
 output), or a question's answer. The task is the same as one made in the Tasks tab or with the API,
 created by slack:<user ID>.
+
+A job in act mode that posts to a channel (`slack:CHANNEL` among its outputs) has its plans posted there too,
+with buttons to approve or reject each item, or all that are left (harness/plans.py). The listed users' clicks
+decide; the message shows the decisions, and how applying them went, as they happen. Once every item is decided
+with something approved, the apply run starts. The message's place is kept with the plan, so a restart loses
+nothing. The Slack app needs Interactivity on (with Socket Mode, no request URL).
 """
 
 from __future__ import annotations
 
+import json
 import queue
 import re
 import threading
@@ -44,6 +51,7 @@ from typing import Any
 
 from harness import credentials
 
+from .jobs import JobRunner, JobsError
 from .tasks import SHORT_REPO, URL_REPO, TaskRunner, TasksError, repo_url, slug_for
 
 POLL = 30
@@ -68,9 +76,21 @@ ENDED = {
 }
 
 
+PLAN_SHOWN = 22  # items with their own buttons: two blocks each, under Slack's 50 a message
+DETAIL_CHARS = 300
+PLAN_STATES = {
+    "applying": ":hourglass_flowing_sand: Applying what was approved.",
+    "applied": ":white_check_mark: Applied what was approved{run}.",
+    "apply_failed": ":x: Applying it failed{reason}.",
+    "rejected": "All rejected: nothing will be done.",
+    "superseded": "Superseded by a newer plan: nothing more will be done with this one.",
+    "expired": "Expired, undecided: nothing will be done.",
+}
+
+
 class SlackBot:
-    def __init__(self, tasks: TaskRunner, users: tuple[str, ...]) -> None:
-        self.tasks, self.users = tasks, frozenset(users)
+    def __init__(self, tasks: TaskRunner | None, users: tuple[str, ...], jobs: JobRunner | None = None) -> None:
+        self.tasks, self.users, self.jobs = tasks, frozenset(users), jobs
         self.tokens: tuple[str, str] | None = None
         self.web: Any = None  # slack_sdk's WebClient, once there is a bot token
         self.socket: Any = None  # its SocketModeClient, once connected
@@ -79,13 +99,18 @@ class SlackBot:
         self.outbox: queue.Queue[tuple[str, str, str]] = queue.Queue()
         self.seen: OrderedDict[str, None] = OrderedDict()
         self.lock = threading.Lock()
-        tasks.watch(self.burst)
+        self.plans: queue.Queue[tuple[str, str, dict[str, Any]]] = queue.Queue()
+        if tasks is not None:
+            tasks.watch(self.burst)
+        if jobs is not None:
+            jobs.watch(self.plan_changed)
 
     # --- connecting ---
 
     def start(self) -> None:
         threading.Thread(target=self._supervise, daemon=True, name="slack").start()
         threading.Thread(target=self._post, daemon=True, name="slack-posts").start()
+        threading.Thread(target=self._post_plans, daemon=True, name="slack-plans").start()
 
     def _supervise(self) -> None:
         while True:
@@ -128,6 +153,9 @@ class SlackBot:
         from slack_sdk.socket_mode.response import SocketModeResponse
 
         client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
+        if request.type == "interactive" and request.payload.get("type") == "block_actions":
+            self.clicked(request.payload)
+            return
         if request.type != "events_api":
             return
         with self.lock:
@@ -154,6 +182,9 @@ class SlackBot:
                                          f"`{user}`: add it to {USERS_ENV} to be one.")
             return
         text = plain(str(event.get("text") or ""), self.me)
+        if self.tasks is None:
+            self.say(channel, answer_in, "Tasks are not on in this orchestrator: here it only posts jobs' plans.")
+            return
         try:
             if thread and (slug := self.tasks.in_thread(channel, thread)):
                 self.in_task(slug, text, channel, thread)
@@ -249,6 +280,71 @@ class SlackBot:
         parts.append("`continue` here asks it again.")
         return "\n".join(parts)
 
+    # --- jobs' plans ---
+
+    def plan_changed(self, name: str, event: str, plan: dict[str, Any]) -> None:
+        """JobRunner's watcher: queued, and posted (or the message updated) from the plans thread."""
+        self.plans.put((name, event, plan))
+
+    def _post_plans(self) -> None:
+        while True:
+            self.show_plan(*self.plans.get())
+
+    def show_plan(self, name: str, event: str, plan: dict[str, Any]) -> None:
+        """Post a proposed plan to the job's channel, or update the message it was posted as."""
+        if self.jobs is None or self.web is None:
+            return
+        try:
+            plan = self.jobs.plan(name, str(plan["run"]))  # as it is now, with where it was posted
+            channel = next((o.split(":", 1)[1] for o in self.jobs.job(name).get("outputs") or []
+                            if o.startswith("slack:")), "")
+        except JobsError as err:
+            print(f"slack: {name}'s plan {plan.get('run')}: {err}")
+            return
+        text, blocks = plan_message(name, plan)
+        where = plan.get("slack") or {}
+        try:
+            if where.get("channel") and where.get("ts"):
+                self.web.chat_update(channel=where["channel"], ts=where["ts"], text=text, blocks=blocks)
+            elif channel and event == "proposed":
+                posted = self.web.chat_postMessage(channel=channel, text=text, blocks=blocks, unfurl_links=False)
+                self.jobs.note(name, str(plan["run"]), slack={"channel": posted["channel"], "ts": posted["ts"]})
+        except Exception as err:  # noqa: BLE001 -- Slack's trouble is said, not raised into the jobs
+            print(f"slack: posting {name}'s plan {plan['run']}: {err}")
+
+    def clicked(self, payload: dict[str, Any]) -> None:
+        """A button of a plan's message: the listed users' decide."""
+        user = str((payload.get("user") or {}).get("id") or "")
+        channel = str((payload.get("channel") or {}).get("id") or (payload.get("container") or {}).get("channel_id") or "")
+        for action in payload.get("actions") or []:
+            if action.get("action_id") not in ("plan-approve", "plan-reject"):
+                continue
+            if user not in self.users:
+                self.whisper(channel, user, f"Only the people this orchestrator lists can decide. Your Slack ID is "
+                                            f"`{user}`: add it to {USERS_ENV} to be one.")
+                return
+            try:
+                which = json.loads(action.get("value") or "{}")
+                decision = "approve" if action["action_id"] == "plan-approve" else "reject"
+                if self.jobs is None:
+                    raise JobsError("Jobs are not on in this orchestrator.")
+                done = self.jobs.decide(str(which["job"]), str(which["run"]), {str(which["item"]): decision},
+                                        by=f"slack:{user}")
+            except (JobsError, ValueError, KeyError) as err:
+                self.whisper(channel, user, f":warning: {escape(str(err))}")
+                return
+            if done.get("apply_error"):
+                self.whisper(channel, user, f"Decided, but not applied yet: {escape(done['apply_error'])} "
+                                            "It can be applied from the Jobs tab once that is over.")
+
+    def whisper(self, channel: str, user: str, text: str) -> None:
+        if self.web is None or not channel:
+            return
+        try:
+            self.web.chat_postEphemeral(channel=channel, user=user, text=text)
+        except Exception as err:  # noqa: BLE001
+            print(f"slack: telling {user} in {channel}: {err}")
+
     def _tail(self, slug: str) -> str:
         try:
             output = self.tasks.task(slug).get("output") or ""
@@ -268,6 +364,54 @@ class SlackBot:
             self.web.chat_postMessage(channel=channel, thread_ts=thread, text=text, unfurl_links=False)
         except Exception as err:
             print(f"slack: posting to {channel}: {err}")
+
+
+def plan_message(name: str, plan: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """A plan as a message: its text (for notifications), and blocks with a pair of buttons per item while it is
+    open."""
+    items, state, run = plan["items"], plan["state"], plan["run"]
+    many = f"{len(items)} action{'s' if len(items) != 1 else ''}"
+    text = f"{name} proposes {many}"
+    head = f"*{escape(name)}* proposes {many} (run `{run}`)."
+    if state == "open":
+        head += f" Open until {plan.get('expires', '?')}."
+    else:
+        head += " " + PLAN_STATES.get(state, state).format(
+            run=f" (run `{plan['apply_run']}`)" if plan.get("apply_run") else "",
+            reason=f": {escape(str(plan['reason']))}" if plan.get("reason") else "")
+    blocks: list[dict[str, Any]] = [{"type": "section", "text": {"type": "mrkdwn", "text": head}}]
+
+    def button(label: str, action: str, item: str, style: str) -> dict[str, Any]:
+        return {"type": "button", "text": {"type": "plain_text", "text": label}, "style": style,
+                "action_id": f"plan-{action}", "value": json.dumps({"job": name, "run": run, "item": item})}
+
+    for item in items[:PLAN_SHOWN]:
+        detail = escape(item.get("detail") or "")
+        detail = detail[:DETAIL_CHARS] + ("…" if len(detail) > DETAIL_CHARS else "")
+        mark = {"approve": ":white_check_mark:", "reject": ":heavy_multiplication_x:"}.get(item["decision"], ":black_small_square:")
+        who = ""
+        if item["decision"]:
+            by = str(item.get("by") or "")
+            who = f"\n_{'approved' if item['decision'] == 'approve' else 'rejected'} by " \
+                  f"{f'<@{by[6:]}>' if by.startswith('slack:') else escape(by)}_"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                                                   "text": f"{mark} *{escape(item['title'])}*" + (f"\n{detail}" if detail else "") + who}})
+        if state == "open" and not item["decision"]:
+            blocks.append({"type": "actions", "elements": [button("Approve", "approve", item["id"], "primary"),
+                                                           button("Reject", "reject", item["id"], "danger")]})
+    if len(items) > PLAN_SHOWN:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+                       f"…and {len(items) - PLAN_SHOWN} more, in the orchestrator's Jobs tab."}]})
+    left = sum(1 for item in items if not item["decision"])
+    if state == "open" and left:
+        everything = button(f"Approve the {left} left", "approve", "*", "primary")
+        everything["confirm"] = {"title": {"type": "plain_text", "text": "Approve all that are left?"},
+                                 "text": {"type": "mrkdwn", "text": f"{left} item{'s' if left != 1 else ''}, as listed. "
+                                          "Once everything is decided, what was approved is done."},
+                                 "confirm": {"type": "plain_text", "text": "Approve"},
+                                 "deny": {"type": "plain_text", "text": "Not yet"}}
+        blocks.append({"type": "actions", "elements": [everything, button(f"Reject the {left} left", "reject", "*", "danger")]})
+    return text, blocks
 
 
 def users_from(value: str) -> tuple[str, ...]:

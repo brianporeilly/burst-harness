@@ -10,7 +10,10 @@
 #
 # Socket Mode: the orchestrator connects out to Slack, so there is no request
 # URL and nothing to expose. The scopes are what it uses and no more: to hear
-# mentions and direct messages, and to answer.
+# mentions and direct messages, and to answer. Interactivity is for the
+# buttons on a job's plan (approve, reject); an app made before it was here
+# needs it turned on: Interactivity & Shortcuts, On (no request URL is asked
+# for with Socket Mode).
 display_information:
   name: burst
   description: Starts coding tasks on the burst orchestrator and reports how they go in the thread.
@@ -34,7 +37,7 @@ settings:
       - app_mention
       - message.im
   interactivity:
-    is_enabled: false
+    is_enabled: true
   org_deploy_enabled: false
   socket_mode_enabled: true
   token_rotation_enabled: false

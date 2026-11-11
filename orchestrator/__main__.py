@@ -183,7 +183,8 @@ def main() -> None:
         servers.on_release.append(tasks.dispatch)  # a job's run ending frees a server a task may wait for
         tasks.dispatch()
         tasks.start()
-    slack = SlackBot(tasks, users_from(" ".join([*args.slack_user, os.environ.get(USERS_ENV, "")]))) if tasks else None
+    slack = SlackBot(tasks, users_from(" ".join([*args.slack_user, os.environ.get(USERS_ENV, "")])),
+                     jobs=jobs) if tasks or jobs else None
     if slack:
         slack.start()
     tokens = TokenStore(state / "tokens.json")

@@ -347,8 +347,9 @@ Done in the harness (2026-11-09): `mode = "act"` runs are read-only and
 write `plan.json`; the plan is kept in the job's state, its items approved or
 rejected (`harness job approve|reject`), and `harness job apply` runs the
 job's `apply` command on the approved items, with no model and only
-`apply_writes` let through. The orchestrator's Jobs tab and Slack buttons
-come next.
+`apply_writes` let through. In the orchestrator: the Jobs tab and the API
+decide, Slack posts a plan with buttons, and deciding the last item starts
+the apply run.
 
 **Steps:**
 

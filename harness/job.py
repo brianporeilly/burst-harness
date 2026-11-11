@@ -965,23 +965,16 @@ def apply(spec: JobSpec, cfg: HarnessConfig, plan_run: str = "", *,
     run_id = run_id or os.environ.get(RUN_ID_ENV, "")
     run_id = run_id if RUN_ID.fullmatch(run_id) else new_run_id()
 
-    def start(plan: dict[str, Any]) -> None:
-        if plan["state"] != "open":
-            raise plans.PlanError(f"The plan from run {plan['run']} is {plan['state']}: there is nothing to apply.")
-        if any(item["decision"] is None for item in plan["items"]):
-            raise plans.PlanError(f"The plan from run {plan['run']} has items not decided yet: approve or reject each "
-                                  "(or all of what is left) first.")
-        plan.update(state="applying", apply_run=run_id)
-
     try:
-        plan = plans.change(cfg, spec.name, plan_run or plans.load(cfg, spec.name)["run"], start)
+        plan = plans.change(cfg, spec.name, plan_run or plans.load(cfg, spec.name)["run"],
+                            lambda p: plans.start_applying(p, run_id))
     except plans.PlanError as err:
         raise JobError(str(err)) from err
     try:
         code = run(replace(spec, applying=plan["run"]), cfg, acquire=acquire, run_id=run_id)
     except BaseException:
         # It never started (a credential missing, Ctrl-C): the plan can be applied again.
-        plans.change(cfg, spec.name, plan["run"], lambda p: (p.update(state="open"), p.pop("apply_run", None)))
+        plans.change(cfg, spec.name, plan["run"], plans.reopen)
         raise
     try:
         record = json.loads((runs_dir(cfg, spec.name) / run_id / "run.json").read_text())
