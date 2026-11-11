@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.14.0 (2026-11-11)
+
+### Features
+
+- **orchestrator**: Decide plans in the Jobs tab, the API and Slack, and apply once decided
+  ([#93](https://github.com/brianporeilly/strands-harness/pull/93),
+  [`8d0c146`](https://github.com/brianporeilly/strands-harness/commit/8d0c14687cff99e0094b6d800e07b4ad7458e2e6))
+
+
 ## v0.13.0 (2026-11-10)
 
 ### Features
