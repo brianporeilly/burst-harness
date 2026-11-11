@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.17.0 (2026-11-11)
+
+### Features
+
+- **orchestrator**: MCP servers saved in Settings, chosen per session and per task
+  ([#97](https://github.com/brianporeilly/strands-harness/pull/97),
+  [`be73fb4`](https://github.com/brianporeilly/strands-harness/commit/be73fb4e2593dcb9a5a10141361a9c7efd747443))
+
+
 ## v0.16.0 (2026-11-11)
 
 ### Features
