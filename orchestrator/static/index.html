@@ -133,6 +133,13 @@
         <p class="muted" id="task-params-note"></p>
         <p class="muted" id="task-params-examples"></p>
       </details>
+      <div id="task-mcp">
+        <label>MCP servers</label>
+        <div data-mcp-boxes class="row" style="flex-wrap:wrap"></div>
+        <label>Others, for this task only (one per line: name=https://...)
+          <textarea name="mcp_other" placeholder="docs=https://mcp.example.com/mcp" style="min-height:60px"></textarea></label>
+        <p class="muted" data-mcp-note></p>
+      </div>
       <div id="task-delegates" class="hidden">
         <label>Delegate to</label>
         <div data-boxes class="row" style="flex-wrap:wrap"></div>
@@ -190,6 +197,22 @@
     <p class="muted" id="delegates-source"></p>
     <div class="row"><button id="delegates-save">Save</button><button id="delegates-reset">Use the configuration's</button>
       <span class="error" id="delegates-error"></span></div>
+  </section>
+  <section class="panel">
+    <h2>MCP servers</h2>
+    <p class="muted">Servers a session's or task's agent can connect to, over HTTPS. New sessions and tasks get the
+      ones on by default, and their forms show every one here to pick from. A server's key goes in the Credentials
+      as NAME_API_KEY, and the gateway adds it. Those from the configuration (HARNESS_MCP) can be turned off by
+      default, or replaced by one of the same name.</p>
+    <div id="mcp-servers"><p class="muted">Loading...</p></div>
+    <form id="mcp-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="40" pattern="[A-Za-z0-9_\-]+" placeholder="context7"></label>
+        <label>URL <input type="url" name="url" required maxlength="500" placeholder="https://mcp.example.com/mcp"></label>
+      </div>
+      <label class="inline"><input type="checkbox" name="default" checked> On by default for new sessions and tasks</label>
+      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="mcp-form-error"></span></div>
+    </form>
   </section>
   <section class="panel">
     <h2>Add or change a profile</h2>
@@ -273,10 +296,12 @@
       </fieldset>
       <fieldset>
         <legend>MCP servers</legend>
-        <label>Servers the agent connects to, over HTTPS (one per line: name=https://...)
-          <textarea name="mcp" placeholder="context7=https://mcp.context7.com/mcp"></textarea>
-        </label>
-        <p class="muted" id="mcp-keys">A key in the orchestrator's NAME_API_KEY is added by the gateway.</p>
+        <div id="session-mcp">
+        <div data-mcp-boxes class="row" style="flex-wrap:wrap"></div>
+        <label>Others, for this session only (one per line: name=https://...)
+          <textarea name="mcp_other" placeholder="docs=https://mcp.example.com/mcp" style="min-height:60px"></textarea></label>
+        <p class="muted" data-mcp-note></p>
+        </div>
       </fieldset>
       <fieldset>
         <legend>Model</legend>
@@ -383,10 +408,7 @@ async function loadInfo() {
     el("option", { value: name }, providerOption[name] || name)));
   document.getElementById("slack-status").textContent = info.slack ? `Slack: ${info.slack}.` : "";
   taskModelFields();
-  form.mcp.defaultValue = form.mcp.value = (d.mcp || []).join("\n");
-  const keys = Object.entries(info.mcp_keys || {});
-  if (keys.length) document.getElementById("mcp-keys").textContent = "Keys the gateway adds: " +
-    keys.map(([name, present]) => `${name} ${present ? "✓" : "✗ (none)"}`).join(", ") + ".";
+  mcpPicker(document.getElementById("session-mcp"));
   document.getElementById("defaults").textContent =
     [...d.allow, ...d.allowed_for_good].join(", ") + (d.allowed_for_good.length ? "  (the last ones approved for good)" : "");
 }
@@ -503,6 +525,7 @@ function openStream(name) {
 }
 
 document.getElementById("new").onclick = () => {
+  mcpPicker(document.getElementById("session-mcp"));
   document.getElementById("create").classList.remove("hidden");
   document.getElementById("detail").classList.add("hidden");
   closeStream(); selected = null; refresh();
@@ -522,8 +545,10 @@ form.onsubmit = async (event) => {
     allow: data.get("allow"), inject: data.getAll("inject"), root: data.has("root"),
     terminal: data.has("terminal"), idle: data.get("idle"), lifetime: data.get("lifetime"),
     provider: data.get("provider"), model: data.get("model"), base_url: data.get("base_url"),
-    context_window: Number(data.get("context_window") || 0), mcp: data.get("mcp"),
+    context_window: Number(data.get("context_window") || 0),
   };
+  const servers = mcpChoice(document.getElementById("session-mcp"));
+  if (servers) spec.mcp = servers;
   const error = document.getElementById("form-error");
   error.textContent = "";
   try {
@@ -812,6 +837,7 @@ async function renderTask() {
     t.restarts ? el("p", { class: "muted" }, `Restarted ${t.restarts} time(s) after the orchestrator stopped mid-burst.`) : null,
     settingsLine(t.settings),
     t.delegate_to && t.delegate_to.length ? el("p", { class: "muted" }, `Hands work to: ${t.delegate_to.join(", ")}.`) : null,
+    t.mcp ? el("p", { class: "muted" }, "MCP servers: " + (t.mcp.map((entry) => entry.split("=")[0]).join(", ") || "none") + ".") : null,
     el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, t.prompt)),
     idle ? el("form", { onsubmit: (event) => { event.preventDefault();
       taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
@@ -831,6 +857,7 @@ async function renderTask() {
 document.getElementById("new-task").onclick = () => {
   selectedTask = null;
   taskDelegates();
+  mcpPicker(document.getElementById("task-mcp"));
   document.getElementById("task-detail").classList.add("hidden");
   document.getElementById("task-create").classList.remove("hidden");
   refreshTasks();
@@ -995,12 +1022,16 @@ taskForm.onsubmit = async (event) => {
   if (taskProvider !== "anthropic") { delete data.effort; delete data.thinking; }
   if (taskForm.engine.value === "claude-code") { delete data.max_tokens; delete data.model_params; }
   if (taskParams() === null) { error.textContent = "The extra request parameters aren't a JSON object."; return; }
+  delete data.mcp_other;
+  const servers = mcpChoice(document.getElementById("task-mcp"));
+  if (servers) data.mcp = servers;
   const picker = document.getElementById("task-delegates");
   if (!picker.classList.contains("hidden"))
     data.delegate_to = [...picker.querySelectorAll("input:checked")].map((box) => box.value);
   try {
     const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     taskForm.reset();
+    mcpPicker(document.getElementById("task-mcp"));
     document.getElementById("task-probe-note").textContent = "";
     taskModelFields();
     selectTask(created.slug);
@@ -1045,6 +1076,87 @@ document.getElementById("credential-form").onsubmit = async (event) => {
       { method: "PUT", body: JSON.stringify({ value: form.value.value }) });
     form.reset();
     refreshCredentials(); loadInfo().catch(() => {});
+  } catch (err) { error.textContent = err.message; }
+};
+
+// --- MCP servers: the session and task forms' pickers, and Settings ---
+
+// The saved servers as checkboxes, the defaults ticked. Without Settings, the box says the defaults are used.
+async function mcpPicker(box) {
+  const boxes = box.querySelector("[data-mcp-boxes]"), note = box.querySelector("[data-mcp-note]");
+  let found;
+  try { found = await api("/api/settings/mcp"); } catch (err) {
+    box.dataset.off = "1"; boxes.replaceChildren(); note.textContent = `The orchestrator's own servers are used (${err.message}).`;
+    return;
+  }
+  delete box.dataset.off;
+  boxes.replaceChildren(...(found.servers.length ? found.servers.map((s) => el("label", { class: "inline", title: s.url },
+    Object.assign(el("input", { type: "checkbox", value: s.name }), { checked: s.default, defaultChecked: s.default }), s.name,
+    s.key_set ? null : el("span", { class: "muted" }, " (no key)")))
+    : [el("span", { class: "muted" }, "None saved: add some in Settings.")]));
+  const missing = found.servers.filter((s) => !s.key_set).map((s) => s.key);
+  note.textContent = "Saved in Settings; the ticked ones are on by default." +
+    (missing.length ? ` Without a key, a server is used as it is (${missing.join(", ")} not set).` : "");
+}
+
+// What the form asks for: the ticked servers and the others typed in; null without Settings (the defaults).
+function mcpChoice(box) {
+  if (box.dataset.off) return null;
+  const ticked = [...box.querySelectorAll("[data-mcp-boxes] input:checked")].map((input) => input.value);
+  const others = box.querySelector("[name=mcp_other]").value.split(/\s+/).filter(Boolean);
+  return [...ticked, ...others];
+}
+
+const mcpForm = document.getElementById("mcp-form");
+
+async function refreshMcp() {
+  const box = document.getElementById("mcp-servers");
+  let found;
+  try { found = await api("/api/settings/mcp"); } catch (err) {
+    box.replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const save = async (name, body) => {
+    try { await api(`/api/settings/mcp/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(body) }); }
+    catch (err) { alert(`${name}: ${err.message}`); }
+    refreshMcp();
+  };
+  box.replaceChildren(found.servers.length ? el("table", {},
+    el("tr", {}, el("th", {}, "On by default"), el("th", {}, "Server"), el("th", {}, "Key"), el("th", {}, "Changed"), el("th", {}, "")),
+    ...found.servers.map((s) => el("tr", {},
+      el("td", {}, Object.assign(el("input", { type: "checkbox", title: "On by default for new sessions and tasks",
+        onchange: (event) => save(s.name, { default: event.target.checked }) }), { checked: s.default })),
+      el("td", {}, el("code", {}, s.name), el("div", { class: "muted" }, s.url),
+        el("div", { class: "muted" }, s.source === "settings"
+          ? (s.configuration_too ? "saved here, over the configuration's" : "saved here") : "from the configuration")),
+      el("td", {}, el("code", {}, s.key), s.key_set ? " ✓" : el("span", { class: "muted" }, " not set")),
+      el("td", {}, s.updated ? when(s.updated) + (s.updated_by ? ` by ${s.updated_by}` : "") : ""),
+      el("td", {}, el("div", { class: "row" },
+        el("button", { onclick: () => {
+          mcpForm.name.value = s.name; mcpForm.url.value = s.url; mcpForm.default.checked = s.default;
+          mcpForm.scrollIntoView({ behavior: "smooth" });
+        } }, s.source === "settings" ? "Edit" : "Replace"),
+        s.source === "settings" ? el("button", { class: "danger", onclick: async () => {
+          if (!confirm(`Remove ${s.name}?${s.configuration_too ? " The configuration's is used again." : ""}`)) return;
+          try { await api(`/api/settings/mcp/${encodeURIComponent(s.name)}`, { method: "DELETE" }); }
+          catch (err) { alert(`Remove: ${err.message}`); }
+          refreshMcp();
+        } }, "Remove") : null)))))
+    : el("p", { class: "muted" }, "No MCP servers yet."));
+}
+
+mcpForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("mcp-form-error");
+  error.textContent = "";
+  const name = mcpForm.name.value.trim();
+  try {
+    await api(`/api/settings/mcp/${encodeURIComponent(name)}`, { method: "PUT",
+      body: JSON.stringify({ url: mcpForm.url.value.trim(), default: mcpForm.default.checked }) });
+    mcpForm.reset();
+    refreshMcp();
   } catch (err) { error.textContent = err.message; }
 };
 
@@ -1186,7 +1298,7 @@ document.getElementById("token-form").onsubmit = async (event) => {
 };
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
-  settings: () => { refreshCredentials(); refreshProfiles(); refreshTokens(); } };
+  settings: () => { refreshCredentials(); refreshMcp(); refreshProfiles(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;

@@ -74,6 +74,7 @@ from .app import create_app
 from .backend import ClusterBackend, PodmanBackend
 from .jobs import JobRunner
 from .launch import Jobs, LaunchError
+from .mcp_servers import McpServerStore
 from .profiles import ProfileStore
 from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
@@ -141,6 +142,7 @@ def main() -> None:
     except SettingsError as err:
         parser.error(str(err))
     profiles = ProfileStore(state / "profiles.json", base)
+    mcp_servers = McpServerStore(state / "mcp.json", base)
     # Our own llama.cpp servers, one run at a time across jobs and tasks (servers.py).
     servers = ModelServers(wait_for_idle=args.wait_for_idle_servers)
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
@@ -171,7 +173,8 @@ def main() -> None:
             print(f"jobs: {line}")
         jobs.start()
     tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher,
-                       records=state / "tasks", profiles=profiles, servers=servers) if args.tasks else None
+                       records=state / "tasks", profiles=profiles, servers=servers,
+                       mcp_servers=mcp_servers) if args.tasks else None
     if tasks:
         print(f"Tasks in {tasks.root}, {tasks.limit} at a time" + (f", bursts {launcher.describe()}" if launcher else ""))
         try:
@@ -189,7 +192,8 @@ def main() -> None:
     if slack:
         slack.start()
     tokens = TokenStore(state / "tokens.json")
-    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, profiles=profiles, slack=slack,
+    app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, profiles=profiles,
+                     mcp_servers=mcp_servers, slack=slack,
                      hosts=tuple(args.host),
                      user_header=args.user_header, local_browser=local_browser)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")

@@ -60,6 +60,7 @@ from harness.config import HarnessConfig
 from .backend import SpecError, check_model, model_choice, model_settings, task_providers
 from .jobs import OUTPUT, _iso, _tail, json_file
 from .launch import REPO, Launched, LaunchError, Subprocess, granted
+from .mcp_servers import McpServersError, McpServerStore
 from .profiles import ProfilesError, ProfileStore, check, names_given
 from .servers import ModelServers, models_for, servers_for
 
@@ -110,9 +111,10 @@ class TaskRunner:
 
     def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
                  launcher: Any = None, records: Path | None = None, profiles: ProfileStore | None = None,
-                 servers: ModelServers | None = None) -> None:
+                 servers: ModelServers | None = None, mcp_servers: McpServerStore | None = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
         self.profiles = profiles  # set in Settings (profiles.py); None: the configuration's alone
+        self.mcp_servers = mcp_servers  # saved in Settings (mcp_servers.py); None: the configuration's alone
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
         # The records, the orchestrator's alone; the bursts' output, where the bursts write it.
         self.outputs = base.resolve_state_dir("tasks")
@@ -233,6 +235,7 @@ class TaskRunner:
         except ValueError as err:  # SpecError is one
             raise TasksError(str(err) if isinstance(err, SpecError) else "The context window is a number of tokens.") from err
         delegate_to = self._delegates(raw)
+        mcp_chosen = self._mcp(raw, engine)
         record = {
             "slug": slug, "repo": url, "prompt": prompt, "engine": engine, "model": model,
             "provider": provider, "base_url": base_url, "context_window": context_window, "settings": settings,
@@ -240,7 +243,7 @@ class TaskRunner:
             "uses": {"provider": chosen.get("provider", self.base.provider),
                      "model": models.model_name(replace(self.base, **chosen)),
                      "base_url": chosen.get("base_url", self.base.base_url)},
-            "delegate_to": delegate_to,
+            "delegate_to": delegate_to, "mcp": mcp_chosen,
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
@@ -266,6 +269,18 @@ class TaskRunner:
         except ProfilesError as err:
             raise TasksError(str(err)) from err
         return list(names)
+
+    def _mcp(self, raw: dict[str, Any], engine: str) -> list[str] | None:
+        """The task's MCP servers, as NAME=URL: those named or given, or Settings' defaults; kept with the task
+        so continuing it uses the same ones. None without Settings: the configuration's."""
+        if self.mcp_servers is None:
+            if raw.get("mcp") is not None:
+                raise TasksError("This orchestrator has no Settings, so a task cannot choose its MCP servers.")
+            return None
+        try:
+            return list(self.mcp_servers.choose(raw.get("mcp"), engine=engine))
+        except McpServersError as err:
+            raise TasksError(str(err)) from err
 
     def resume(self, slug: str, message: str = "") -> dict[str, Any]:
         """Queue another burst: with the user's reply, or to carry on from where it stopped."""
@@ -414,6 +429,8 @@ class TaskRunner:
             cfg = replace(cfg, agents=self.profiles.profiles())
         if record.get("delegate_to") is not None:
             cfg = replace(cfg, delegate_to=tuple(record["delegate_to"]))
+        if record.get("mcp") is not None:
+            cfg = replace(cfg, mcp=tuple(record["mcp"]))
         return cfg
 
     def _chosen(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -429,8 +446,10 @@ class TaskRunner:
             # A question's follow-ups stay with the profile the router chose for it (a repo's task keeps
             # its own choice, in the harness's state).
             chosen = {"agent": record["uses"]["agent"], "router": ""}
+        # Its MCP servers, even none: over the orchestrator's HARNESS_MCP, which the burst would otherwise inherit.
+        servers = {"HARNESS_MCP": ",".join(record["mcp"])} if record.get("mcp") is not None else {}
         return {f"HARNESS_{name.upper()}": str(value).lower() if isinstance(value, bool) else str(value)
-                for name, value in chosen.items()} | self._profile_env(record)
+                for name, value in chosen.items()} | self._profile_env(record) | servers
 
     def _profile_env(self, record: dict[str, Any]) -> dict[str, str]:
         """The profiles, and who this task's lead may hand work to, as the burst's HARNESS_AGENTS and
@@ -570,7 +589,7 @@ def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "base_branch", "draft", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "branch", "created", "created_by",
         "state", "pr", "message", "restarts", "sandbox", "said", "server_wait")} | {"bursts": len(record.get("bursts", [])),
                                                     "last_burst": (record.get("bursts") or [None])[-1]}
 

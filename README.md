@@ -595,6 +595,22 @@ back to the environment's value.
 - A key that doesn't open an existing `credentials.enc` stops the orchestrator
   from starting. It won't run without the credentials or write over them.
 
+**MCP servers.** Settings also keeps MCP servers for sessions and tasks to
+choose from: a name and an https:// URL, and whether it is on by default (a
+checkbox in the list). The config file's servers (`mcp`, `HARNESS_MCP`) are
+listed too, on by default; they can be turned off by default there, or
+replaced by one of the same name. A server's key goes in the Credentials as
+`NAME_API_KEY` (the list says whether it is set), and the gateway adds it.
+
+- The session and task forms show every saved server as a checkbox, the
+  defaults ticked, and take others for that one alone (`name=https://...`).
+- A session or task keeps the servers it was given, as `NAME=URL`, so a
+  session restarted or a task continued uses the same ones. A task's burst
+  gets exactly those, and their keys: none chosen is none, not the
+  orchestrator's own.
+- `POST /api/tasks` and `POST /api/sessions` take `mcp` as a list of saved
+  names and `NAME=URL` entries; left out, the defaults; `[]`, none.
+
 **Profiles.** The Settings tab also defines the profiles a task's lead may
 hand work to (see "Other agents" below): a name, a model (provider, base URL,
 model id and context window, which "Read the server" fills in from a

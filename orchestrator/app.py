@@ -39,6 +39,7 @@ from harness.exec_target import ExecError
 from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
 from .launch import HANDOFF_PATH, LaunchError
+from .mcp_servers import McpServersError, McpServerStore
 from .profiles import ProfilesError, ProfileStore
 from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
@@ -51,13 +52,14 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (LaunchError, SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
-               JobsError, TasksError, TokenError, SettingsError, ProfilesError)
+               JobsError, TasksError, TokenError, SettingsError, ProfilesError, McpServersError)
 LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
                tokens: TokenStore | None = None, settings: CredentialStore | None = None,
-               profiles: ProfileStore | None = None, slack: SlackBot | None = None,
+               profiles: ProfileStore | None = None, mcp_servers: McpServerStore | None = None,
+               slack: SlackBot | None = None,
                hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
@@ -121,6 +123,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
             raise HTTPException(400, "The body must be JSON.") from err
         if not isinstance(raw, dict):
             raise HTTPException(400, "The body must be a JSON object.")
+        if mcp_servers is not None:  # the servers named, or Settings' defaults, as NAME=URL
+            raw = {**raw, "mcp": list(mcp_servers.choose(raw.get("mcp")))}
         spec = SessionSpec.parse(raw)
         await run_in_threadpool(backend.create, spec)
         return {"name": spec.name, "status": "starting"}
@@ -305,6 +309,7 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         base = getattr(backend, "base", None)
         return [*(name for name in credentials.GIT if os.environ.get(name)),
                 *(mcp.key_var(name) for name in (mcp.servers(base) if base else {})),
+                *(mcp.key_var(name) for name in (mcp_servers.servers() if mcp_servers else {})),
                 *(jobs.secret_names() if jobs else [])]
 
     @app.get("/api/settings/credentials")
@@ -343,6 +348,28 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     @app.delete("/api/settings/profiles/{name}")
     def remove_profile(name: str) -> dict[str, str]:
         now = profile_store().remove(name)
+        return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
+
+    # --- Settings: MCP servers saved for sessions and tasks to choose from (never with a token) ---
+
+    def mcp_store() -> McpServerStore:
+        if mcp_servers is None:
+            raise McpServersError("Settings are not on in this orchestrator.")
+        return mcp_servers
+
+    @app.get("/api/settings/mcp")
+    def list_mcp() -> dict[str, Any]:
+        return mcp_store().listing()
+
+    @app.put("/api/settings/mcp/{name}")
+    async def set_mcp(name: str, request: Request) -> dict[str, str]:
+        mcp_store().set(name, await body(request), user=request.state.user)
+        default = mcp_store().servers()[name]["default"]
+        return {"message": f"Saved {name}: {'on' if default else 'off'} by default for new sessions and tasks."}
+
+    @app.delete("/api/settings/mcp/{name}")
+    def remove_mcp(name: str) -> dict[str, str]:
+        now = mcp_store().remove(name)
         return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
 
     @app.put("/api/settings/delegate_to")
