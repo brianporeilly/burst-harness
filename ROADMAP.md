@@ -349,7 +349,10 @@ rejected (`harness job approve|reject`), and `harness job apply` runs the
 job's `apply` command on the approved items, with no model and only
 `apply_writes` let through. In the orchestrator: the Jobs tab and the API
 decide, Slack posts a plan with buttons, and deciding the last item starts
-the apply run.
+the apply run. `examples/jobs/mail-sorter` is the first such job: the inbox
+by sender, a plan made by its script from the model's choices, and an apply
+that only archives, marks read or labels, labels what it changed
+`bot/sorted`, and trashes nothing.
 
 **Steps:**
 

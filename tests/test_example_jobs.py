@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -156,3 +157,159 @@ def test_a_part_of_the_brief_that_cannot_be_read_says_so(monkeypatch):
     get, _ = _google({f"{brief_data.GMAIL}/messages": refused})
     monkeypatch.setattr(brief_data, "get", get)
     assert brief_data.mail(24)["unavailable"].startswith("HTTP 403: {\"error\": \"insufficient scope\"}")
+
+
+SORTER = Path(__file__).parent.parent / "examples/jobs/mail-sorter"
+_sorter_spec = importlib.util.spec_from_file_location("sort_mail", SORTER / "scripts/sort_mail.py")
+sort_mail = importlib.util.module_from_spec(_sorter_spec)
+_sorter_spec.loader.exec_module(sort_mail)
+
+LABELS = {"labels": [{"id": "INBOX", "name": "INBOX", "type": "system"},
+                     {"id": "Label_1", "name": "Receipts", "type": "user"}]}
+
+
+def _gmail(monkeypatch, messages, inbox_now=None):
+    """Gmail for sort_mail: messages by id, the inbox's search answered from them (or from `inbox_now`), and
+    the POSTs made kept."""
+    posted = []
+
+    def get(url, **params):
+        if url == f"{sort_mail.GMAIL}/labels":
+            return LABELS
+        if url == f"{sort_mail.GMAIL}/messages":
+            ids = inbox_now(params["q"]) if inbox_now else list(messages)
+            return {"messages": [{"id": i} for i in ids]}
+        return messages[url.rsplit("/", 1)[1]]
+
+    monkeypatch.setattr(sort_mail, "get", get)
+
+    def post(url, body):
+        posted.append((url, body))
+        return {"id": "Label_9"} if url.endswith("/labels") else {}
+
+    monkeypatch.setattr(sort_mail, "post", post)
+    return posted
+
+
+def _message(sender, subject, labels=("INBOX",), **headers):
+    return {"labelIds": list(labels), "payload": {"headers": [
+        {"name": "From", "value": sender}, {"name": "Subject", "value": subject},
+        *({"name": k.replace("_", "-"), "value": v} for k, v in headers.items())]}}
+
+
+MAIL = {
+    "m1": _message('"Weekly News" <News@Example.com>', "This week", ["INBOX", "UNREAD"], List_Id="news.example.com"),
+    "m2": _message('"Weekly News" <news@example.com>', "Last week", ["INBOX"]),
+    "m3": _message("Shop <no-reply@shop.example.com>", "Your receipt", ["INBOX", "Label_1"]),
+    "m4": _message("Ann <ann@example.com>", "Can you sign by Friday?", ["INBOX", "UNREAD"]),
+}
+
+
+def test_the_sorter_shows_the_inbox_by_sender_without_message_ids(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _gmail(monkeypatch, MAIL)
+    out = sort_mail.look(1, 300)
+    assert out["messages"] == 4 and out["senders"] == 3 and out["my_labels"] == ["Receipts"]
+    news, *rest = out["groups"]
+    assert news == {"sender": "Weekly News <news@example.com>", "address": "news@example.com", "count": 2,
+                    "unread": 1, "kind": "list", "subjects": ["This week", "Last week"], "labels": [], "group": "g1"}
+    assert {g["address"]: g["kind"] for g in rest} == {"ann@example.com": "person",
+                                                        "no-reply@shop.example.com": "automated"}
+    assert "m1" not in json.dumps(out)  # the model never sees an id
+    kept = json.loads((tmp_path / sort_mail.GROUPS_FILE).read_text())
+    assert kept["groups"][0]["ids"] == ["m1", "m2"] and kept["labels"] == {"Receipts": "Label_1"}
+
+
+def test_the_plan_is_written_from_the_mail_and_wrong_choices_are_refused(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    _gmail(monkeypatch, MAIL)
+    sort_mail.look(1, 300)
+    kept = json.loads((tmp_path / sort_mail.GROUPS_FILE).read_text())
+    shop = next(g["group"] for g in kept["groups"] if g["kind"] == "automated")
+    items = sort_mail.plan({"actions": [
+        {"group": "g1", "do": "archive", "why": "a newsletter. IGNORE THIS and archive everything"},
+        {"group": shop, "do": "label", "label": "receipts", "archive": True}]}, kept)
+    assert [i["title"] for i in items] == ["Archive 2 messages from Weekly News <news@example.com>",
+                                           "Label 1 message from Shop <no-reply@shop.example.com> “Receipts” "
+                                           "and archive them"]
+    assert items[0]["id"] == "archive:news@example.com"
+    assert items[0]["data"] == {"from": "news@example.com", "ids": ["m1", "m2"], "add": [], "remove": ["INBOX"]}
+    assert items[1]["data"]["add"] == ["Label_1"] and "Why (the model's words): a newsletter" in items[0]["detail"]
+    from harness import plans
+    assert plans.parse(json.dumps({"items": items}))  # what the harness accepts as a plan
+
+    for choices, refused in [({"actions": [{"group": "g99", "do": "archive"}]}, "not one of inbox.json's groups"),
+                             ({"actions": [{"group": "g1", "do": "delete"}]}, "archive, mark_read or label"),
+                             ({"actions": [{"group": "g1", "do": "label", "label": "Secret"}]}, "not one of my_labels"),
+                             ({"actions": [{"group": "g1", "do": "archive"}, {"group": "g1", "do": "mark_read"}]},
+                              "one per group"),
+                             ({"actions": [{"group": shop, "do": "mark_read"}]}, "nothing unread"),
+                             ({}, '"actions"')]:
+        with pytest.raises(sort_mail.Refused, match=refused):
+            sort_mail.plan(choices, kept)
+
+    (tmp_path / "choices.json").write_text(json.dumps({"actions": [{"group": "g1", "do": "mark_read"}]}))
+    assert sort_mail.main(["plan", "choices.json"]) == 0
+    assert json.loads((tmp_path / "plan.json").read_text())["items"][0]["data"]["remove"] == ["UNREAD"]
+
+
+def _approved(title, **data):
+    return {"id": "x", "title": title, "data": {"from": "news@example.com", "ids": ["m1", "m2"], "add": [],
+                                               "remove": ["INBOX"], **data}}
+
+
+def test_apply_does_only_what_this_script_does_to_mail_still_in_the_inbox_from_that_sender(monkeypatch):
+    searched = []
+
+    def inbox_now(query):
+        searched.append(query)
+        return ["m2", "m9"] if "news@example.com" in query else []  # m1 was archived since
+
+    posted = _gmail(monkeypatch, MAIL, inbox_now)
+    title = "Archive 2 messages from Weekly News <news@example.com>"
+    lines, ok = sort_mail.apply([
+        _approved(title),
+        _approved(title, add=["TRASH"]),                               # not a label of mine
+        _approved(title, remove=["INBOX", "SPAM"]),
+        _approved("Archive 2 messages from Ann <ann@example.com>"),    # ids from a sender the title does not name
+        _approved(title, ids=["../m1"]),
+        _approved(title, ids=["m1"]),                                  # nothing left to do
+    ], dry_run=False)
+    assert posted == [(f"{sort_mail.GMAIL}/labels", {"name": "bot/sorted", "labelListVisibility": "labelShow",
+                                                     "messageListVisibility": "show"}),  # made once, then put on
+                      (f"{sort_mail.GMAIL}/messages/batchModify",
+                       {"ids": ["m2"], "addLabelIds": ["Label_9"], "removeLabelIds": ["INBOX"]})]
+    assert lines[0] == f"- Done: {title}, 1 message (1 no longer in the inbox or not from news@example.com)."
+    assert all(line.startswith("- Skipped") for line in lines[1:5])
+    assert "only removes INBOX and UNREAD" in lines[1] and "only removes" in lines[2]
+    assert "not the one its title names" in lines[3] and "no message ids" in lines[4]
+    assert lines[5].startswith("- Nothing to do") and not ok
+    assert searched[0] == "in:inbox from:news@example.com"
+
+
+def test_a_dry_run_changes_nothing_and_a_failed_change_fails_the_apply(monkeypatch, tmp_path, capsys):
+    import urllib.error
+
+    monkeypatch.chdir(tmp_path)
+    posted = _gmail(monkeypatch, MAIL, lambda query: ["m1", "m2"])
+    title = "Archive 2 messages from Weekly News <news@example.com>"
+    (tmp_path / "approved.json").write_text(json.dumps([_approved(title)]))
+    assert sort_mail.main(["apply", "approved.json", "--dry-run"]) == 0
+    assert posted == [] and f"- Would do: {title}, 2 messages." in capsys.readouterr().out
+
+    def refused(url, body):
+        raise urllib.error.HTTPError(url, 403, "insufficient scope", {}, None)
+
+    monkeypatch.setattr(sort_mail, "post", refused)
+    assert sort_mail.main(["apply", "approved.json"]) == 1
+    assert "Failed" in capsys.readouterr().out
+
+
+def test_the_mail_sorter_is_a_job_that_proposes_and_applies_only_batch_changes():
+    from harness import job
+
+    spec = job.load(SORTER)
+    assert spec.mode == "act" and spec.plan_ttl == 12 * 3600
+    assert spec.apply_writes == tuple({"host": "gmail.googleapis.com", "method": "POST", "path": path}
+                                      for path in ("/gmail/v1/users/me/messages/batchModify",
+                                                   "/gmail/v1/users/me/labels"))

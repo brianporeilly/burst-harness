@@ -1,0 +1,49 @@
+# An inbox sorter that asks first: each morning it looks at the inbox by
+# sender and proposes what to archive, mark read or label, as a plan a person
+# approves item by item (the orchestrator's Jobs tab, Slack's buttons, or
+# `harness job approve`). Only what is approved is done, by
+# scripts/sort_mail.py with no model, and nothing is ever deleted: what it
+# changes is labelled bot/sorted, so it can be found and put back.
+#
+# Sign in once (README, "OAuth") with a Google Cloud OAuth client of the
+# "Desktop app" kind, asking to modify mail (which includes reading it):
+#
+#   harness oauth client_secret_....json --out refresh-token.txt \
+#     --scope https://www.googleapis.com/auth/gmail.modify \
+#     --scope https://www.googleapis.com/auth/calendar.readonly
+#
+# One token can serve this job and daily-brief: each job's gateway rules, not
+# the token, decide what it may do, and daily-brief's let it only read.
+# GOOGLE_REFRESH_TOKEN, GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET go
+# where the driver reads credentials: the orchestrator's Settings, or the
+# environment for `harness job run`.
+#
+# Until the token may modify mail, try it with `--dry-run` on the apply
+# command: approving then says what would be done and changes nothing.
+
+# Mail is read by the model, so keep it on a model of your own: the strands
+# engine (the default) calls it from the driver, and nothing else sees it.
+#   provider = "llamacpp"
+#   base_url = "http://llm.lan:8080"
+#   model_id = "qwen3-14b"
+
+# The sandbox reaches only Gmail, which the secret below adds.
+egress_allow = []
+
+[job]
+trigger = "0 6 * * *"
+# The run that proposes is read-only at the gateway, whatever a message says.
+mode = "act"
+# The run that applies calls no model, and the gateway lets it send only this.
+apply = "python3 scripts/sort_mail.py apply approved.json"
+apply_writes = [{host = "gmail.googleapis.com", method = "POST", path = "/gmail/v1/users/me/messages/batchModify"},
+                {host = "gmail.googleapis.com", method = "POST", path = "/gmail/v1/users/me/labels"}]
+plan_ttl = "12h"
+output = ["stdout", "file:~/.burst-harness/reports/mail-sorter/%Y-%m-%d.md"]
+
+[job.secrets.mail]
+env = "GOOGLE_REFRESH_TOKEN"
+host = "gmail.googleapis.com"
+token_url = "https://oauth2.googleapis.com/token"
+client_id_env = "GOOGLE_OAUTH_CLIENT_ID"
+client_secret_env = "GOOGLE_OAUTH_CLIENT_SECRET"

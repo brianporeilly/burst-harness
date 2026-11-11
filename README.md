@@ -1060,7 +1060,10 @@ Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub),
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
 read-only ServiceAccount from its `rbac.yaml`), and
 `examples/jobs/daily-brief` (today's Google Calendar and the Gmail that may
-need you, on one sign-in, for a model of your own to read).
+need you, on one sign-in, for a model of your own to read), and
+`examples/jobs/mail-sorter` (act mode: the inbox by sender, with a plan to
+archive, mark read or label that you approve, applied by a script that checks
+each item again and deletes nothing).
 
 Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
 "allowlist"`. A job's settings sit between your config file and `HARNESS_*`.
