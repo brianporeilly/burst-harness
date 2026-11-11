@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.16.0 (2026-11-11)
+
+### Features
+
+- **jobs**: A run in act mode is shown what was decided on its earlier plans
+  ([#96](https://github.com/brianporeilly/strands-harness/pull/96),
+  [`5497916`](https://github.com/brianporeilly/strands-harness/commit/5497916160cb4c8b8789172b05c6f081dba75bb0))
+
+- **orchestrator**: A run that names its model waits while its llama.cpp server serves another
+  ([#95](https://github.com/brianporeilly/strands-harness/pull/95),
+  [`68f4520`](https://github.com/brianporeilly/strands-harness/commit/68f4520877d21c15a398f69bea2e86599fd45194))
+
+
 ## v0.15.0 (2026-11-11)
 
 ### Features
