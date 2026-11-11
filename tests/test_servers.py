@@ -1,5 +1,6 @@
-"""Our own llama.cpp servers, one run at a time and only once idle (orchestrator/servers.py), across jobs and
-tasks. No model is called: a fake /health, and runs faked as processes."""
+"""Our own llama.cpp servers, one run at a time, only once idle and serving the model asked for
+(orchestrator/servers.py), across jobs and tasks. No model is called: a fake /health and /v1/models, and runs
+faked as processes."""
 
 import json
 import threading
@@ -15,7 +16,7 @@ pytest.importorskip("fastapi")
 from harness.config import HarnessConfig
 from orchestrator import launch as launch_module
 from orchestrator.jobs import JobRunner, ServerBusy
-from orchestrator.servers import ModelServers, busy_slots, servers_for
+from orchestrator.servers import ModelServers, busy_slots, models_for, served_models, servers_for
 
 from .test_tasks import _runner, _settled, harness  # noqa: F401 -- the fixture
 
@@ -166,3 +167,78 @@ def test_a_scheduled_run_whose_server_is_busy_is_tried_again_on_each_tick(tmp_pa
     assert [line.split(":")[0] for line in started if "started run" in line] == ["brief"]  # one at a time
     assert any(line.startswith("watcher:") and "in use by job brief" in line for line in started)  # a new reason
     assert "in use by job brief" in jobs.job("watcher")["waiting"] and jobs.job("brief")["waiting"] == ""
+
+
+def test_a_run_that_names_its_model_waits_while_the_server_serves_another():
+    base = replace(HarnessConfig(), provider="llamacpp", base_url="http://typhon:8080")
+    assert models_for(base) == {"http://typhon:8080": ""}  # none named: whatever it serves
+    assert models_for(replace(base, model_id="Qwen-27B")) == {"http://typhon:8080": "Qwen-27B"}
+
+    serving = {"http://typhon:8080": ["Qwen-9B"]}
+    servers = ModelServers(busy=lambda s: 0, served=lambda s: serving[s])
+    assert servers.take("job brief", {"http://typhon:8080": "Qwen-27B"}) == \
+        "http://typhon:8080 is serving Qwen-9B, not Qwen-27B"
+    assert servers.status() == {}
+    assert servers.take("job other", {"http://typhon:8080": ""}) == ""  # names none: not asked
+    servers.give_back("job other")
+    serving["http://typhon:8080"] = ["Qwen-27B"]  # the benchmark is over, and its model back
+    assert servers.take("job brief", {"http://typhon:8080": "/models/Qwen-27B.gguf"}) == ""  # as llama.cpp names it
+    servers.give_back("job brief")
+    assert ModelServers(served=lambda s: None).take("job brief", {"http://typhon:8080": "Qwen-27B"}) == ""  # can't tell
+
+
+def test_served_models_are_those_the_server_has_loaded():
+    answers = iter([
+        {"object": "list", "data": [{"id": "/models/Qwen3.5-9B-Q8_0.gguf", "object": "model"}]},
+        {"data": [{"id": "big", "status": {"value": "unloaded"}}, {"id": "small", "status": {"value": "loaded"},
+                                                                   "aliases": ["s"]}]},
+        {"error": "no"},
+    ])
+
+    class Models(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps(next(answers)).encode()
+            self.send_response(200 if self.path == "/v1/models" else 404)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Models)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        assert served_models(url) == ["Qwen3.5-9B-Q8_0"]
+        assert served_models(url) == ["small", "s"]  # one that loads on demand: only what is loaded
+        assert served_models(url) is None
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert served_models(SERVER) is None
+
+
+def test_a_job_started_while_its_model_is_not_served_is_refused_and_a_scheduled_one_waits(tmp_path, monkeypatch):
+    runs = Runs()
+    monkeypatch.setattr(launch_module.subprocess, "Popen", runs)
+    root = _local_jobs(tmp_path, trigger="0 8 * * *")
+    toml = root / "brief" / "job.toml"
+    toml.write_text(toml.read_text().replace('[job]', 'model_id = "Qwen-27B"\n[job]'))
+    serving = {"models": ["Qwen-9B"]}
+    servers = ModelServers(busy=lambda s: 0, served=lambda s: serving["models"])
+    jobs = JobRunner([root], schedule=True, zone=ZoneInfo("America/Anchorage"), catch_up=timedelta(hours=1),
+                     servers=servers)
+    with pytest.raises(ServerBusy, match=f"brief waits for its model server: {SERVER} is serving Qwen-9B, not Qwen-27B"):
+        jobs.run("brief")
+    at = datetime(2026, 11, 10, 17, 5, tzinfo=UTC)  # 08:05 in Anchorage
+    first = jobs.tick(at)
+    assert [line.split(":")[0] for line in first if "started run" in line] == ["watcher"]  # names no model
+    assert any(line.startswith("brief:") and "serving Qwen-9B" in line for line in first)
+    runs.ends[0].set()
+    serving["models"] = ["Qwen-27B"]
+    for _ in range(250):
+        if not jobs.running:
+            break
+        threading.Event().wait(0.02)
+    assert any(line.startswith("brief:") and "started run" in line for line in jobs.tick(at + timedelta(minutes=1)))

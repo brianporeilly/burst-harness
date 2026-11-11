@@ -684,6 +684,12 @@ python -m orchestrator --jobs ~/jobs --schedule --timezone America/Anchorage --c
     such as someone else's benchmark. That's checked only when a run starts,
     so something that starts afterwards can still overlap it. Off by default:
     only this orchestrator's runs take turns.
+  - **A run that names its model** (`model_id`) also waits while the server
+    serves another, by its `/v1/models`: a server switched to a smaller model
+    for a benchmark would otherwise answer the run with that. A server that
+    loads models on demand counts only what it has loaded, so a run never
+    makes it swap. This is checked whether or not runs wait for idle, only
+    when a run starts. A run that names no model uses whatever is served.
 
 **Tasks.** The Tasks tab (or `POST /api/tasks`) takes a repo and a prompt and
 works on it until there is a PR, without anyone watching. With no repo, the

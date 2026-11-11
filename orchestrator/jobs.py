@@ -55,7 +55,7 @@ from collections.abc import Callable
 from harness import credentials, cron, job, models, plans
 
 from .launch import Launched, LaunchError, Subprocess, granted
-from .servers import ModelServers, servers_for
+from .servers import ModelServers, models_for, servers_for
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 OUTPUT = "output.log"
@@ -249,7 +249,7 @@ class JobRunner:
         with self.lock:
             if name in self.running or self._summary(name, path)["running"]:
                 raise JobsError(f"{name} is already running.")
-            if why := self.servers.take(f"job {name}", [] if applying else servers_for(cfg)):  # applying: no model
+            if why := self.servers.take(f"job {name}", [] if applying else models_for(cfg)):  # applying: no model
                 raise ServerBusy(f"{name} waits for its model server: {why}.")
             run_id = job.new_run_id()
             if applying:  # marked now, so it is neither decided nor applied again while the run starts

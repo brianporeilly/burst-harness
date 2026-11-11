@@ -12,12 +12,14 @@ GIT_ENV = {
 
 @pytest.fixture(autouse=True)
 def _model_servers_idle(monkeypatch):
-    """The orchestrator asks no real llama.cpp server whether it is busy (orchestrator/servers.py)."""
+    """The orchestrator asks no real llama.cpp server whether it is busy, or what it serves
+    (orchestrator/servers.py): "can't tell", so a run goes ahead."""
     try:
         from orchestrator import servers
     except ImportError:  # without the orchestrator's extra
         return
     monkeypatch.setattr(servers, "busy_slots", lambda server: 0)
+    monkeypatch.setattr(servers, "served_models", lambda server: None)
 
 
 @pytest.fixture(autouse=True)

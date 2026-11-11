@@ -61,7 +61,7 @@ from .backend import SpecError, check_model, model_choice, model_settings, task_
 from .jobs import OUTPUT, _iso, _tail, json_file
 from .launch import REPO, Launched, LaunchError, Subprocess, granted
 from .profiles import ProfilesError, ProfileStore, check, names_given
-from .servers import ModelServers, servers_for
+from .servers import ModelServers, models_for, servers_for
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
 # owner/repo on GitHub, or a repo's https URL.
@@ -362,7 +362,7 @@ class TaskRunner:
             for record in queued:
                 if len(self.running) >= self.limit:
                     break
-                why = self.servers.take(f"task {record['slug']}", servers_for(self._config(record)))
+                why = self.servers.take(f"task {record['slug']}", models_for(self._config(record)))
                 if why:
                     if record.get("server_wait") != why:
                         record["server_wait"] = why

@@ -24,7 +24,8 @@ resumed in the Jobs tab. See jobs.py.
 
 Runs that call a llama.cpp server take turns on it, across jobs and tasks. With
 --wait-for-idle-servers (ORCHESTRATOR_WAIT_FOR_IDLE_SERVERS=1), one also waits
-while the server's /health says it is busy with someone else's. See servers.py.
+while the server's /health says it is busy with someone else's. A run that names
+its model (model_id) waits while the server serves another. See servers.py.
 
 Tasks (tasks.py): a repo and a prompt, worked on in a sandbox until there is a
 PR, with this orchestrator's credentials and target (podman or docker here,
