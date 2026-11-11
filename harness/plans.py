@@ -15,6 +15,9 @@ nothing waits in memory: a decision is written to the plan's file, and applying 
 `[job] plan_ttl` (a day by default): what it was made from has moved on.
 
 States: open (deciding), applying, applied, apply_failed, rejected (all of it), superseded, expired.
+
+What was decided is also shown to the job's next runs (decisions.json in the working directory, decided()), so
+a run does not propose again what a person rejected.
 """
 
 from __future__ import annotations
@@ -32,6 +35,8 @@ from .config import HarnessConfig
 
 PLAN_FILE = "plan.json"  # in the run's working directory
 APPROVED_FILE = "approved.json"  # what the apply script is given, there
+DECISIONS_FILE = "decisions.json"  # what was decided on earlier plans, for a run that proposes
+DECIDED_DAYS = 30  # how long a decision is shown to the runs after it
 MAX_ITEMS = 50
 MAX_BYTES = 1024 * 1024
 TITLE_CHARS = 200
@@ -193,6 +198,20 @@ def reopen(plan: dict[str, Any]) -> None:
     """An apply that never started: the plan can be applied again."""
     plan.update(state="open")
     plan.pop("apply_run", None)
+
+
+def decided(cfg: HarnessConfig, name: str, *, days: int = DECIDED_DAYS) -> list[dict[str, Any]]:
+    """What a person decided on the job's plans in the last `days`, newest first, an item's latest decision
+    only (ids are the job's own, so the same id is the same thing proposed again)."""
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+    found: dict[str, dict[str, Any]] = {}
+    for plan in list_plans(cfg, name, limit=100):
+        for item in plan["items"]:
+            if item.get("decision") and item.get("at", "") >= since and \
+                    item.get("at", "") > found.get(item["id"], {}).get("at", ""):
+                found[item["id"]] = {"id": item["id"], "title": item["title"], "decision": item["decision"],
+                                     "at": item["at"], "plan": plan["run"], "plan_state": plan["state"]}
+    return sorted(found.values(), key=lambda item: item["at"], reverse=True)
 
 
 def approved(plan: dict[str, Any]) -> list[dict[str, Any]]:

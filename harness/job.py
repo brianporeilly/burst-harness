@@ -158,7 +158,9 @@ PLAN_RULES = ("Acting: this job does nothing itself; it proposes. Write what sho
               "{most} items. A person approves or rejects each item by its title and detail alone, so they say "
               "exactly what will be done, and to what; once approved, the job's apply script does it with the item's "
               "data. Group many like actions into one item. If nothing needs doing, write no plan. Your report says "
-              "what you propose, and why.\n")
+              "what you propose, and why. {decisions} lists what a person decided on this job's earlier plans, "
+              "newest first: do not propose again what was rejected (the same item id is the same thing) unless "
+              "what it is about has changed, and say what you left out for that reason.\n")
 
 NO_REPORT = """You stopped without writing {report}. Write the report now (or what stopped you), then end your turn."""
 NO_FINISH = """You stopped without calling finish_report. Call it now with your report (or what stopped you)."""
@@ -568,7 +570,8 @@ def _rules(target: SubprocessTarget, spec: JobSpec, *, has_scripts: bool, file: 
         ending, wording = (WRITE_REPORT if file else CALL_FINISH), JOB_RULES
     remembers = (MEMORY_RULES.format(memory=f"{target.repo}/{memory.DIR}", limit=memory.LIMIT // (1024 * 1024))
                  if spec.memory and not spec.asking else "")
-    proposes = (PLAN_RULES.format(plan=f"{target.repo}/{plans.PLAN_FILE}", most=plans.MAX_ITEMS)
+    proposes = (PLAN_RULES.format(plan=f"{target.repo}/{plans.PLAN_FILE}", most=plans.MAX_ITEMS,
+                                  decisions=f"{target.repo}/{plans.DECISIONS_FILE}")
                 if spec.mode == "act" and not spec.asking else "")
     return RULES.format(workdir=target.repo, scripts=scripts, memory=remembers, plan=proposes, ending=ending.format(report=f"{target.repo}/{REPORT}"),
                         **wording)
@@ -868,13 +871,16 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         print(f"Applying the plan from run {spec.applying} of {spec.name} in {target.describe()}." if spec.applying
               else f"Running {'question' if spec.asking else 'job'} {spec.name} in {target.describe()} "
                    f"(engine: {cfg.engine}).")
-        stale = " ".join(shlex.quote(f"{target.repo}/{name}") for name in (REPORT, plans.PLAN_FILE, plans.APPROVED_FILE))
+        left = (REPORT, plans.PLAN_FILE, plans.APPROVED_FILE, plans.DECISIONS_FILE)
+        stale = " ".join(shlex.quote(f"{target.repo}/{name}") for name in left)
         target.run_shell(f"mkdir -p {shlex.quote(target.repo)} && rm -f {stale}", cwd="/")
         if spec.scripts:
             _copy_scripts(target, spec.scripts)
         remembers = spec.memory and not spec.asking
         if remembers:
             remembered["before"] = memory.put(target, memory.directory(cfg, spec.name))
+        if spec.mode == "act" and not spec.applying and not spec.asking:
+            target.write_file(plans.DECISIONS_FILE, json.dumps({"decided": plans.decided(cfg, spec.name)}, indent=1))
         if spec.applying:
             report, reason = _apply_approved(target, spec, cfg)
         else:

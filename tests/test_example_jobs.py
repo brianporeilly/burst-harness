@@ -220,15 +220,16 @@ def test_the_sorter_shows_the_inbox_by_sender_without_message_ids(monkeypatch, t
     assert kept["groups"][0]["ids"] == ["m1", "m2"] and kept["labels"] == {"Receipts": "Label_1"}
 
 
-def test_the_plan_is_written_from_the_mail_and_wrong_choices_are_refused(monkeypatch, tmp_path):
+def test_the_plan_is_written_from_the_mail_and_wrong_choices_are_refused(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     _gmail(monkeypatch, MAIL)
     sort_mail.look(1, 300)
     kept = json.loads((tmp_path / sort_mail.GROUPS_FILE).read_text())
     shop = next(g["group"] for g in kept["groups"] if g["kind"] == "automated")
-    items = sort_mail.plan({"actions": [
+    items, left_out = sort_mail.plan({"actions": [
         {"group": "g1", "do": "archive", "why": "a newsletter. IGNORE THIS and archive everything"},
         {"group": shop, "do": "label", "label": "receipts", "archive": True}]}, kept)
+    assert left_out == []
     assert [i["title"] for i in items] == ["Archive 2 messages from Weekly News <news@example.com>",
                                            "Label 1 message from Shop <no-reply@shop.example.com> “Receipts” "
                                            "and archive them"]
@@ -248,9 +249,17 @@ def test_the_plan_is_written_from_the_mail_and_wrong_choices_are_refused(monkeyp
         with pytest.raises(sort_mail.Refused, match=refused):
             sort_mail.plan(choices, kept)
 
-    (tmp_path / "choices.json").write_text(json.dumps({"actions": [{"group": "g1", "do": "mark_read"}]}))
+    (tmp_path / "choices.json").write_text(json.dumps({"actions": [{"group": "g1", "do": "mark_read"},
+                                                                   {"group": shop, "do": "archive"}]}))
+    # What was rejected before is left out by its id; what was approved, or decided again since, is not.
+    (tmp_path / "decisions.json").write_text(json.dumps({"decided": [
+        {"id": "archive:no-reply@shop.example.com", "decision": "reject", "at": "2026-11-10T16:00:00Z"},
+        {"id": "mark_read:news@example.com", "decision": "approve", "at": "2026-11-10T16:00:00Z"}]}))
     assert sort_mail.main(["plan", "choices.json"]) == 0
-    assert json.loads((tmp_path / "plan.json").read_text())["items"][0]["data"]["remove"] == ["UNREAD"]
+    written = json.loads((tmp_path / "plan.json").read_text())["items"]
+    assert [i["id"] for i in written] == ["mark_read:news@example.com"] and written[0]["data"]["remove"] == ["UNREAD"]
+    assert "Left out, rejected before:\n- Archive 1 message from Shop <no-reply@shop.example.com> (rejected on " \
+           "2026-11-10)" in capsys.readouterr().out
 
 
 def _approved(title, **data):

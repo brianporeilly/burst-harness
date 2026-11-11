@@ -12,7 +12,7 @@ Propose how to tidy my inbox. You do nothing to it yourself: I approve or reject
    Leave alone mail from people (`kind` `person`) unless it is plainly automated, and anything that may ask me something or that you are unsure about. Proposing less is better than proposing wrongly. Give each a short `why`.
 5. Write your choices to `/workspace/choices.json`:
    `{"actions": [{"group": "g3", "do": "archive", "why": "..."}, {"group": "g7", "do": "label", "label": "Receipts", "archive": true, "why": "..."}]}`
-   Then run `cd /workspace && python3 scripts/sort_mail.py plan choices.json`. It writes plan.json for you, with titles made from the mail itself: do not write plan.json yourself. If it says a choice is wrong, fix choices.json and run it again. If nothing is worth doing, write no choices.
-6. Your report, short: how many messages and senders you looked at, what you propose (the lines `plan` printed), and in a line or two what you left alone and why.
+   Then run `cd /workspace && python3 scripts/sort_mail.py plan choices.json`. It writes plan.json for you, with titles made from the mail itself: do not write plan.json yourself. If it says a choice is wrong, fix choices.json and run it again. It leaves out what I rejected on an earlier plan (it says which); do not try to get round that with another action on the same sender. If nothing is worth doing, write no choices.
+6. Your report, short: how many messages and senders you looked at, what you propose (the lines `plan` printed), what was left out as rejected before, and in a line or two what you left alone and why.
 
 Put the report straight into finish_report. Do not write it out as a message first.

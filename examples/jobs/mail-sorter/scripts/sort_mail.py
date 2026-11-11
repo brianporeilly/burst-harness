@@ -14,7 +14,8 @@ hundreds of messages. It never sees a message id. Its choices name a group and w
                  {"group": "g9", "do": "mark_read"}]}
 
 and `plan` turns them into plan.json, with titles and details written here from the mail itself, so what a person
-approves says what will happen. `apply` is run with no model, on the approved items, and checks each again
+approves says what will happen. What a person rejected before (decisions.json, from the harness) is left out,
+by the item's id: the same action on the same sender. `apply` is run with no model, on the approved items, and checks each again
 rather than trusting the plan: it only takes messages out of the inbox, marks them read or adds one of your own
 labels, and only to messages still in the inbox from the sender the item names. Nothing is deleted or trashed,
 and everything it changes is labelled bot/sorted (made the first time), so a search for label:bot-sorted finds
@@ -36,6 +37,7 @@ GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 QUERY = "in:inbox -is:starred older_than:{days}d"
 GROUPS_FILE = Path(".sorter/groups.json")
 PLAN_FILE = Path("plan.json")
+DECISIONS_FILE = Path("decisions.json")  # what was decided on earlier plans, written by the harness
 SHOWN = 60          # groups the model is shown, biggest first
 SUBJECTS = 5        # subjects shown per group
 TEXT = 120
@@ -160,14 +162,25 @@ def _plural(n: int) -> str:
     return f"{n} message{'s' if n != 1 else ''}"
 
 
-def plan(choices: dict, kept: dict) -> list[dict]:
-    """plan.json's items from the model's choices and what `look` found."""
+def rejected_before() -> dict[str, str]:
+    """Item ids a person rejected on an earlier plan (and decided no differently since): id to when."""
+    try:
+        decided = json.loads(DECISIONS_FILE.read_text()).get("decided") or []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {d["id"]: str(d.get("at", ""))[:10] for d in decided
+            if isinstance(d, dict) and d.get("decision") == "reject" and isinstance(d.get("id"), str)}
+
+
+def plan(choices: dict, kept: dict, rejected: dict[str, str] | None = None) -> tuple[list[dict], list[str]]:
+    """plan.json's items from the model's choices and what `look` found, and what was left out as rejected
+    before."""
     actions = choices.get("actions") if isinstance(choices, dict) else None
     if not isinstance(actions, list):
         raise Refused('choices need "actions", a list of {"group": "g1", "do": "archive" | "mark_read" | "label"}')
     groups = {g["group"]: g for g in kept["groups"]}
     labels = {name.lower(): (name, label_id) for name, label_id in kept["labels"].items()}
-    items, seen = [], set()
+    items, seen, left_out = [], set(), []
     for n, action in enumerate(actions):
         if not isinstance(action, dict) or action.get("group") not in groups:
             raise Refused(f"action {n}: group {action.get('group') if isinstance(action, dict) else action!r} "
@@ -197,10 +210,14 @@ def plan(choices: dict, kept: dict) -> list[dict]:
         detail = "\n".join([f"Subjects: {'; '.join(group['subjects'])}" + (" …" if group["count"] > SUBJECTS else ""),
                             f"Unread: {group['unread']} of {group['count']}. Seen as: {group['kind']}.",
                             *([f"Why (the model's words): {why}"] if why else [])])
-        items.append({"id": _item_id(do, group["address"], group["group"]), "title": short(title, 200),
+        item_id = _item_id(do, group["address"], group["group"])
+        if item_id in (rejected or {}):
+            left_out.append(f"{short(title, 200)} (rejected on {rejected[item_id]})")
+            continue
+        items.append({"id": item_id, "title": short(title, 200),
                       "detail": detail[:3000],
                       "data": {"from": group["address"], "ids": group["ids"], "add": add, "remove": remove}})
-    return items
+    return items, left_out
 
 
 # --- apply ---
@@ -281,7 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "plan":
         try:
-            items = plan(json.loads(Path(args.choices).read_text()), json.loads(GROUPS_FILE.read_text()))
+            items, left_out = plan(json.loads(Path(args.choices).read_text()), json.loads(GROUPS_FILE.read_text()),
+                                   rejected_before())
         except FileNotFoundError as err:
             print(f"{err.filename} is missing (run `look` first, then write your choices)", file=sys.stderr)
             return 2
@@ -291,6 +309,8 @@ def main(argv: list[str] | None = None) -> int:
         if items:
             PLAN_FILE.write_text(json.dumps({"items": items}, indent=1, ensure_ascii=False))
         print("\n".join(f"{i['id']}: {i['title']}" for i in items) or "No actions: no plan written.")
+        if left_out:
+            print("Left out, rejected before:\n" + "\n".join(f"- {line}" for line in left_out))
         return 0
     items = json.loads(Path(args.approved).read_text())
     lines, ok = apply(items if isinstance(items, list) else [], dry_run=args.dry_run)

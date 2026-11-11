@@ -121,6 +121,31 @@ def test_a_new_plan_supersedes_an_open_one_and_plans_expire(tmp_path, monkeypatc
         plans.decide(cfg, "mail", newer["run"], {"*": "approve"}, by="test")
 
 
+def test_the_next_run_is_shown_what_was_decided_so_it_does_not_propose_a_rejection_again(tmp_path, monkeypatch, fake_claude):  # noqa: F811 -- the fixture
+    spec, cfg = _act(tmp_path, monkeypatch)
+    monkeypatch.setenv(job.RUN_ID_ENV, "20261110T080000Z-aaaa")
+    assert job.run(spec, cfg, acquire=_local(tmp_path)) == 0
+    assert json.loads((tmp_path / "work" / plans.DECISIONS_FILE).read_text()) == {"decided": []}  # the first run
+    plans.decide(cfg, "mail", "20261110T080000Z-aaaa", {"sender:boss@example.com": "reject"}, by="test")
+    time.sleep(1.1)  # decisions are to the second
+    plans.decide(cfg, "mail", "20261110T080000Z-aaaa", {"sender:news@example.com": "approve"}, by="test")
+
+    monkeypatch.setenv(job.RUN_ID_ENV, "20261111T080000Z-cccc")
+    assert job.run(spec, cfg, acquire=_local(tmp_path)) == 0
+    shown = json.loads((tmp_path / "work" / plans.DECISIONS_FILE).read_text())["decided"]
+    assert [(d["id"], d["decision"]) for d in shown] == [("sender:news@example.com", "approve"),
+                                                         ("sender:boss@example.com", "reject")]  # newest first
+    assert shown[1]["title"] == "Archive 2 messages from boss@example.com" and shown[1]["plan_state"] == "open"  # as the run began
+    rules = fake_claude()[-1]["argv"][fake_claude()[-1]["argv"].index("--append-system-prompt") + 1]
+    assert f"{tmp_path}/work/{plans.DECISIONS_FILE} lists what a person decided" in rules
+
+    # A later decision on the same item is the one shown; one older than DECIDED_DAYS is not.
+    plans.decide(cfg, "mail", "20261111T080000Z-cccc", {"sender:boss@example.com": "approve"}, by="test")
+    assert {d["id"]: d["decision"] for d in plans.decided(cfg, "mail")}["sender:boss@example.com"] == "approve"
+    monkeypatch.setattr(plans.time, "time", lambda: time.time_ns() / 1e9 + (plans.DECIDED_DAYS + 1) * 86400)
+    assert plans.decided(cfg, "mail") == []
+
+
 def test_rejecting_everything_closes_the_plan(tmp_path, monkeypatch, fake_claude):  # noqa: F811 -- the fixture
     spec, cfg = _act(tmp_path, monkeypatch)
     assert job.run(spec, cfg, acquire=_local(tmp_path)) == 0

@@ -1062,6 +1062,12 @@ was made from moves on. Rejecting every item closes it. The model writes
 should check `data` against them where it can (that a message is from the
 sender the item names), and only do what can be undone.
 
+A run that proposes is shown what was decided on the job's plans in the last
+30 days (`decisions.json` in its working directory: each item's id, title and
+latest decision, newest first), and told not to propose again what was
+rejected. Keep an item's id stable for the same thing (`archive:SENDER`), so
+a script can leave rejected items out by id rather than trusting the model to.
+
 Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub),
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
 read-only ServiceAccount from its `rbac.yaml`), and
