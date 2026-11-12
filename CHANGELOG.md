@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.24.0 (2026-11-12)
+
+### Features
+
+- **harness**: Strands' read, write and edit tools instead of the deprecated file_editor
+  ([#8](https://github.com/brianporeilly/burst-harness/pull/8),
+  [`7878d2c`](https://github.com/brianporeilly/burst-harness/commit/7878d2c0bc9487ba08ef804480a70dda59a1fbba))
+
+
 ## v0.23.3 (2026-11-12)
 
 ### Bug Fixes
