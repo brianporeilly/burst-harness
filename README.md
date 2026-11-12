@@ -793,8 +793,8 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   effort are written into the JSON, so what is sent is what is shown.
   **Read the server** asks a llama-server for `/props`, which is its
   description and not a model call. It fills in the context window (per
-  slot) and says whether its chat template can switch thinking. That is `GET
-  /api/probe?base_url=...`, from the page only. A task given its model or
+  slot) and says whether its chat template can switch thinking. That is `POST
+  /api/probe` with `{"base_url": ...}`, from the page only. A task given its model or
   any of these settings isn't routed. Claude Code tasks take none of them;
   Claude Code chooses for itself.
 - Each burst is `harness run SLUG --task PROMPT --repo-url URL` as a

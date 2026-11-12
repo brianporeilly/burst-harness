@@ -257,10 +257,11 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
                                 status_code=401)
         return {"env": values}
 
-    @app.get("/api/probe")
-    def probe_server(base_url: str) -> dict[str, Any]:
-        """A llama-server's own description, for the Tasks form (backend.probe)."""
-        return probe(base_url)
+    @app.post("/api/probe")
+    async def probe_server(request: Request) -> dict[str, Any]:
+        """A llama-server's own description, for the Tasks form (backend.probe). A POST, so it needs the
+        change header: a page elsewhere cannot have a signed-in browser make the orchestrator fetch a URL."""
+        return await run_in_threadpool(probe, str((await body(request)).get("base_url") or ""))
 
     @app.get("/api/tasks/{slug}")
     def task_detail(slug: str) -> dict[str, Any]:

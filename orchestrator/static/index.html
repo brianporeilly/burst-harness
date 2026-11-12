@@ -1053,7 +1053,7 @@ document.getElementById("task-probe").onclick = async () => {
   if (!url) { note.textContent = "Give the server's base URL first."; return; }
   note.textContent = `Reading ${url}...`;
   let found;
-  try { found = await api(`/api/probe?base_url=${encodeURIComponent(url)}`); }
+  try { found = await api("/api/probe", { method: "POST", body: JSON.stringify({ base_url: url }) }); }
   catch (err) { note.textContent = err.message; return; }
   if (!found.found) { note.textContent = `Couldn't read it: ${found.why}.`; return; }
   if (found.context_window && !taskForm.context_window.value) taskForm.context_window.value = found.context_window;
@@ -1383,7 +1383,7 @@ document.getElementById("profile-probe").onclick = async () => {
   if (!url) { note.textContent = "Give the server's base URL first."; return; }
   note.textContent = `Reading ${url}...`;
   let found;
-  try { found = await api(`/api/probe?base_url=${encodeURIComponent(url)}`); }
+  try { found = await api("/api/probe", { method: "POST", body: JSON.stringify({ base_url: url }) }); }
   catch (err) { note.textContent = err.message; return; }
   if (!found.found) { note.textContent = `Couldn't read it: ${found.why}.`; return; }
   if (found.context_window && !profileForm.context_window_limit.value) profileForm.context_window_limit.value = found.context_window;
