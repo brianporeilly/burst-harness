@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.23.3 (2026-11-12)
+
+### Bug Fixes
+
+- **deps**: Strands-agents 1.64.0, so mcp is 2.3.0 with its security fixes
+  ([#7](https://github.com/brianporeilly/burst-harness/pull/7),
+  [`9d1f605`](https://github.com/brianporeilly/burst-harness/commit/9d1f605ff50023cf885ee0b3fc5bccf07e606ebf))
+
+
 ## v0.23.2 (2026-11-12)
 
 ### Bug Fixes
