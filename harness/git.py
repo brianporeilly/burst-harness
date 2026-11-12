@@ -1,10 +1,12 @@
-"""git, executed in whichever environment the agent is working in; gh, on the driver.
+"""git, executed in whichever environment the agent is working in; PRs, from the driver.
 
 Credentials belong to the driver, never the target. The harness passes a token
 only on its own clone/fetch/push invocations (``git -c http.extraHeader=...``,
 which is not persisted to the repo's config), and opens pull requests from the
-driver with ``gh --repo``. The agent's shell in the target therefore has no
-credential to push with or to exfiltrate.
+driver: with ``gh --repo`` on GitHub, through a Forgejo's API on one listed in
+``forges`` (forge.py). Each forge's token goes to its own host alone. The
+agent's shell in the target therefore has no credential to push with or to
+exfiltrate.
 
 With ``egress_inject = git`` the harness passes nothing at all: the target's
 gateway adds the token to requests for the repo (see containers.py), so git in
@@ -21,8 +23,13 @@ import shlex
 import subprocess
 from pathlib import PurePosixPath
 
-from . import credentials
+from typing import TYPE_CHECKING
+
+from . import credentials, forge
 from .exec_target import ExecError, ExecTarget
+
+if TYPE_CHECKING:
+    from .config import HarnessConfig
 
 # Checked in order. GH_TOKEN/GITHUB_TOKEN are what gh itself reads, so a driver
 # already set up for gh needs nothing extra.
@@ -35,35 +42,41 @@ class GitError(RuntimeError):
     """A git or gh command failed."""
 
 
+# Every token the harness has sent, kept out of what it shows (error text reaches the model).
+_sent: set[str] = set()
+
+
 def token() -> str:
+    """GitHub's token."""
     return credentials.first(TOKEN_ENV_VARS)
 
 
-def auth_args(url: str) -> Auth:
-    """`git -c` arguments that authenticate one invocation against an HTTPS remote.
-
-    Basic auth with the `x-access-token` user works for GitHub PATs and app
-    tokens alike. Empty for SSH remotes and when no token is set, in which case
-    git falls back to whatever the target already has.
-    """
-    basic = basic_credential()
+def auth_args(url: str, cfg: HarnessConfig | None = None) -> Auth:
+    """`git -c` arguments that authenticate one invocation against an HTTPS remote: its forge's token
+    (forge.py), as HTTP Basic credentials. Empty for SSH remotes, for a host that is no forge of `cfg`'s
+    (without one, github.com alone), and when its token is not set; git then falls back to whatever the
+    target already has."""
+    basic = basic_credential(url, cfg)
     if not basic or not url.startswith("https://"):
         return ()
     return ("-c", f"http.extraHeader=Authorization: Basic {basic}")
 
 
-def basic_credential() -> str:
-    """The token as HTTP Basic credentials, or "" when there is none."""
-    secret = token()
-    return base64.b64encode(f"x-access-token:{secret}".encode()).decode() if secret else ""
+def basic_credential(url: str = "https://github.com/", cfg: HarnessConfig | None = None) -> str:
+    """The token for `url`'s forge as HTTP Basic credentials, or "" when there is none."""
+    secret = forge.token_for(cfg, url)
+    if secret:
+        _sent.add(secret)
+    return forge.basic_credential(secret)
 
 
-def default_branch(url: str) -> str:
-    """A remote repo's default branch, asked from the driver with its token. Raises GitError if
+def default_branch(url: str, cfg: HarnessConfig | None = None) -> str:
+    """A remote repo's default branch, asked from the driver with its forge's token. Raises GitError if
     the repo cannot be read (missing, private without a token, or not reachable)."""
     try:
         # Only the token: no credential helper or password dialog to wait on.
-        proc = subprocess.run(["git", "-c", "credential.helper=", *auth_args(url), "ls-remote", "--symref", url, "HEAD"],
+        proc = subprocess.run(["git", "-c", "credential.helper=", *auth_args(url, cfg), "ls-remote", "--symref", url,
+                               "HEAD"],
                               check=False, capture_output=True, text=True, timeout=30,
                               env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "SSH_ASKPASS": ""})
     except (OSError, subprocess.TimeoutExpired) as err:
@@ -76,12 +89,11 @@ def default_branch(url: str) -> str:
 
 
 def _redact(text: str) -> str:
-    """Strip the token (raw or encoded) from anything that may reach the model."""
-    secret = token()
-    if not secret:
-        return text
-    basic = base64.b64encode(f"x-access-token:{secret}".encode()).decode()
-    return text.replace(basic, "***").replace(secret, "***")
+    """Strip the tokens (raw or encoded) from anything that may reach the model: GitHub's, and any sent."""
+    for secret in {*_sent, *([token()] if token() else [])}:
+        text = text.replace(base64.b64encode(f"x-access-token:{secret}".encode()).decode(), "***")
+        text = text.replace(secret, "***")
+    return text
 
 
 def run(
@@ -226,8 +238,25 @@ def redact_url(url: str) -> str:
 PR_URL = re.compile(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+")
 
 
-def pr_state(url: str) -> str:
-    """A PR's state, asked of GitHub from the driver with its token: "open", "merged" or "closed"."""
+def _forge(cfg: HarnessConfig | None, url: str) -> forge.Forge:
+    try:
+        found = forge.for_url(cfg, url)
+    except forge.ForgeError as err:
+        raise GitError(str(err)) from err
+    if found is None:
+        raise GitError(f"{forge._host(url) or url!r} is not a forge the harness knows: github.com, or one "
+                       "listed in forges (NAME=https://host).")
+    return found
+
+
+def pr_state(url: str, cfg: HarnessConfig | None = None) -> str:
+    """A PR's state, asked of its forge from the driver with its token: "open", "merged" or "closed"."""
+    host = _forge(cfg, url)
+    if host.kind == "forgejo":
+        try:
+            return forge.forgejo_pr_state(host, url)
+        except forge.ForgeError as err:
+            raise GitError(_redact(str(err))) from err
     if not PR_URL.fullmatch(url):
         raise GitError(f"{url!r} is not a PR's URL.")
     env = dict(os.environ)
@@ -246,11 +275,19 @@ def pr_state(url: str) -> str:
     return state
 
 
-def open_pr(*, repo: str, head: str, title: str, body: str, base: str, draft: bool) -> str:
-    """Create a PR from the driver and return its URL.
+def open_pr(*, repo: str, head: str, title: str, body: str, base: str, draft: bool,
+            cfg: HarnessConfig | None = None) -> str:
+    """Create a PR from the driver and return its URL. `repo` is `host/owner/repo` (repo_slug), or
+    `owner/repo` on GitHub.
 
     Runs on the driver, not in the target: the target has no gh and no token.
     """
+    if repo.count("/") >= 2 and (host := _forge(cfg, f"https://{repo}")).kind == "forgejo":
+        try:
+            return forge.forgejo_open_pr(host, f"https://{repo}", head=head, base=base, title=title, body=body,
+                                         draft=draft)
+        except forge.ForgeError as err:
+            raise GitError(_redact(str(err))) from err
     args = ["gh", "pr", "create", "--repo", repo, "--head", head,
             "--title", title, "--body", body, "--base", base]
     if draft:

@@ -511,7 +511,7 @@ def launch(
         if git.is_repo(target):
             notes.append(f"Using the checkout already in {target.repo}.")
         else:
-            auth = () if "git" in cfg.egress_inject else git.auth_args(cfg.repo_url)
+            auth = () if "git" in cfg.egress_inject else git.auth_args(cfg.repo_url, cfg)
             notes.append(git.clone(target, cfg.repo_url, auth=auth))
 
     password = record.get("password") or secrets.token_urlsafe(18)

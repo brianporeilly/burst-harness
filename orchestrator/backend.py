@@ -21,7 +21,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from harness import cluster_session, containers, credentials, egress, git, mcp, models, session
+from harness import cluster_session, containers, credentials, egress, forge, git, mcp, models, session
 from harness.config import HarnessConfig
 from harness.gateway_control import Gateway, GatewayError
 
@@ -313,6 +313,8 @@ class PodmanBackend:
             "backend": self.name,
             "credentials": {
                 "git": bool(git.token()),
+                # The forges besides GitHub, and whether each one's token is set (never the token).
+                "forges": {f.name: bool(f.token()) for f in forge.forges(cfg) if f.kind != "github"},
                 "anthropic_api_key": bool(credentials.get("ANTHROPIC_API_KEY")),
                 "claude_oauth_token": bool(credentials.get("CLAUDE_CODE_OAUTH_TOKEN")),
             },

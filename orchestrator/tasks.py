@@ -109,7 +109,7 @@ def repo_url(text: str) -> str:
         return f"https://github.com/{text.removesuffix('.git')}.git"
     if URL_REPO.fullmatch(text) and ".." not in text:
         return text
-    raise TasksError(f"{text!r} is not a repo: give owner/repo (GitHub) or its https URL.")
+    raise TasksError(f"{text!r} is not a repo: give owner/repo (GitHub) or its https URL (GitHub, or a forge).")
 
 
 def slug_for(prompt: str) -> str:
@@ -243,9 +243,10 @@ class TaskRunner:
         elif not base_branch:
             # The repo's own default, not a guess: and a repo that cannot be read is refused now, not in a burst.
             try:
-                base_branch = git.default_branch(url)
+                base_branch = git.default_branch(url, self.base)
             except git.GitError as err:
-                raise TasksError(f"{err} (the orchestrator reads it with its git token, if it has one)") from err
+                raise TasksError(f"{err} (the orchestrator reads it with the token of the repo's forge, if it "
+                                 "has one)") from err
         provider, base_url, model = (str(raw.get(key) or "").strip() for key in ("provider", "base_url", "model"))
         try:
             context_window = int(raw.get("context_window") or 0)
@@ -351,7 +352,7 @@ class TaskRunner:
                 or time.time() - float(record.get("pr_checked") or 0) < fresh):
             return
         try:
-            found: str | None = git.pr_state(pr)
+            found: str | None = git.pr_state(pr, self.base)
         except git.GitError as err:
             print(f"tasks: {slug}: {err}", flush=True)
             found = None

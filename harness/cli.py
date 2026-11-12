@@ -189,6 +189,7 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "delegate_to": tuple(n.strip() for n in args.delegate_to.split(",") if n.strip()) if args.delegate_to is not None else None,
         "router": "" if named else args.router,
         "mcp": tuple(args.mcp) if args.mcp else None,
+        "forges": tuple(args.forges) if getattr(args, "forges", None) else None,
         "claude_json": args.claude_json,
         "claude_settings": args.claude_settings,
         "claude_permission_mode": args.permission_mode,
@@ -239,7 +240,7 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str, branch: s
 
 def _git_auth(cfg: HarnessConfig, url: str) -> git.Auth:
     """What the harness adds to its own git commands: nothing when the gateway adds the token."""
-    return () if "git" in cfg.egress_inject else git.auth_args(url)
+    return () if "git" in cfg.egress_inject else git.auth_args(url, cfg)
 
 
 def _open(args: argparse.Namespace) -> HarnessContext:
@@ -787,6 +788,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="An MCP server the agent connects to, over HTTPS (repeatable; replaces the mcp "
                              "setting): context7=https://mcp.context7.com/mcp. A key in the driver's "
                              "NAME_API_KEY is sent as a bearer token, added by the gateway for a sandbox.")
+    engine.add_argument("--forges", action="append", metavar="NAME=URL",
+                        help="A Forgejo (or Gitea) besides github.com (repeatable; replaces the forges setting): "
+                             "forgejo=https://forgejo.example.com. Its token is the driver's NAME_TOKEN.")
     engine.add_argument("--claude-json", dest="claude_json",
                         help="JSON file merged into the target's ~/.claude.json (engine=claude-code).")
     engine.add_argument("--claude-settings", dest="claude_settings",
