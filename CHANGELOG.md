@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.18.1 (2026-11-12)
+
+### Bug Fixes
+
+- **jobs**: Price-watch leads with the price to buy one, with shipping
+  ([#100](https://github.com/brianporeilly/strands-harness/pull/100),
+  [`4399031`](https://github.com/brianporeilly/strands-harness/commit/4399031bfbe3e830ac36ca9b115b4061624c1bc5))
+
+- **jobs**: The mail sorter's apply says each item's count once
+  ([#99](https://github.com/brianporeilly/strands-harness/pull/99),
+  [`ddee27e`](https://github.com/brianporeilly/strands-harness/commit/ddee27e4ade2a88ce0ae42fcd75a2bed3e330e21))
+
+
 ## v0.18.0 (2026-11-12)
 
 ### Features
