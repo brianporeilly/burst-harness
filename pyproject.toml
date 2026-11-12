@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic==0.125.0",
-    "strands-agents==1.57.0",
+    "strands-agents==1.64.0",
     # The orchestrator's web app.
     "fastapi==0.143.0",
     "uvicorn==0.54.0",
@@ -20,8 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # provider = "openai" (any OpenAI-compatible endpoint) and "gemini" need their SDKs.
-openai = ["strands-agents[openai]==1.57.0"]
-gemini = ["strands-agents[gemini]==1.57.0"]
+openai = ["strands-agents[openai]==1.64.0"]
+gemini = ["strands-agents[gemini]==1.64.0"]
 
 [project.scripts]
 harness = "harness.cli:main"
