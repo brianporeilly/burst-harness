@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.22.0 (2026-11-12)
+
+### Documentation
+
+- **changelog**: Entries from the earlier private repo lose their links
+  ([#1](https://github.com/brianporeilly/burst-harness/pull/1),
+  [`c4172c5`](https://github.com/brianporeilly/burst-harness/commit/c4172c51e95efe273521bededd4f73e2df0e6926))
+
+### Features
+
+- **tasks**: Turn off Claude Code's attribution in commits and PRs, for a run or every task
+  ([#2](https://github.com/brianporeilly/burst-harness/pull/2),
+  [`61f81f4`](https://github.com/brianporeilly/burst-harness/commit/61f81f4686c2b50897caffb3e73c87a2ea13b146))
+
+
 ## v0.21.0 (2026-11-12)
 
 ### Features
