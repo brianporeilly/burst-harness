@@ -268,7 +268,9 @@ def apply(items: list, *, dry_run: bool) -> tuple[list[str], bool]:
                     post(f"{GMAIL}/messages/batchModify", {"ids": targets[start:start + BATCH],
                                                            "addLabelIds": [*data["add"], sorted_label],
                                                            "removeLabelIds": data["remove"]})
-            lines.append(f"- {'Would do' if dry_run else 'Done'}: {title}, {_plural(len(targets))}{note}.")
+            # The title already says how many; say it again only when fewer are left to do.
+            only = f", only {_plural(len(targets))}{note}" if gone else ""
+            lines.append(f"- {'Would do' if dry_run else 'Done'}: {title}{only}.")
         except (urllib.error.URLError, OSError, ValueError) as err:
             reason = f"HTTP {err.code}" if isinstance(err, urllib.error.HTTPError) else type(err).__name__
             lines.append(f"- Failed “{title}”: {reason}: {short(str(err), 200)}.")

@@ -288,7 +288,7 @@ def test_apply_does_only_what_this_script_does_to_mail_still_in_the_inbox_from_t
                                                      "messageListVisibility": "show"}),  # made once, then put on
                       (f"{sort_mail.GMAIL}/messages/batchModify",
                        {"ids": ["m2"], "addLabelIds": ["Label_9"], "removeLabelIds": ["INBOX"]})]
-    assert lines[0] == f"- Done: {title}, 1 message (1 no longer in the inbox or not from news@example.com)."
+    assert lines[0] == f"- Done: {title}, only 1 message (1 no longer in the inbox or not from news@example.com)."
     assert all(line.startswith("- Skipped") for line in lines[1:5])
     assert "only removes INBOX and UNREAD" in lines[1] and "only removes" in lines[2]
     assert "not the one its title names" in lines[3] and "no message ids" in lines[4]
@@ -304,7 +304,7 @@ def test_a_dry_run_changes_nothing_and_a_failed_change_fails_the_apply(monkeypat
     title = "Archive 2 messages from Weekly News <news@example.com>"
     (tmp_path / "approved.json").write_text(json.dumps([_approved(title)]))
     assert sort_mail.main(["apply", "approved.json", "--dry-run"]) == 0
-    assert posted == [] and f"- Would do: {title}, 2 messages." in capsys.readouterr().out
+    assert posted == [] and f"- Would do: {title}." in capsys.readouterr().out
 
     def refused(url, body):
         raise urllib.error.HTTPError(url, 403, "insufficient scope", {}, None)
