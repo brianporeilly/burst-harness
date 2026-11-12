@@ -788,7 +788,7 @@ async function refreshTasks() {
     el("div", { class: "row spread" }, el("span", { class: "name" }, t.slug), taskChip(t.state)),
     el("div", { class: "muted" }, [t.repo ? t.repo.replace(/^https:\/\/(github\.com\/)?/, "").replace(/\.git$/, "") : "question",
                                     modelLabel(t), when(t.created)].join(" · ")),
-    t.state === "queued" && t.server_wait ? el("div", { class: "muted" }, `Waiting: ${t.server_wait}`) : null)));
+    t.state === "queued" && t.wait ? el("div", { class: "muted" }, `Waiting for ${t.wait}`) : null)));
   if (selectedTask) renderTask();
 }
 
@@ -891,7 +891,8 @@ async function renderTask() {
     asking ? el("h3", {}, "Answers") : null,
     ...answers,
     el("h3", {}, "Bursts"),
-    bursts.length ? el("table", {}, bursts) : el("p", { class: "muted" }, "Waiting for a free slot."),
+    bursts.length ? el("table", {}, bursts) : el("p", { class: "muted" },
+      t.state !== "queued" ? "None." : t.wait ? `Waiting for ${t.wait}.` : "Starting."),
     el("h3", {}, "Output"),
     el("pre", { class: "text", "data-output": "" }, t.output || ""),
   );

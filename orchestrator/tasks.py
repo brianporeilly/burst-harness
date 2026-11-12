@@ -42,6 +42,8 @@ its own; its first burst carries on from the task document, which came to the ba
 A burst that will call a llama.cpp server of ours takes it first (servers.py). While another run has it, or
 it is busy, the task stays queued with the reason in its record (`server_wait`), and is tried again when a
 server is given back, and every RETRY seconds (`start`), since what keeps a server busy may not be ours.
+A queued task says what it waits for (`wait`, worked out when it is read): that, or a task slot, with
+`limit` running.
 """
 
 from __future__ import annotations
@@ -188,7 +190,20 @@ class TaskRunner:
     # --- what the API does ---
 
     def tasks(self) -> list[dict[str, Any]]:
-        return [_summary(r) for r in self._records()]
+        return [_summary(r) | {"wait": self._waiting_for(r)} for r in self._records()]
+
+    def _waiting_for(self, record: dict[str, Any]) -> str:
+        """What a queued task is waiting for, or "": a model server (server_wait), or a slot while `limit` tasks
+        run, then the tasks queued before it."""
+        if record.get("state") != "queued":
+            return ""
+        if record.get("server_wait"):
+            return f"its model server: {record['server_wait']}"
+        running = sorted(self.running)
+        if len(running) >= self.limit:
+            return (f"a task slot: {self.limit} at a time (ORCHESTRATOR_TASK_LIMIT), and "
+                    f"{', '.join(running)} {'is' if len(running) == 1 else 'are'} running")
+        return ""
 
     def in_thread(self, channel: str, thread: str) -> str | None:
         """The task started from this Slack thread, if any."""
@@ -201,7 +216,7 @@ class TaskRunner:
         self.check_pr(slug, PR_FRESH)
         record = self._read(slug)
         output = self._output(slug)
-        return {**record, "output": _tail(output) if output.is_file() else None}
+        return {**record, "wait": self._waiting_for(record), "output": _tail(output) if output.is_file() else None}
 
     def create(self, raw: dict[str, Any], *, user: str = "", slack: dict[str, str] | None = None) -> dict[str, Any]:
         prompt = str(raw.get("prompt") or "").strip()
