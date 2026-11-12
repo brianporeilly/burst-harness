@@ -48,3 +48,10 @@ def test_quoted_numbers_and_flags_in_toml_are_read_as_their_type():
     assert cfg.context_window_limit == 65536 and cfg.thinking is False
     with pytest.raises(ValueError, match="context_window_limit"):
         HarnessConfig.load(None, job={"context_window_limit": "lots"}, user_config=None)
+
+
+def test_the_default_allowlist_lets_package_managers_fetch():
+    allow = HarnessConfig().egress_allow
+    for host in ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+                 "crates.io", "index.crates.io", "static.crates.io"):
+        assert host in allow

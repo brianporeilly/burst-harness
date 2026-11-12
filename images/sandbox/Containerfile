@@ -6,6 +6,10 @@
 # process that keeps the pod alive. Everything else is for the task: add the
 # toolchains your repos need.
 #
+# Toolchains: Python, Node, make and gcc, and Rust (rustc and cargo from Fedora,
+# with the wasm32-unknown-unknown standard library, so `cargo build --target
+# wasm32-unknown-unknown` needs no rustup).
+#
 # Also provides tmux (sessions that survive a dropped exec), Claude Code, and
 # opencode and zellij (`harness session`).
 #
@@ -18,16 +22,22 @@ RUN dnf -y install --setopt=install_weak_deps=False \
       git-core coreutils findutils grep sed gawk diffutils patch which procps-ng \
       tar gzip unzip jq ripgrep tmux socat \
       python3 python3-pip nodejs npm make gcc gcc-c++ \
- && dnf clean all
+      rust cargo rust-std-static-wasm32-unknown-unknown \
+ && dnf clean all \
+ && cargo --version && test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown"
 
 # UID 1000 matches the SandboxTemplate's runAsUser; a real HOME avoids tools
 # writing config to / (the OpenHands UID/HOME class of bug).
 RUN useradd --uid 1000 --create-home --home-dir /home/agent agent \
  && mkdir -p /workspace && chown agent:agent /workspace
 USER 1000
+# Claude Code sends no telemetry or error reports from here: the egress gateway
+# would refuse them anyway, and each refusal is noise in the run's log.
 ENV HOME=/home/agent \
     SHELL=/bin/bash \
-    DISABLE_AUTOUPDATER=1
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_TELEMETRY=1 \
+    DISABLE_ERROR_REPORTING=1
 WORKDIR /workspace
 
 # Claude Code, for the harness's claude-code engine and for interactive use

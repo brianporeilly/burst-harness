@@ -205,6 +205,7 @@ class HarnessConfig:
         "github.com", "*.githubusercontent.com",
         "pypi.org", "files.pythonhosted.org",
         "registry.npmjs.org",
+        "crates.io", "index.crates.io", "static.crates.io",
     )
     # MCP servers the agent connects to, as NAME=URL (remote ones, over HTTPS):
     # say, context7=https://mcp.context7.com/mcp. A key in the driver's
