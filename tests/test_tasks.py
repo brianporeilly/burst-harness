@@ -343,7 +343,11 @@ def test_a_llama_server_is_read_for_the_form(monkeypatch):
                               "thinking": True}
         assert probe(url + "/v1")["found"] and seen == ["/props", "/props"]  # an OpenAI-style URL: its server's root
         client = TestClient(create_app(FakeBackend()), base_url="http://127.0.0.1:8700")
-        assert client.get("/api/probe", params={"base_url": url}).json()["context_window"] == 65536
+        assert client.post("/api/probe", json={"base_url": url}, headers=CHANGE).json()["context_window"] == 65536
+        # Never fetched for a request without the change header, or for a GET (a link, an image, a form elsewhere).
+        assert client.post("/api/probe", json={"base_url": url}).status_code == 403
+        assert client.get("/api/probe", params={"base_url": url}).status_code == 405
+        assert seen == ["/props", "/props", "/props"]
     finally:
         server.shutdown()
     gone = probe("http://127.0.0.1:9")
