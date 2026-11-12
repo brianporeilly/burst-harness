@@ -5,6 +5,19 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.26.0 (2026-11-12)
+
+### Features
+
+- **sandbox**: Rust and Bevy tooling in the sandbox image, docs.rs allowed, longer command timeouts
+  ([#10](https://github.com/brianporeilly/burst-harness/pull/10),
+  [`10a8e9a`](https://github.com/brianporeilly/burst-harness/commit/10a8e9a5da3b86f175c5624bd03da064bef17414))
+
+- **tasks**: A task's own network, permissive or with hosts added, its refusals approved from the
+  page, and a build cache ([#11](https://github.com/brianporeilly/burst-harness/pull/11),
+  [`d75517c`](https://github.com/brianporeilly/burst-harness/commit/d75517cf7e9986b198738adac7a931bc12e23d28))
+
+
 ## v0.25.0 (2026-11-12)
 
 ### Features
