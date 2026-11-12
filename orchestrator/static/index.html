@@ -384,6 +384,9 @@ const el = (tag, attrs = {}, ...children) => {
   for (const child of children.flat()) if (child != null) node.append(child);
   return node;
 };
+// Replaces a box's contents, leaving out the nulls a view passes for what it doesn't show
+// (the DOM's own replaceChildren would print them as "null").
+const fill = (box, ...children) => box.replaceChildren(...children.flat().filter((child) => child != null));
 // 127.0.0.1 and localhost are secure contexts, so the async clipboard API is there.
 const copyButton = (text) => {
   const button = el("button", { class: "small", title: "Copy to the clipboard", onclick: async () => {
@@ -664,7 +667,7 @@ async function renderJob() {
        r.trigger === "schedule" ? el("span", { class: "muted" }, " (scheduled)") : null), el("td", {}, runChip(r.state, r.quiet)),
     el("td", {}, r.seconds != null ? `${r.seconds}s` : ""),
     el("td", {}, r.egress && r.egress.refused_count ? el("span", { class: "chip bad" }, `${r.egress.refused_count} refused`) : "")));
-  box.replaceChildren(
+  fill(box,
     el("div", { class: "row spread" }, el("h2", {}, j.name), el("div", { class: "row" }, pauseButton, runButton)),
     j.error ? el("div", { class: "error" }, j.error) : null,
     j.schedule ? el("p", { class: "muted" }, `Schedule: cron ${j.trigger}, ${scheduleText(j.schedule)}.`) : null,
@@ -735,7 +738,7 @@ async function renderRun(name, id) {
   const egress = r.egress || {};
   const hosts = Object.entries(egress.requests || {});
   const openOutput = box.querySelector("details[data-output]")?.open;
-  box.replaceChildren(
+  fill(box,
     el("h3", {}, "Run ", el("code", {}, r.id), " ", runChip(r.state, r.quiet)),
     r.reason ? el("p", { class: "error" }, r.reason) : null,
     r.delivery_errors ? el("p", { class: "error" }, `Delivery: ${r.delivery_errors.join("; ")}`) : null,
@@ -853,7 +856,7 @@ async function renderTask() {
     el("p", { class: "muted" }, b.message ? `Follow-up: ${b.message}` : i ? "Asked again:" : "The prompt:"),
     b.answer != null ? el("pre", { class: "text" }, b.answer)
       : el("p", { class: "muted" }, b.state === "cancelled" ? "Stopped." : `No answer${b.reason ? `: ${b.reason}` : "."}`))) : [];
-  box.replaceChildren(
+  fill(box,
     el("div", { class: "row spread" }, el("h2", {}, t.slug), el("div", { class: "row" }, ...actions)),
     el("p", {}, taskChip(t.state), " ", t.pr ? el("a", { href: t.pr, target: "_blank", rel: "noopener" }, t.pr) : null,
       el("span", { class: "muted" }, ` ${asking ? "a question" : `${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""}`} · ${modelLabel(t)}`
