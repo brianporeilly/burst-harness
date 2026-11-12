@@ -8,6 +8,7 @@ from strands.models.model import Model
 from strands.types.tools import ToolContext
 
 from harness import agent as harness_agent
+from harness.tools import stop_loop
 
 
 class Looping(Model):
@@ -62,13 +63,13 @@ def test_a_tool_that_stops_the_loop_on_a_restart_still_stops_it():
     def step(tool_context: ToolContext) -> str:
         """One step."""
         if len(stopped) + 1 == harness_agent.RESTART_EVERY:
-            tool_context.invocation_state.setdefault("request_state", {})["stop_event_loop"] = True
+            stop_loop(tool_context)
         stopped.append(1)
         return "ok"
 
     model = Looping(500)
     result = harness_agent.call(Agent(model=model, tools=[step], callback_handler=None), "go")
-    assert model.made == harness_agent.RESTART_EVERY and result.stop_reason == "tool_use"
+    assert model.made == harness_agent.RESTART_EVERY and result.stop_reason == "cancelled"
 
 
 def test_a_prompt_after_a_tool_stopped_the_loop_joins_its_results():
@@ -76,7 +77,7 @@ def test_a_prompt_after_a_tool_stopped_the_loop_joins_its_results():
     @tool(context="tool_context")
     def step(tool_context: ToolContext) -> str:
         """One step."""
-        tool_context.invocation_state.setdefault("request_state", {})["stop_event_loop"] = True
+        stop_loop(tool_context)
         return "ok"
 
     agent = Agent(model=Looping(2), tools=[step], callback_handler=None)

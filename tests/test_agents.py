@@ -309,20 +309,27 @@ def test_a_profiles_role_shapes_it_as_a_delegate_and_read_only_changes_are_told(
 
     system = fake_llama._text(reviewer_requests[0]["messages"][0]["content"])
     assert "You are read-only" in system and system.endswith("Review adversarially. Report; fix nothing.")
-    assert not any("file_editor" in t["function"]["name"] for t in reviewer_requests[0]["tools"])
+    reviewer_tools = {t["function"]["name"] for t in reviewer_requests[0]["tools"]}
+    assert {"shell", "read"} <= reviewer_tools and not {"write", "edit", "file_editor"} & reviewer_tools
     system = fake_llama._text(fixer_requests[0]["messages"][0]["content"])
     assert "read-only" not in system and system.endswith("Make the smallest fix.")
-    assert {"shell", "file_editor"} <= {t["function"]["name"] for t in fixer_requests[0]["tools"]}
+    fixer_tools = {t["function"]["name"]: t["function"] for t in fixer_requests[0]["tools"]}
+    assert {"shell", "read", "write", "edit"} <= set(fixer_tools) and "file_editor" not in fixer_tools
+    # They take absolute paths, so they say where the repository is.
+    assert f"the repository is at {work.resolve()}" in fixer_tools["edit"]["description"]
 
 
-def test_a_read_only_delegate_in_a_sandbox_is_given_no_file_editor():
-    from harness.agent import _without_file_editor
+def test_a_read_only_delegate_in_a_sandbox_reads_but_cannot_write_or_edit():
+    from harness.agent import _read_only
     from harness.exec_sandbox import CommandSandbox
 
-    sandbox = CommandSandbox(["podman", "exec", "c", "--"], where="a container")
-    limited = _without_file_editor(sandbox)
-    assert [t.tool_name for t in limited.get_tools()] == ["sandbox_shell"]
-    assert {t.tool_name for t in sandbox.get_tools()} == {"sandbox_shell", "sandbox_file_editor"}
+    sandbox = CommandSandbox(["podman", "exec", "c", "--"], working_dir="/workspace/repo", where="a container")
+    limited = _read_only(sandbox)
+    assert [t.tool_name for t in limited.get_tools()] == ["sandbox_read", "sandbox_shell"]
+    tools = {t.tool_name: t for t in sandbox.get_tools()}
+    assert set(tools) == {"sandbox_read", "sandbox_write", "sandbox_edit", "sandbox_shell"}
+    assert "the repository is at /workspace/repo" in tools["sandbox_edit"].tool_spec["description"]
+    assert "Runs in a container." in tools["sandbox_read"].tool_spec["description"]
     assert limited.prefix == sandbox.prefix
 
 

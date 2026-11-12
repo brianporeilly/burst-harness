@@ -654,12 +654,13 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     from strands import Agent, tool
     from strands.storage import LocalFileStorage
     from strands.vended_plugins.context_offloader import ContextOffloader
-    from strands.vended_tools import file_editor, shell
 
     from . import agents
-    from .agent import LEAD_PROMPT, OutputLimit, call, conversation_manager, delegate_tool, offload_storage
+    from .agent import (LEAD_PROMPT, OutputLimit, call, conversation_manager, delegate_tool, exec_tools_for,
+                        offload_storage)
     from .cli import _report
     from .models import build_model, retry_strategy
+    from .tools import stop_loop
 
     ctx.cfg, ctx.agent = agents.lead(ctx.cfg, spec.prompt)  # each run routed afresh
     cfg, target = ctx.cfg, ctx.target
@@ -676,7 +677,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         if not report.strip():
             return "Rejected: the report is empty."
         finished["report"] = report
-        tool_context.invocation_state.setdefault("request_state", {})["stop_event_loop"] = True
+        stop_loop(tool_context)
         return "Report recorded. The job is finished; stop here."
 
     state_dir = cfg.resolve_state_dir(f"{spec.root}/{spec.name}")
@@ -691,7 +692,7 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         system_prompt=_rules(target, spec, has_scripts=has_scripts, file=False)
         + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
         # As for tasks: a sandbox with its own tools (podman, kubectl) registers them itself.
-        tools=[*([] if sandbox.get_tools() else [shell, file_editor]), finish_report, *mcp.clients(cfg),
+        tools=[*exec_tools_for(sandbox), finish_report, *mcp.clients(cfg),
                *([delegate] if delegate else [])],
         plugins=[ContextOffloader(storage=offload_storage(target, str(state_dir)),
                                   max_result_tokens=cfg.offload_max_result_tokens,

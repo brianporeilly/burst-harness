@@ -24,13 +24,14 @@ from strands.storage import LocalFileStorage
 from strands.types.exceptions import MaxTokensReachedException
 from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
-from strands.vended_tools import file_editor, handoff_to_user, shell
+from strands.vended_tools import handoff_to_user, shell
 
 from . import agents, mcp
+from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
 from .models import build_model, model_name, retry_strategy
-from .tools import HarnessContext, make_tools
+from .tools import STOPPED, HarnessContext, make_tools
 
 if TYPE_CHECKING:
     from .config import HarnessConfig
@@ -142,11 +143,12 @@ class OutputLimit(RuntimeError):
 # Strands recurses once per tool call (event_loop_cycle -> recurse_event_loop),
 # so a run past about 310 of them ended in a RecursionError, and each tool call
 # was slower than the last as the recursion deepened. Every RESTART_EVERY tool
-# calls, once its tools have run, the loop is stopped and call() starts it again
-# from the messages it left: the model carries on as if it had not stopped.
+# calls, once its tools have run, the loop is stopped (a cancel after the current
+# tools) and call() starts it again from the messages it left: the model carries
+# on as if it had not stopped.
 # Not needed once Strands loops instead (strands-agents/harness-sdk#4989).
 RESTART_EVERY = 100
-RESTART = "harness_restart"  # in request_state: the stop was the harness's, not a tool's
+RESTART = "harness_restart"  # in request_state: the stop was the harness's, not a tool's or a SIGINT's
 _restarting: "weakref.WeakSet[Agent]" = weakref.WeakSet()
 
 
@@ -154,8 +156,10 @@ def _restart_now_and_then(event: AfterToolsEvent) -> None:
     state = event.invocation_state  # one per agent(...): the count starts again with each
     state["harness_tool_cycles"] = cycles = state.get("harness_tool_cycles", 0) + 1
     request = state.setdefault("request_state", {})
-    if cycles % RESTART_EVERY == 0 and not request.get("stop_event_loop"):  # a tool's stop is left as it is
-        request["stop_event_loop"] = request[RESTART] = True
+    # A tool's stop (a terminal state, finish_report), or a SIGINT's, has cancelled it already: left as it is.
+    if cycles % RESTART_EVERY == 0 and not request.get(STOPPED) and not event.agent.cancel_signal.is_set():
+        request[RESTART] = True
+        event.agent.cancel(after_current_tools=True)
 
 
 # Strands runs each agent(...) in a thread of its own and waits for it, so a
@@ -225,7 +229,7 @@ def _call(agent: Agent, prompt: Any) -> Any:
     while True:
         try:
             result = agent(prompt)
-            if result.stop_reason == "tool_use" and (result.state or {}).get(RESTART):
+            if (result.state or {}).pop(RESTART, False) and result.stop_reason in ("cancelled", "tool_use"):
                 prompt = None  # the tool results are the last message: the model answers them
                 continue
             return result
@@ -316,15 +320,12 @@ def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: s
             read_only: bool = False) -> Agent:
     """A delegate: the sandbox and its tools, no session, no task tools, no delegating.
 
-    `prompt` is added to its instructions; a read-only one has no file editor.
+    `prompt` is added to its instructions; a read-only one can read files but not write or edit them.
     """
     sandbox = target.sandbox()
-    if sandbox.get_tools():
-        exec_tools = []
-        if read_only:
-            sandbox = _without_file_editor(sandbox)
-    else:
-        exec_tools = [shell] if read_only else [shell, file_editor]
+    if read_only and sandbox.get_tools():
+        sandbox = _read_only(sandbox)
+    exec_tools = exec_tools_for(sandbox, read_only=read_only)
     return Agent(
         model=build_model(cfg),
         retry_strategy=retry_strategy(cfg),
@@ -340,12 +341,21 @@ def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: s
     )
 
 
-def _without_file_editor(sandbox: Any) -> Any:
-    """The sandbox, vending its tools but the file editor (Agent registers what get_tools gives)."""
+def _read_only(sandbox: Any) -> Any:
+    """The sandbox, vending its tools but write and edit (Agent registers what get_tools gives)."""
     limited = copy.copy(sandbox)
     vended = sandbox.get_tools
-    limited.get_tools = lambda: [t for t in vended() if "file_editor" not in t.tool_name]
+    limited.get_tools = lambda: [t for t in vended() if t.tool_name.removeprefix("sandbox_") not in WRITING]
     return limited
+
+
+def exec_tools_for(sandbox: Any, *, read_only: bool = False) -> list[Any]:
+    """The shell and the file tools, for a sandbox that vends none of its own (the local target's). One that
+    does (podman, docker, kubectl, a claimed sandbox) has its own auto-registered by Agent: passing these as
+    well would put two shells and two of each file tool in the schema, doubling their tokens."""
+    if sandbox.get_tools():
+        return []
+    return [shell, *file_tools(sandbox, root=str(getattr(sandbox, "root", "") or ""), read_only=read_only)]
 
 
 def _files(target: ExecTarget) -> dict[str, str] | None:
@@ -395,10 +405,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
 
     model = build_model(cfg)
     sandbox = target.sandbox()
-    # A sandbox that vends its own tools (Docker, kubectl) has them auto-registered
-    # by Agent. Passing the generic pair as well would put two shells and two file
-    # editors in the schema, doubling their tokens and leaving the model to guess.
-    exec_tools = [] if sandbox.get_tools() else [shell, file_editor]
+    exec_tools = exec_tools_for(sandbox)
 
     # One storage backend; the session manager and offloader both resolve from
     # the agent-level storage when not given their own.

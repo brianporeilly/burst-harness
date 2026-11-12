@@ -170,8 +170,12 @@ directory and the real work would never be recorded.
 `--repo-url` clones into the target first (to `--repo`, default
 `/workspace/repo` for remote targets); without it the target must already hold a
 checkout. For the remote targets `--repo` is the path **inside** the container or
-pod, and the agent's tools become `sandbox_shell` / `sandbox_file_editor`, bound
-to it. The conversation snapshot stays harness-side under `state_dir` — a pod is
+pod, and the agent's tools become `sandbox_shell`, `sandbox_read`,
+`sandbox_write` and `sandbox_edit`, bound to it (`shell`, `read`, `write` and
+`edit` on the local target). The file tools take absolute paths, and their
+descriptions say where the repository is. `read` describes images and
+documents in text instead of returning them, which a local model's server
+would refuse. The conversation snapshot stays harness-side under `state_dir` — a pod is
 disposable and the snapshot has to outlive it.
 
 ### Local containers (`--target podman` or `docker`)
@@ -1343,8 +1347,8 @@ There are three ways to use them, and they combine:
 
   Two profile settings shape a delegate whatever the lead's brief says.
   `prompt` is added to its instructions, so a role keeps its stance.
-  `read_only = true` takes away its file editor and tells it to change
-  nothing, for a reviewer or a tester that should report rather than quietly
+  `read_only = true` takes away its write and edit tools (it keeps `read`)
+  and tells it to change nothing, for a reviewer or a tester that should report rather than quietly
   fix. It keeps its shell, to run tests, which can still write files. So the
   harness compares the checkout before and after, and if the delegate changed
   anything, the lead's report ends with the files it changed. Nothing is

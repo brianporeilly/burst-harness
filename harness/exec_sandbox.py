@@ -15,14 +15,37 @@ import shlex
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from strands.sandbox.base import Sandbox
 from strands.sandbox.posix_shell import PosixShellSandbox, validate_env_keys
 from strands.sandbox.stream_process import _stream_process
 from strands.sandbox.types import ExecutionResult, StreamChunk
 from strands.types.tools import AgentTool
-from strands.vended_tools.file_editor import make_file_editor
-from strands.vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION
+from strands.vended_tools.edit import make_edit
+from strands.vended_tools.edit.edit import DEFAULT_EDIT_DESCRIPTION
+from strands.vended_tools.read import make_read
+from strands.vended_tools.read.read import DEFAULT_READ_DESCRIPTION
 from strands.vended_tools.shell import make_shell
 from strands.vended_tools.shell.types import SANDBOX_SHELL_DESCRIPTION
+from strands.vended_tools.write import make_write
+from strands.vended_tools.write.write import DEFAULT_WRITE_DESCRIPTION
+
+# What a read-only agent is not given (agents.py's read_only): it reads, and runs, but changes no files.
+WRITING = ("write", "edit")
+
+
+def file_tools(sandbox: Sandbox, *, root: str, where: str = "", prefix: str = "",
+               read_only: bool = False) -> list[AgentTool]:
+    """Strands' read, write and edit tools, bound to `sandbox`: read alone for a read-only agent.
+
+    They take absolute paths, so each description says where the repository is. read describes images
+    and documents in text rather than returning them as media, which a local model's server refuses.
+    """
+    said = f"{where} Paths are absolute: the repository is at {root}." if root else where
+    tools = [make_read(sandbox=sandbox, media=False, name=f"{prefix}read", description=DEFAULT_READ_DESCRIPTION + said)]
+    if not read_only:
+        tools += [make_write(sandbox=sandbox, name=f"{prefix}write", description=DEFAULT_WRITE_DESCRIPTION + said),
+                  make_edit(sandbox=sandbox, name=f"{prefix}edit", description=DEFAULT_EDIT_DESCRIPTION + said)]
+    return tools
 
 
 class CommandSandbox(PosixShellSandbox):
@@ -108,11 +131,7 @@ class CommandSandbox(PosixShellSandbox):
         cwd = f" Working directory: {self.working_dir}." if self.working_dir else ""
         where = f" Runs in {self.where}." if self.where else ""
         return [
-            make_file_editor(
-                sandbox=self,
-                name="sandbox_file_editor",
-                description=f"{DEFAULT_FILE_EDITOR_DESCRIPTION}{where}",
-            ),
+            *file_tools(self, root=self.working_dir or "", where=where, prefix="sandbox_"),
             make_shell(
                 sandbox=self,
                 name="sandbox_shell",
