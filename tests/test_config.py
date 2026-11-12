@@ -53,5 +53,6 @@ def test_quoted_numbers_and_flags_in_toml_are_read_as_their_type():
 def test_the_default_allowlist_lets_package_managers_fetch():
     allow = HarnessConfig().egress_allow
     for host in ("pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
-                 "crates.io", "index.crates.io", "static.crates.io"):
+                 "crates.io", "index.crates.io", "static.crates.io",
+                 "docs.rs", "static.docs.rs", "codeload.github.com"):  # Rust's docs, a tag's source archive
         assert host in allow

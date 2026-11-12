@@ -216,7 +216,8 @@ all, so such software fails.
 | `log` | every TCP connection | see what an agent reaches for before writing an allowlist |
 | `allowlist` | TLS to listed hosts on port 443 | hold it to that list |
 
-In `allowlist` the default list is `api.anthropic.com`, GitHub, PyPI, npm, and crates.io;
+In `allowlist` the default list is `api.anthropic.com`, GitHub (with its source archives,
+`codeload.github.com`), PyPI, npm, crates.io and docs.rs;
 `--egress-allow a.com,*.b.com` replaces it, and the repo's host (and
 `ANTHROPIC_BASE_URL`'s) are always added. A refusal is an immediate 403 with a
 JSON body naming the host, where the protocol allows one. Repos must be cloned
@@ -406,8 +407,13 @@ in-cluster ServiceAccount on its own.
 `dirname`, `ls`, `rm`, `cat`, `env`), a writable parent of `--repo`, and a process
 that keeps the pod up. `images/sandbox/Containerfile` is a Fedora image meeting
 it, plus Python, Node, a C toolchain, and Rust (with the `wasm32-unknown-unknown`
-standard library) for tasks. Claude Code's telemetry and error reports are off. No
-credentials, no `gh`.
+standard library, clippy and rustfmt) for tasks. For Rust it also has clang, lld
+and mold, `wasm-opt`, `just`, and `cargo-binstall` (for a project's own
+`wasm-bindgen-cli` version, from its release downloads). For Bevy and other
+games it has the system libraries their default features need (alsa, udev,
+wayland, xkbcommon, X11, Vulkan), plus Mesa's software drivers and Xvfb to run a
+windowed build headless. Claude Code's telemetry and error reports are off, and
+its commands may run for up to an hour. No credentials, no `gh`.
 `--egress-inject` additionally needs `burst-sandbox-trust` (see that script for
 what an image of your own has to provide).
 

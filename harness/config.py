@@ -206,6 +206,8 @@ class HarnessConfig:
         "pypi.org", "files.pythonhosted.org",
         "registry.npmjs.org",
         "crates.io", "index.crates.io", "static.crates.io",
+        # Rust's API documentation, and GitHub's source archives (a tag's tarball).
+        "docs.rs", "static.docs.rs", "codeload.github.com",
     )
     # MCP servers the agent connects to, as NAME=URL (remote ones, over HTTPS):
     # say, context7=https://mcp.context7.com/mcp. A key in the driver's

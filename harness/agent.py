@@ -52,6 +52,7 @@ How to work:
 - Keep it current with update_task_doc as you go. Done is outcomes, not narrative. Decisions is why. Open questions is what you need a human to settle.
 - The document is size-capped. If a write is rejected, summarise rather than append.
 - Use handoff_to_user to ask a question mid-task; you will be resumed with the answer.
+- The shell stops a command after 120 seconds unless you pass a longer `timeout` (in seconds): give a build or a test run as long as it needs, rather than backgrounding it.
 
 End every session in exactly one terminal state:
 - finish_with_pr — the work is reviewable.

@@ -8,7 +8,13 @@
 #
 # Toolchains: Python, Node, make and gcc, and Rust (rustc and cargo from Fedora,
 # with the wasm32-unknown-unknown standard library, so `cargo build --target
-# wasm32-unknown-unknown` needs no rustup).
+# wasm32-unknown-unknown` needs no rustup). For Rust, also clippy and rustfmt
+# (rustup is not reachable from a sandbox), clang, lld and mold, binaryen
+# (wasm-opt) and just, and cargo-binstall: `cargo binstall wasm-bindgen-cli
+# --version X` fetches the release matching a project's wasm-bindgen in
+# seconds. For Bevy and other games, the system libraries its default features
+# build against (alsa, udev, wayland, xkbcommon, X11, Vulkan), with Mesa's
+# software drivers and Xvfb, so a windowed build also runs headless.
 #
 # Also provides tmux (sessions that survive a dropped exec), Claude Code, and
 # opencode and zellij (`harness session`).
@@ -21,10 +27,16 @@ FROM registry.fedoraproject.org/fedora:44
 RUN dnf -y install --setopt=install_weak_deps=False \
       git-core coreutils findutils grep sed gawk diffutils patch which procps-ng \
       tar gzip unzip jq ripgrep tmux socat \
-      python3 python3-pip nodejs npm make gcc gcc-c++ \
-      rust cargo rust-std-static-wasm32-unknown-unknown \
+      python3 python3-pip nodejs npm make gcc gcc-c++ pkgconf-pkg-config \
+      rust cargo rust-std-static-wasm32-unknown-unknown clippy rustfmt \
+      clang lld mold binaryen just \
+      alsa-lib-devel systemd-devel wayland-devel libxkbcommon-devel \
+      libX11-devel libXcursor-devel libXi-devel libXrandr-devel vulkan-loader-devel \
+      mesa-dri-drivers mesa-vulkan-drivers xorg-x11-server-Xvfb \
  && dnf clean all \
- && cargo --version && test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown"
+ && cargo --version && test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown" \
+ && cargo clippy --version && cargo fmt --version && wasm-opt --version && just --version \
+ && pkg-config --exists alsa libudev wayland-client xkbcommon x11 vulkan
 
 # UID 1000 matches the SandboxTemplate's runAsUser; a real HOME avoids tools
 # writing config to / (the OpenHands UID/HOME class of bug).
@@ -32,12 +44,16 @@ RUN useradd --uid 1000 --create-home --home-dir /home/agent agent \
  && mkdir -p /workspace && chown agent:agent /workspace
 USER 1000
 # Claude Code sends no telemetry or error reports from here: the egress gateway
-# would refuse them anyway, and each refusal is noise in the run's log.
+# would refuse them anyway, and each refusal is noise in the run's log. Its
+# commands may run for up to an hour (30 minutes unless it asks for more): a
+# first Bevy build or test run takes longer than its defaults of 2 and 10.
 ENV HOME=/home/agent \
     SHELL=/bin/bash \
     DISABLE_AUTOUPDATER=1 \
     DISABLE_TELEMETRY=1 \
-    DISABLE_ERROR_REPORTING=1
+    DISABLE_ERROR_REPORTING=1 \
+    BASH_DEFAULT_TIMEOUT_MS=1800000 \
+    BASH_MAX_TIMEOUT_MS=3600000
 WORKDIR /workspace
 
 # Claude Code, for the harness's claude-code engine and for interactive use
@@ -77,6 +93,20 @@ RUN case "$(uname -m)" in \
  && tar xzf /tmp/zellij.tar.gz -C /usr/local/bin zellij && rm /tmp/zellij.tar.gz \
  && zellij --version \
  && rm -rf /home/agent/.cache /home/agent/.config /home/agent/.local
+# cargo-binstall, for installing a Rust tool's release build rather than
+# compiling it (wasm-bindgen-cli at the version a project pins, trunk, ...):
+# GitHub's release downloads are on the allowlist. Pinned and checked.
+ARG CARGO_BINSTALL_VERSION=1.26.1
+RUN case "$(uname -m)" in \
+      x86_64)  sum=43d379fef8cb450961a14ff113e7bce7b5e1e52db709c776d186f928d8a20a40 ;; \
+      aarch64) sum=243dbea9976495f0a5640f856283b5b3d934113381c9a1fba347c9e4b1fea142 ;; \
+      *) echo "no cargo-binstall build for $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSLo /tmp/cargo-binstall.tgz \
+      "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-$(uname -m)-unknown-linux-musl.tgz" \
+ && echo "$sum  /tmp/cargo-binstall.tgz" | sha256sum -c - \
+ && tar xzf /tmp/cargo-binstall.tgz -C /usr/local/bin cargo-binstall && rm /tmp/cargo-binstall.tgz \
+ && cargo-binstall -V
 USER 1000
 
 # Claude Code config is composed at container start by burst-sandbox-init from
