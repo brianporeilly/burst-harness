@@ -118,7 +118,14 @@ def for_task(cfg: HarnessConfig) -> list[str]:
     keys of its MCP servers."""
     from . import models  # asks this module for keys
 
-    return [*GIT, *MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg)]
+    return [*GIT, *forge_tokens(cfg), *MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg)]
+
+
+def forge_tokens(cfg: HarnessConfig) -> list[str]:
+    """The tokens of the forges besides GitHub (forge.py): a task's repo may be on any of them."""
+    from . import forge
+
+    return [var for found in forge.forges(cfg) if found.kind != "github" for var in found.token_vars]
 
 
 def for_job(cfg: HarnessConfig, secrets: Iterable[str], outputs: Iterable[str]) -> list[str]:

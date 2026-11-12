@@ -37,7 +37,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from . import credentials, git, mcp
+from . import credentials, forge, git, mcp
 from .agent_sandbox import (
     LABEL_MANAGED_BY,
     LABEL_TASK,
@@ -177,9 +177,12 @@ def inject_rules(cfg: HarnessConfig) -> list[dict[str, object]]:
         slug = git.repo_slug(cfg.repo_url)
         if not slug or not cfg.repo_url.startswith("https://"):
             raise ContainerError("--egress-inject git needs an https:// --repo-url to add the token to.")
-        if not (basic := git.basic_credential()):
+        if not (basic := git.basic_credential(cfg.repo_url, cfg)):
+            host = forge.for_url(cfg, cfg.repo_url)
             raise ContainerError(
-                f"--egress-inject git needs a token on the driver: one of {', '.join(git.TOKEN_ENV_VARS)}."
+                "--egress-inject git needs a token on the driver for the repo's host: "
+                + (f"one of {', '.join(host.token_vars)}." if host else
+                   f"{slug.partition('/')[0]} is not a forge the harness knows (github.com, or one in forges).")
             )
         host, _, path = slug.partition("/")
         # Only this repo's paths, with and without the .git suffix: the token

@@ -550,7 +550,7 @@ def launch(
             if git.is_repo(target):
                 notes.append(f"Using the checkout already in {repo}.")
             else:
-                auth = () if "git" in cfg.egress_inject else git.auth_args(cfg.repo_url)
+                auth = () if "git" in cfg.egress_inject else git.auth_args(cfg.repo_url, cfg)
                 notes.append(git.clone(target, cfg.repo_url, auth=auth))
         if claude:
             # burst-sandbox-init composed Claude Code's config at start; the MCP servers are added to it.

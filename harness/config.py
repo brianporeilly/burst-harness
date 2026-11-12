@@ -212,6 +212,11 @@ class HarnessConfig:
     # <NAME>_API_KEY is sent as a bearer token; <NAME>_BASIC_AUTH, as
     # user:secret, with Basic auth. See harness/mcp.py.
     mcp: tuple[str, ...] = ()
+    # Git hosts besides github.com, as NAME=https://host: each a Forgejo (or
+    # Gitea), say forgejo=https://forgejo.example.com. A repo there is cloned and
+    # pushed with the credential <NAME>_TOKEN, and its PRs opened and read
+    # through the forge's API. See harness/forge.py.
+    forges: tuple[str, ...] = ()
     kubectl: str = "kubectl"
     # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
     pool: str = ""
@@ -345,8 +350,10 @@ class HarnessConfig:
         if overrides:
             cfg = cfg._merge({k: v for k, v in overrides.items() if v is not None}, source="command line")
         from . import agents
+        from .forge import forges
         from .mcp import servers
         servers(cfg)  # a bad entry fails here, not halfway through starting a sandbox
+        forges(cfg)
         agents.check(cfg)
         return cfg
 

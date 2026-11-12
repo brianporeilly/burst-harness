@@ -341,6 +341,37 @@ the harness's git command while it runs inside the target, so a process the
 agent left running in the background could read it from `/proc`. Scope the token
 to the repos the harness works on.
 
+### Forgejo (`--forges NAME=URL`)
+
+github.com is built in. A Forgejo (or Gitea, which has the same API) is listed
+in `forges`, as `NAME=https://host`:
+
+```toml
+forges = ["forgejo=https://forgejo.example.com"]
+```
+
+Or `HARNESS_FORGES`, comma-separated. A repo on that host then works like one on
+GitHub, for tasks, sessions and jobs alike:
+
+- **The token** is the credential `<NAME>_TOKEN` (`FORGEJO_TOKEN`), in the
+  driver's environment or the orchestrator's Settings. It's sent the same way as
+  GitHub's (HTTP Basic on the harness's own git commands, or added by the gateway
+  with `--egress-inject git`), and only to its own host. A token needs
+  repository read and write, and issue read and write for pull requests.
+- **Pull requests** are opened through the forge's API from the driver
+  (`POST /api/v1/repos/OWNER/REPO/pulls`), and a task's PR is followed there to
+  see it merged (task rounds). Forgejo has no draft PRs: a draft's title
+  starts `WIP: `, which Forgejo shows as work in progress.
+- **The orchestrator** takes the repo's full URL in the task form and the API
+  (`owner/repo` alone still means GitHub). Its Settings list `FORGEJO_TOKEN`
+  among the credentials to set. A job repo on the forge (Settings, Job repos)
+  names the credential it's read with, which may be `FORGEJO_TOKEN` or a
+  read-only token of its own.
+
+Each token goes to its own forge alone. A repo on a host that is neither
+github.com nor listed gets no token, so it can be cloned only if it is public,
+and a PR can't be opened there.
+
 ### agent-sandbox (`--target agent-sandbox`)
 
 ```bash

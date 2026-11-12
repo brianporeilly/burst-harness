@@ -39,7 +39,7 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
             raise git.GitError(f"the {cfg.remote} remote is not a recognisable host/owner/repo URL")
         url = git.open_pr(
             repo=ctx.repo_slug, head=ctx.branch, title=title, body=body,
-            base=cfg.base_branch, draft=cfg.pr_draft,
+            base=cfg.base_branch, draft=cfg.pr_draft, cfg=cfg,
         )
     except git.GitError as err:
         # The work is committed and pushed; only the PR step failed. That is

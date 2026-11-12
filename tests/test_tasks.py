@@ -67,10 +67,10 @@ class FakeProcess:
 def harness(monkeypatch):
     fake = Harness()
     monkeypatch.setattr(tasks_module.subprocess, "Popen", fake)
-    monkeypatch.setattr(tasks_module.git, "default_branch", lambda url: "trunk")
+    monkeypatch.setattr(tasks_module.git, "default_branch", lambda url, cfg=None: "trunk")
     fake.prs = {}  # PR URL -> what GitHub says of it; "open" if not given
     fake.asked = []
-    monkeypatch.setattr(tasks_module.git, "pr_state", lambda url: fake.asked.append(url) or fake.prs.get(url, "open"))
+    monkeypatch.setattr(tasks_module.git, "pr_state", lambda url, cfg=None: fake.asked.append(url) or fake.prs.get(url, "open"))
     return fake
 
 
@@ -134,13 +134,30 @@ def test_without_a_base_branch_a_task_is_based_on_the_repos_default(tmp_path, ha
     made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "t"})
     assert made["base_branch"] == "trunk" and harness.argv()[harness.argv().index("--base-branch") + 1] == "trunk"
 
-    def unreadable(url):
+    def unreadable(url, cfg=None):
         raise git.GitError(f"cannot read {url}: fatal: could not read Username")
 
     monkeypatch.setattr(tasks_module.git, "default_branch", unreadable)
     with pytest.raises(TasksError, match="cannot read https://github.com/me/secret.git"):
         runner.create({"repo": "me/secret", "prompt": "x", "slug": "u"})
     assert len(harness.started) == 1
+
+
+def test_a_task_on_a_forge_is_read_and_followed_with_its_forge(tmp_path, harness, monkeypatch):
+    runner = _runner(tmp_path)
+    runner.base = replace(runner.base, forges=("forgejo=https://forgejo.example.com",))
+    asked = []
+    monkeypatch.setattr(tasks_module.git, "default_branch", lambda url, cfg=None: asked.append((url, cfg)) or "main")
+    seen = []
+    monkeypatch.setattr(tasks_module.git, "pr_state", lambda url, cfg=None: seen.append(cfg) or "merged")
+    made = runner.create({"repo": "https://forgejo.example.com/me/proj.git", "prompt": "x", "slug": "t"})
+    assert made["repo"] == "https://forgejo.example.com/me/proj.git"
+    assert asked[0][0] == made["repo"] and asked[0][1].forges == ("forgejo=https://forgejo.example.com",)
+    assert "--repo-url" in harness.argv() and made["repo"] in harness.argv()
+    harness.started[0][1].finish(0, state="pr", pr="https://forgejo.example.com/me/proj/pulls/3")
+    _settled(runner, "t", "pr")
+    runner.check_pr("t", 0)
+    assert seen and seen[-1].forges == runner.base.forges and runner.task("t")["state"] == "merged"
 
 
 def test_a_repos_default_branch_is_asked_of_the_remote(monkeypatch):
@@ -682,7 +699,7 @@ def test_trouble_asking_about_a_pr_leaves_the_task_as_it_was(tmp_path, harness, 
     harness.started[0][1].finish(0, state="pr", pr=PR1)
     _settled(runner, "t", "pr")
 
-    def refused(url):
+    def refused(url, cfg=None):
         raise git.GitError("gh pr view failed: HTTP 401")
 
     monkeypatch.setattr(tasks_module.git, "pr_state", refused)

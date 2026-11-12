@@ -42,11 +42,14 @@ def test_harness_token_wins(monkeypatch):
 
 
 def test_token_never_in_errors(monkeypatch, origin, tmp_path):
-    monkeypatch.setenv("HARNESS_GIT_TOKEN", "sekret-token")
+    from harness.config import HarnessConfig
+
+    monkeypatch.setenv("LOCAL_TOKEN", "sekret-token")  # a forge's token, sent to its host alone
     work = tmp_path / "work"
     sh_git(tmp_path, "clone", "-q", str(origin), str(work))
     target = LocalTarget(repo=str(work))
-    auth = git.auth_args("https://127.0.0.1:9/o/r")
+    auth = git.auth_args("https://127.0.0.1:9/o/r", HarnessConfig(forges=("local=https://127.0.0.1:9",)))
+    assert auth  # sent, so there is something to keep out of the error
     with pytest.raises(git.GitError) as err:
         git.run(target, "push", "https://127.0.0.1:9/o/r", "main", auth=auth)
     message = str(err.value)
