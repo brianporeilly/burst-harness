@@ -637,6 +637,15 @@ picks the delegates for new tasks; unset, they are the config file's
   `token_command` or `token_file`, which run a command or read a file on the
   driver. `/api/settings/profiles` is the API, which API tokens can't reach.
 
+**Tasks.** The Settings tab also says whether Claude Code adds its attribution
+to what a task commits and the PRs it opens. Unset, it is the orchestrator's
+`claude_attribution` (on unless configured otherwise). Set, every Claude Code
+burst that starts from then on, of a new task or a continued one, is given
+`HARNESS_CLAUDE_ATTRIBUTION`. It's kept in `task-settings.json` in the
+orchestrator's state directory. `/api/settings/tasks` is the API (`PUT` takes
+`{"claude_attribution": false}`, or `null` for the configuration's), which API
+tokens can't reach.
+
 **What each run is handed.** A task's burst and a job's run are subprocesses
 (or, with `--bursts job`, Kubernetes Jobs), and each gets the orchestrator's environment with every credential taken out
 and only its own put back (`harness/credentials.py`):
@@ -1201,6 +1210,10 @@ commit, push, PR, release — is the same.
   refused on the `local` target, and the orchestrator's tasks use it (they always
   run in a sandbox). The git rules are a hook, and still refuse what they refuse
   in every mode. The harness never answers a prompt for you.
+- **Attribution.** Claude Code adds its own attribution to the commits it makes
+  and the PRs it opens. `claude_attribution = false` (or
+  `HARNESS_CLAUDE_ATTRIBUTION=false`) leaves it out of both. The orchestrator's
+  Settings tab can set it for every task.
 - **Credentials.** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`),
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_BASE_URL` are copied
   from the driver's environment into a 0600 file in the target for the run and

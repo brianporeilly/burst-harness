@@ -86,10 +86,24 @@ def test_pause_outcome_commits_and_pushes(origin, tmp_path, monkeypatch, fake_cl
 
     (argv,) = fake_claude()
     assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
-    hooks = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    hooks = settings["hooks"]["PreToolUse"][0]
     assert hooks["matcher"] == "Bash" and "git_policy.py" in hooks["hooks"][0]["command"]
+    assert "attribution" not in settings  # Claude Code's own, unless claude_attribution is false
     assert "burst-harness" in argv[argv.index("--append-system-prompt") + 1]
     assert not any("dangerously" in a or "bypass" in a.lower() for a in argv)
+
+
+def test_claude_attribution_false_leaves_it_out_of_commits_and_prs(origin, tmp_path, monkeypatch, fake_claude):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "pause")
+    monkeypatch.setenv("HARNESS_CLAUDE_ATTRIBUTION", "false")  # as the orchestrator gives it to a burst
+    ctx = _ctx(origin, tmp_path)
+    assert ctx.cfg.claude_attribution is False
+    _start(ctx)
+    (argv,) = fake_claude()
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["attribution"] == {"commit": "", "pr": ""}
+    assert settings["hooks"]["PreToolUse"][0]["matcher"] == "Bash"  # the git rules stay
 
 
 def test_missing_outcome_is_asked_for(origin, tmp_path, monkeypatch, fake_claude):

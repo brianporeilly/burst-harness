@@ -42,6 +42,7 @@ from .launch import HANDOFF_PATH, LaunchError
 from .mcp_servers import McpServersError, McpServerStore
 from .sources import SourcesError
 from .profiles import ProfilesError, ProfileStore
+from .task_settings import TaskSettings, TaskSettingsError
 from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
 from .tasks import TaskRunner, TasksError
@@ -54,14 +55,14 @@ CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (LaunchError, SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
                JobsError, TasksError, TokenError, SettingsError, ProfilesError, McpServersError,
-               SourcesError)
+               SourcesError, TaskSettingsError)
 LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
                tokens: TokenStore | None = None, settings: CredentialStore | None = None,
                profiles: ProfileStore | None = None, mcp_servers: McpServerStore | None = None,
-               slack: SlackBot | None = None,
+               task_settings: TaskSettings | None = None, slack: SlackBot | None = None,
                hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
@@ -353,6 +354,28 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     def remove_profile(name: str) -> dict[str, str]:
         now = profile_store().remove(name)
         return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
+
+    # --- Settings: for every task (task_settings.py) ---
+
+    def task_settings_store() -> TaskSettings:
+        if task_settings is None:
+            raise TaskSettingsError("Settings are not on in this orchestrator.")
+        return task_settings
+
+    @app.get("/api/settings/tasks")
+    def list_task_settings() -> dict[str, Any]:
+        return task_settings_store().listing()
+
+    @app.put("/api/settings/tasks")
+    async def set_task_settings(request: Request) -> dict[str, str]:
+        raw = await body(request)
+        if "claude_attribution" not in raw:
+            raise TaskSettingsError("Give claude_attribution: true, false, or null for the configuration's.")
+        task_settings_store().set_attribution(raw["claude_attribution"], user=request.state.user)
+        now = task_settings_store().listing()
+        return {"message": "Claude Code " + ("adds" if now["claude_attribution"] else "leaves out")
+                + " its attribution in tasks' commits and PRs from now on"
+                + (" (the configuration's)." if now["claude_attribution_source"] == "configuration" else ".")}
 
     # --- Settings: MCP servers saved for sessions and tasks to choose from (never with a token) ---
 

@@ -69,6 +69,7 @@ from .jobs import OUTPUT, _iso, _tail, json_file
 from .launch import REPO, Launched, LaunchError, Subprocess, granted
 from .mcp_servers import McpServersError, McpServerStore
 from .profiles import ProfilesError, ProfileStore, check, names_given
+from .task_settings import TaskSettings
 from .servers import ModelServers, models_for, servers_for
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
@@ -121,10 +122,12 @@ class TaskRunner:
 
     def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
                  launcher: Any = None, records: Path | None = None, profiles: ProfileStore | None = None,
-                 servers: ModelServers | None = None, mcp_servers: McpServerStore | None = None) -> None:
+                 servers: ModelServers | None = None, mcp_servers: McpServerStore | None = None,
+                 settings: TaskSettings | None = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
         self.profiles = profiles  # set in Settings (profiles.py); None: the configuration's alone
         self.mcp_servers = mcp_servers  # saved in Settings (mcp_servers.py); None: the configuration's alone
+        self.settings = settings  # set in Settings (task_settings.py); None: the configuration's alone
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
         # The records, the orchestrator's alone; the bursts' output, where the bursts write it.
         self.outputs = base.resolve_state_dir("tasks")
@@ -518,7 +521,8 @@ class TaskRunner:
         # Its MCP servers, even none: over the orchestrator's HARNESS_MCP, which the burst would otherwise inherit.
         servers = {"HARNESS_MCP": ",".join(record["mcp"])} if record.get("mcp") is not None else {}
         return {f"HARNESS_{name.upper()}": str(value).lower() if isinstance(value, bool) else str(value)
-                for name, value in chosen.items()} | self._profile_env(record) | servers
+                for name, value in chosen.items()} | self._profile_env(record) | servers \
+            | (self.settings.environment() if self.settings is not None else {})
 
     def _profile_env(self, record: dict[str, Any]) -> dict[str, str]:
         """The profiles, and who this task's lead may hand work to, as the burst's HARNESS_AGENTS and
