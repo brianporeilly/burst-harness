@@ -403,9 +403,9 @@ def test_pause_and_resume_over_the_api(tmp_path, monkeypatch):
     assert test.post("/api/jobs/adhoc/pause", headers=CHANGE).status_code == 400
 
 
-def test_without_job_directories_the_jobs_api_says_how_to_add_them(client):
-    assert client.get("/api/jobs").json() == {"directories": [], "jobs": []}
-    assert "--jobs" in client.get("/api/jobs/x").json()["error"]
+def test_without_jobs_the_jobs_api_says_they_are_not_on(client):
+    assert client.get("/api/jobs").json() == {"directories": [], "sources": [], "jobs": []}
+    assert "not on" in client.get("/api/jobs/x").json()["error"]
 
 
 # --- sessions on a cluster ---

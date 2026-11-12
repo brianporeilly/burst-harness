@@ -2,10 +2,11 @@
 
 A job is a directory with job.toml and prompt.md (harness/job.py). The
 orchestrator is given directories to look in (`--jobs DIR`): one that is a job,
-or one whose subdirectories are, such as a repo of jobs. A run is `harness job
-run DIR`, so it is exactly what the command line would do, with the
-credentials the job is granted and the run's output kept beside the run's
-record. Runs started anywhere else are listed too: the record is the
+or one whose subdirectories are, such as a repo of jobs, and the git repos of
+jobs it keeps a copy of (sources.py), whose jobs run from a copy of the commit
+they were at. A run is `harness job run DIR`, so it is exactly what the
+command line would do, with the credentials the job is granted and the run's
+output kept beside the run's record. Runs started anywhere else are listed too: the record is the
 harness's, not the orchestrator's.
 
 It is started as a task's burst is (launch.py): a subprocess, or on a cluster
@@ -56,6 +57,7 @@ from harness import credentials, cron, job, models, plans
 
 from .launch import Launched, LaunchError, Subprocess, granted
 from .servers import ModelServers, models_for, servers_for
+from .sources import JobSources
 
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 OUTPUT = "output.log"
@@ -80,8 +82,10 @@ class JobRunner:
 
     def __init__(self, directories: list[Path], *, schedule: bool = False, zone: tzinfo = UTC,
                  catch_up: timedelta = timedelta(hours=1), start_paused: bool = False, launcher: Any = None,
-                 servers: ModelServers | None = None) -> None:
+                 servers: ModelServers | None = None, sources: JobSources | None = None) -> None:
         self.directories = [Path(d).expanduser().resolve() for d in directories]
+        self.sources = sources  # git repos of jobs (sources.py), after the directories
+        self.clashes: dict[str, list[str]] = {}  # name -> where else a job of that name was found, left out
         self.lock = threading.Lock()
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
         # name -> (run id, its process or Job) for runs this orchestrator started or follows, not yet ended.
@@ -97,13 +101,24 @@ class JobRunner:
 
     def discover(self) -> dict[str, Path]:
         found: dict[str, Path] = {}
-        for directory in self.directories:
+        clashes: dict[str, list[str]] = {}
+        roots = [*self.directories, *(path for _, path in (self.sources.directories() if self.sources else []))]
+        for directory in roots:
             candidates = [directory] if (directory / job.JOB_FILE).is_file() else \
                 sorted(d for d in directory.iterdir() if d.is_dir() and (d / job.JOB_FILE).is_file()) \
                 if directory.is_dir() else []
             for path in candidates:
-                found.setdefault(path.name, path)  # the first directory given wins a clash
+                if path.name in found:  # the first wins: the directories given, then the sources in order
+                    clashes.setdefault(path.name, []).append(self._where(path))
+                else:
+                    found[path.name] = path
+        self.clashes = clashes
         return found
+
+    def _where(self, path: Path) -> str:
+        """Where a job's directory is from, for saying so: a source and commit, or the path."""
+        origin = self.sources.origin(path) if self.sources else None
+        return f"source {origin[0]} at {origin[1][:12]}" if origin else str(path)
 
     def _path(self, name: str) -> Path:
         if not NAME.fullmatch(name) or (path := self.discover().get(name)) is None:
@@ -130,6 +145,10 @@ class JobRunner:
         spec, cfg, error = self._loaded(path)
         item: dict[str, Any] = {"name": name, "path": str(path), "error": error, "running": name in self.running,
                                 "waiting": self.waiting.get(name, "")}
+        if origin := self.sources.origin(path) if self.sources else None:
+            item["source"] = {"name": origin[0], "commit": origin[1]}
+        if also := self.clashes.get(name):
+            item["also_in"] = also  # jobs of the same name, left out: this one is used
         if spec is None:
             return item
         runs = job.list_runs(cfg, name, limit=20)
@@ -260,13 +279,17 @@ class JobRunner:
                     raise JobsError(str(err)) from err
             directory = job.runs_dir(cfg, name) / run_id
             directory.mkdir(parents=True, exist_ok=True)
-            if self.launcher.kind == "job":
-                path = _copy(path, directory / path.name)  # a Job's pod has the state directory, not ours
+            origin = self.sources.origin(path) if self.sources else None
+            if self.launcher.kind == "job" or origin:
+                # A Job's pod has the state directory, not ours; and a source's job is run from the commit it
+                # was at when the run started, whatever the source syncs to while it runs.
+                path = _copy(path, directory / path.name)
             # Only what this job is granted, not every credential the orchestrator holds.
             names = credentials.for_job(cfg, spec.secret_envs, spec.outputs)
             env = credentials.for_run([], {
                 job.RUN_ID_ENV: run_id, "PYTHONUNBUFFERED": "1",
                 job.TRIGGER_ENV: "schedule" if scheduled_for else "approval" if applying else "manual",
+                **({job.SOURCE_ENV: f"{origin[0]}@{origin[1]}"} if origin else {}),
                 **({job.SCHEDULED_FOR_ENV: _iso(scheduled_for)} if scheduled_for else {})})
             try:
                 how = ["apply", str(path), "--plan", applying] if applying else ["run", str(path)]

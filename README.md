@@ -663,6 +663,36 @@ subprocess, or a Kubernetes Job with `--bursts job`), and shows every run: its r
 the hosts its gateway let through or refused. Runs started from the command
 line are there too.
 
+**Jobs from a git repo.** The orchestrator can also keep its own copy of git
+repos of jobs. Add one in the Settings tab (Job repos), so a private repo's
+address stays out of your deployment's manifests. Or add one in its
+environment:
+
+```bash
+ORCHESTRATOR_JOB_REPOS="https://github.com/you/jobs.git#main:jobs" python -m orchestrator
+```
+
+- **Format:** each entry is `[NAME=]URL[#BRANCH[:FOLDER]]`, separated by spaces
+  or new lines. NAME is the repo's name unless given, BRANCH is its default
+  branch unless given, and FOLDER is the repo's top unless given.
+- **Credential:** a private repo is read with `JOBS_GIT_TOKEN`, set in Settings
+  or the environment, or with another credential the repo's settings name. Use
+  a token that can only read the repo: on GitHub, a fine-grained token with
+  read access to that repo's contents. A public repo needs none.
+- **Syncing:** each repo is fetched into the orchestrator's state directory
+  every `ORCHESTRATOR_JOB_SYNC` seconds (default 300), and whenever you press
+  Sync. Nothing is ever written back to it.
+- **One commit at a time:** a new commit is unpacked into a folder of its own,
+  and the jobs switch to it in one step. A run copies its job from that commit
+  into its record (`"source": {"name", "commit"}`), so it isn't affected by a
+  sync while it runs.
+- **Names must be unique:** a job's name is its folder's name. The `--jobs`
+  directories come first, then the repos in order. A job whose name is already
+  taken is left out, and the Jobs tab and the repo's row say so.
+
+`--jobs` directories still work as before, alongside repos, as on a cluster
+where jobs come from ConfigMaps.
+
 **Schedules.** With `--schedule` (or `ORCHESTRATOR_SCHEDULE=1`), a job whose
 `[job] trigger` is a cron schedule (`"0 7 * * 1-5"`) is also run when it's due:
 

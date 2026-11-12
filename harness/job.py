@@ -793,6 +793,8 @@ RUN_ID_ENV = "HARNESS_JOB_RUN_ID"
 # And what started it: "schedule" (with the time it was due, as UTC ISO), or "manual" if unset.
 TRIGGER_ENV = "HARNESS_JOB_TRIGGER"
 SCHEDULED_FOR_ENV = "HARNESS_JOB_SCHEDULED_FOR"
+# Set by the orchestrator for a job from a git source of jobs: SOURCE@COMMIT, kept in the run's record.
+SOURCE_ENV = "HARNESS_JOB_SOURCE"
 
 
 def runs_dir(cfg: HarnessConfig, name: str, root: str = "jobs") -> Path:
@@ -875,6 +877,8 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         "mode": spec.mode,
         "pid": os.getpid(), "trigger": os.environ.get(TRIGGER_ENV) or "manual",
         **({"scheduled_for": due} if (due := os.environ.get(SCHEDULED_FOR_ENV)) else {}),
+        **({"source": dict(zip(("name", "commit"), origin.split("@", 1)))}
+           if "@" in (origin := os.environ.get(SOURCE_ENV, "")) else {}),
         **({"asked": spec.asked, "turn": spec.turn} if spec.asking else {}),
     }
     _write_run(record_dir, record)

@@ -15,6 +15,10 @@ defaults (model, images, egress_allow).
 job's directory, or one whose subdirectories are jobs. Their runs get the same
 environment, so a job's secrets (GITHUB_TOKEN, ...) are set here too.
 
+Jobs also come from git repos (sources.py): ORCHESTRATOR_JOB_REPOS, entries
+of [NAME=]URL[#BRANCH[:FOLDER]], and those saved in the Settings tab, read with
+JOBS_GIT_TOKEN and synced every ORCHESTRATOR_JOB_SYNC seconds (default 300).
+
 --schedule (or ORCHESTRATOR_SCHEDULE=1) also runs each job whose trigger is a
 cron schedule when it is due, in --timezone (ORCHESTRATOR_TIMEZONE; by default
 this machine's). A time missed by up to --catch-up (ORCHESTRATOR_CATCH_UP,
@@ -80,6 +84,7 @@ from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
 from .servers import ModelServers
+from .sources import ENV as SOURCES_ENV, INTERVAL as SYNC_INTERVAL, JobSources, SourcesError, parse as parse_sources
 from .tokens import TokenStore
 from .version import line as version_line
 
@@ -129,7 +134,7 @@ def main() -> None:
     base = HarnessConfig.load(None, {})
     directories = [*args.jobs, *filter(None, os.environ.get("ORCHESTRATOR_JOBS", "").split(os.pathsep))]
     launcher = None
-    if args.bursts == "job" and (args.tasks or directories):
+    if args.bursts == "job":
         try:
             launcher = Jobs.from_env(base, args.port)
         except LaunchError as err:
@@ -143,10 +148,17 @@ def main() -> None:
         parser.error(str(err))
     profiles = ProfileStore(state / "profiles.json", base)
     mcp_servers = McpServerStore(state / "mcp.json", base)
+    try:
+        sources = JobSources(state / "sources", state / "job-sources.json",
+                             parse_sources(os.environ.get(SOURCES_ENV, "")),
+                             interval=int(os.environ.get("ORCHESTRATOR_JOB_SYNC") or SYNC_INTERVAL))
+    except (SourcesError, ValueError) as err:
+        parser.error(f"{SOURCES_ENV} / ORCHESTRATOR_JOB_SYNC: {err}")
     # Our own llama.cpp servers, one run at a time across jobs and tasks (servers.py).
     servers = ModelServers(wait_for_idle=args.wait_for_idle_servers)
+    # Always on: a repo of jobs can be added in Settings at any time.
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
-                     start_paused=args.start_paused, launcher=launcher, servers=servers) if directories else None
+                     start_paused=args.start_paused, launcher=launcher, servers=servers, sources=sources)
     backend = ClusterBackend(base) if base.target == "agent-sandbox" else PodmanBackend(base)
     where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
@@ -160,8 +172,10 @@ def main() -> None:
     print(f"Credentials set in Settings: {state / 'credentials.enc'}, {key_note}")
     print("llama.cpp servers: one run at a time" + (", once idle" if servers.wait_for_idle else ""))
     if jobs:
-        print(f"Jobs from {', '.join(str(d) for d in jobs.directories)}: {', '.join(jobs.discover()) or 'none found'}"
-              + (f", runs {launcher.describe()}" if launcher else ""))
+        froms = [*(str(d) for d in jobs.directories), *(f"repo {name}" for name in sources.sources())]
+        print(f"Jobs from {', '.join(froms) or 'nowhere yet (Settings, Job repos)'}: "
+              f"{', '.join(jobs.discover()) or 'none found'}" + (f", runs {launcher.describe()}" if launcher else ""))
+        sources.start()
         if jobs.schedule:
             print(f"Scheduled in {zone}, missed times run up to {args.catch_up} late"
                   + (", new jobs paused" if args.start_paused else ""))

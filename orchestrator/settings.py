@@ -49,6 +49,7 @@ USES = {
     "SLACK_APP_TOKEN": "The Slack bot's connection (Socket Mode, xapp-...), with SLACK_BOT_TOKEN.",
     "SLACK_BOT_TOKEN": "The Slack bot's messages (xoxb-...), and jobs that post to Slack.",
     "SLACK_WEBHOOK_URL": "Jobs that post to Slack through a webhook.",
+    "JOBS_GIT_TOKEN": "Reads the git repos of jobs (Settings, Job repos): a token that can only read them.",
 }
 
 

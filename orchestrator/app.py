@@ -40,6 +40,7 @@ from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
 from .launch import HANDOFF_PATH, LaunchError
 from .mcp_servers import McpServersError, McpServerStore
+from .sources import SourcesError
 from .profiles import ProfilesError, ProfileStore
 from .settings import CredentialStore, SettingsError
 from .slack import SlackBot
@@ -52,7 +53,8 @@ LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (LaunchError, SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
-               JobsError, TasksError, TokenError, SettingsError, ProfilesError, McpServersError)
+               JobsError, TasksError, TokenError, SettingsError, ProfilesError, McpServersError,
+               SourcesError)
 LOOPBACK = ("127.0.0.1", "::1")
 
 
@@ -168,14 +170,15 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
 
     def runner() -> JobRunner:
         if jobs is None:
-            raise JobsError("No job directories: start the orchestrator with --jobs DIR.")
+            raise JobsError("Jobs are not on in this orchestrator.")
         return jobs
 
     @app.get("/api/jobs")
     def list_jobs() -> dict[str, Any]:
         if jobs is None:
-            return {"directories": [], "jobs": []}
+            return {"directories": [], "sources": [], "jobs": []}
         return {"directories": [str(d) for d in jobs.directories], "jobs": jobs.jobs(),
+                "sources": list(jobs.sources.sources()) if jobs.sources else [],
                 "schedule": {"on": jobs.schedule, "timezone": str(jobs.zone)}}
 
     @app.get("/api/jobs/{name}")
@@ -310,7 +313,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         return [*(name for name in credentials.GIT if os.environ.get(name)),
                 *(mcp.key_var(name) for name in (mcp.servers(base) if base else {})),
                 *(mcp.key_var(name) for name in (mcp_servers.servers() if mcp_servers else {})),
-                *(jobs.secret_names() if jobs else [])]
+                *(jobs.secret_names() if jobs else []),
+                *(s.token for s in (jobs.sources.sources().values() if jobs and jobs.sources else []))]
 
     @app.get("/api/settings/credentials")
     def list_credentials() -> list[dict[str, Any]]:
@@ -371,6 +375,44 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     def remove_mcp(name: str) -> dict[str, str]:
         now = mcp_store().remove(name)
         return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
+
+    # --- Settings: git repos of jobs (sources.py; never with a token: the token is a credential) ---
+
+    def source_store() -> Any:
+        if jobs is None or jobs.sources is None:
+            raise SourcesError("Job repos are not on in this orchestrator.")
+        return jobs.sources
+
+    def source_message(name: str, status: dict[str, Any]) -> str:
+        if status.get("error"):
+            return f"Saved {name}, but it could not be synced: {status['error']}"
+        listed = next((r for r in source_store().listing(jobs.clashes, jobs.discover())["sources"]
+                       if r["name"] == name), {})
+        found = ", ".join(listed.get("jobs") or []) or "no jobs"
+        return f"{name} is at {listed.get('commit', '')[:12]}: {found}."
+
+    @app.get("/api/settings/job-sources")
+    def list_sources() -> dict[str, Any]:
+        found = jobs.discover() if jobs else {}
+        return source_store().listing(jobs.clashes if jobs else {}, found)
+
+    @app.put("/api/settings/job-sources/{name}")
+    async def set_source(name: str, request: Request) -> dict[str, str]:
+        source_store().set(name, await body(request), user=request.state.user)
+        status = (await run_in_threadpool(source_store().sync, name))[name]
+        return {"message": source_message(name, status)}
+
+    @app.post("/api/settings/job-sources/{name}/sync")
+    async def sync_source(name: str) -> dict[str, str]:
+        status = (await run_in_threadpool(source_store().sync, name))[name]
+        if status.get("error"):
+            raise SourcesError(f"{name} could not be synced: {status['error']}")
+        return {"message": source_message(name, status)}
+
+    @app.delete("/api/settings/job-sources/{name}")
+    def remove_source(name: str) -> dict[str, str]:
+        source_store().remove(name)
+        return {"message": f"Removed {name}: its jobs are gone from the list. Their runs are kept."}
 
     @app.put("/api/settings/delegate_to")
     async def set_delegates(request: Request) -> dict[str, str]:

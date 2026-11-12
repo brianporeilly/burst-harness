@@ -215,6 +215,26 @@
     </form>
   </section>
   <section class="panel">
+    <h2>Job repos</h2>
+    <p class="muted">Git repos of jobs, beside the orchestrator's job directories. Each is synced every few
+      minutes, or now with Sync, and its jobs are read from one commit at a time; a run records the commit it ran
+      from. Nothing is written back. A private repo is read with the credential named (JOBS_GIT_TOKEN unless you
+      name another): a token that can only read it. Those from the configuration (ORCHESTRATOR_JOB_REPOS) are
+      changed there.</p>
+    <div id="job-sources"><p class="muted">Loading...</p></div>
+    <form id="source-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="40" pattern="[a-z0-9][a-z0-9\-]{0,39}" placeholder="jobs"></label>
+        <label>Repo URL <input type="text" name="url" required maxlength="500" placeholder="https://github.com/you/jobs.git"></label>
+        <label>Branch <input type="text" name="branch" maxlength="200" placeholder="its default branch"></label>
+        <label>Folder <input type="text" name="path" maxlength="200" placeholder="the repo's top"></label>
+        <label>Credential <input type="text" name="token" maxlength="64" pattern="[A-Z][A-Z0-9_]{1,63}" placeholder="JOBS_GIT_TOKEN"></label>
+      </div>
+      <div class="row"><button class="primary" type="submit">Save and sync</button><span class="error" id="source-form-error"></span>
+        <span class="muted" id="source-form-note"></span></div>
+    </form>
+  </section>
+  <section class="panel">
     <h2>Add or change a profile</h2>
     <form id="profile-form" autocomplete="off">
       <div class="grid2">
@@ -580,12 +600,13 @@ async function refreshJobs() {
   try { data = await api("/api/jobs"); } catch { return; }
   jobs = data.jobs;
   const list = document.getElementById("jobs");
-  if (!data.directories.length) {
-    list.replaceChildren(el("p", { class: "muted" }, "No job directories. Start the orchestrator with ",
-      el("code", {}, "--jobs DIR"), ": a job's directory, or a repo of them."));
+  if (!data.directories.length && !(data.sources || []).length) {
+    list.replaceChildren(el("p", { class: "muted" }, "No jobs yet. Add a git repo of jobs in Settings (Job repos), or start the orchestrator with ",
+      el("code", {}, "--jobs DIR"), ": a job's directory, or a folder of them."));
     return;
   }
-  if (!jobs.length) { list.replaceChildren(el("p", { class: "muted" }, `No jobs in ${data.directories.join(", ")}.`)); return; }
+  if (!jobs.length) { list.replaceChildren(el("p", { class: "muted" },
+    `No jobs in ${[...data.directories, ...(data.sources || []).map((s) => `repo ${s}`)].join(", ")}.`)); return; }
   list.replaceChildren(...jobs.map((j) => el("div", {
       class: "session" + (j.name === selectedJob ? " selected" : ""), onclick: () => selectJob(j.name) },
     el("div", { class: "row spread" }, el("span", { class: "name" }, j.name),
@@ -595,6 +616,7 @@ async function refreshJobs() {
       j.last_success ? `last good ${when(j.last_success.started)}` : "no good run yet",
     ].filter(Boolean).join(" · ")),
     j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null,
+    j.source ? el("div", { class: "muted" }, `from repo ${j.source.name} at ${j.source.commit.slice(0, 7)}`) : null,
     j.waiting ? el("div", { class: "muted", title: j.waiting }, `Due, waiting: ${j.waiting}`) : null,
     j.plan ? el("div", { class: "chip warn" }, j.plan.state === "applying" ? "applying its plan"
       : j.plan.undecided ? `plan: ${j.plan.undecided} of ${j.plan.items} to decide` : "plan decided, not applied") : null)));
@@ -646,6 +668,9 @@ async function renderJob() {
     el("div", { class: "row spread" }, el("h2", {}, j.name), el("div", { class: "row" }, pauseButton, runButton)),
     j.error ? el("div", { class: "error" }, j.error) : null,
     j.schedule ? el("p", { class: "muted" }, `Schedule: cron ${j.trigger}, ${scheduleText(j.schedule)}.`) : null,
+    j.source ? el("p", { class: "muted" }, "From repo ", el("code", {}, j.source.name), " at ",
+      el("code", { title: j.source.commit }, j.source.commit.slice(0, 12)), ".") : null,
+    j.also_in ? el("p", { class: "error" }, `Another job named ${j.name} is left out: ${j.also_in.join("; ")}. Rename one.`) : null,
     j.missing && j.missing.length ? el("p", { class: "error" },
       `The orchestrator's environment is missing ${j.missing.join(", ")}. Set it where the orchestrator is started.`) : null,
     j.describe ? el("pre", { class: "text" }, j.describe) : null,
@@ -715,6 +740,8 @@ async function renderRun(name, id) {
     r.reason ? el("p", { class: "error" }, r.reason) : null,
     r.delivery_errors ? el("p", { class: "error" }, `Delivery: ${r.delivery_errors.join("; ")}`) : null,
     r.memory ? el("p", { class: r.memory.not_kept ? "error" : "muted" }, memoryLine(r.memory)) : null,
+    r.source ? el("p", { class: "muted" }, "Ran from repo ", el("code", {}, r.source.name), " at ",
+      el("code", { title: r.source.commit }, (r.source.commit || "").slice(0, 12)), ".") : null,
     r.report != null ? el("pre", { class: "text" }, r.report)
       : el("p", { class: "muted" }, r.state === "running" || r.state === "starting" ? "Running..." : "No report."),
     hosts.length || egress.refused_count ? el("div", {},
@@ -1163,6 +1190,65 @@ mcpForm.onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
+// --- job repos (Settings) ---
+
+const sourceForm = document.getElementById("source-form");
+
+async function refreshSources() {
+  const box = document.getElementById("job-sources");
+  let found;
+  try { found = await api("/api/settings/job-sources"); } catch (err) {
+    box.replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const act = async (name, path, method, what) => {
+    try { const done = await api(`/api/settings/job-sources/${encodeURIComponent(name)}${path}`, { method });
+      if (done && done.message) document.getElementById("source-form-note").textContent = done.message; }
+    catch (err) { alert(`${what} ${name}: ${err.message}`); }
+    refreshSources();
+  };
+  box.replaceChildren(found.sources.length ? el("table", {},
+    el("tr", {}, el("th", {}, "Repo"), el("th", {}, "At"), el("th", {}, "Jobs"), el("th", {}, "Credential"), el("th", {}, "")),
+    ...found.sources.map((s) => el("tr", {},
+      el("td", {}, el("code", {}, s.name), el("div", { class: "muted" }, s.url),
+        el("div", { class: "muted" }, [s.branch || "default branch", s.path ? `folder ${s.path}` : "",
+          s.origin === "settings" ? "saved here" : "from the configuration"].filter(Boolean).join(" · "))),
+      el("td", {}, s.commit ? el("code", { title: s.commit }, s.commit.slice(0, 12)) : el("span", { class: "muted" }, "not synced"),
+        s.synced ? el("div", { class: "muted" }, `synced ${when(s.synced)}`) : null,
+        s.error ? el("div", { class: "error" }, s.error) : null),
+      el("td", {}, s.jobs.length ? s.jobs.join(", ") : el("span", { class: "muted" }, "none"),
+        s.left_out.length ? el("div", { class: "error" }, `Left out, a job of the same name is found first: ${s.left_out.join(", ")}`) : null),
+      el("td", {}, el("code", {}, s.token), s.token_set ? " ✓" : el("span", { class: "muted" }, " not set (a public repo needs none)")),
+      el("td", {}, el("div", { class: "row" },
+        el("button", { onclick: () => act(s.name, "/sync", "POST", "Sync") }, "Sync"),
+        s.origin === "settings" ? el("button", { onclick: () => {
+          for (const k of ["name", "url", "branch", "path"]) sourceForm[k].value = s[k];
+          sourceForm.token.value = s.token === "JOBS_GIT_TOKEN" ? "" : s.token;
+          sourceForm.scrollIntoView({ behavior: "smooth" });
+        } }, "Edit") : null,
+        s.origin === "settings" ? el("button", { class: "danger", onclick: () => {
+          if (confirm(`Remove ${s.name}? Its jobs leave the list; their runs are kept.`)) act(s.name, "", "DELETE", "Remove");
+        } }, "Remove") : null)))))
+    : el("p", { class: "muted" }, "No job repos yet."));
+}
+
+sourceForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("source-form-error"), note = document.getElementById("source-form-note");
+  error.textContent = ""; note.textContent = "Syncing...";
+  const name = sourceForm.name.value.trim();
+  try {
+    const done = await api(`/api/settings/job-sources/${encodeURIComponent(name)}`, { method: "PUT",
+      body: JSON.stringify({ url: sourceForm.url.value.trim(), branch: sourceForm.branch.value.trim(),
+        path: sourceForm.path.value.trim(), token: sourceForm.token.value.trim() }) });
+    note.textContent = done.message;
+    sourceForm.reset();
+  } catch (err) { error.textContent = err.message; note.textContent = ""; }
+  refreshSources();
+};
+
 // --- profiles: the task form's picker, and Settings ---
 
 const checkboxes = (names, chosen) => names.map((name) => el("label", { class: "inline" },
@@ -1301,7 +1387,7 @@ document.getElementById("token-form").onsubmit = async (event) => {
 };
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
-  settings: () => { refreshCredentials(); refreshMcp(); refreshProfiles(); refreshTokens(); } };
+  settings: () => { refreshCredentials(); refreshMcp(); refreshSources(); refreshProfiles(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;
