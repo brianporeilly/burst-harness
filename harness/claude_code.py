@@ -77,6 +77,8 @@ CREDENTIAL_VARS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AU
 # A provider plugin's target endpoint: its token, which Claude Code reads with apiKeyHelper this often (and
 # after a 401), and the longest the driver goes without asking the plugin for it.
 TOKEN_FILE = f"{REMOTE_DIR}/model-token"
+# The MCP servers with their keys' headers, when no gateway adds them (mcp.direct()): a file, never argv.
+MCP_FILE = "mcp.json"
 HELPER_TTL_MS = 5 * 60 * 1000
 REFRESH_MAX_SECONDS = 60
 
@@ -160,6 +162,8 @@ class ClaudeCodeEngine:
     keeper: TokenKeeper | None = None
     # delegate(to, task) for cfg.delegate_to's profiles, from prepare(); None without them.
     delegate: Callable[[str, str], str] | None = None
+    # The MCP servers' config with their keys, when no gateway adds them (prepare()); "" otherwise.
+    mcp_file: str = ""
 
     def __init__(self, ctx: HarnessContext) -> None:
         if not isinstance(ctx.target, SubprocessTarget):
@@ -190,6 +194,12 @@ class ClaudeCodeEngine:
                 "(the burst-harness-sandbox image has both)."
             )
         self._exclude_outcome()
+        mcp.check_keys(cfg)
+        if mcp.direct(cfg):
+            # No gateway to add the servers' keys: Claude Code sends them, from a file only its user can read.
+            self.mcp_file = f"{REMOTE_DIR}/{MCP_FILE}" if self.remote else str(self.state_dir() / MCP_FILE)
+            self._upload(self.mcp_file, json.dumps(mcp.claude(cfg)))
+            print(f"MCP keys: no gateway to add them, so Claude Code sends them itself ({self.mcp_file}, for the run).")
         if cfg.delegate_to:
             from .agent import delegate_function
             from .claude_lead import SERVER
@@ -281,6 +291,9 @@ class ClaudeCodeEngine:
         if self.has_env_file:
             self.target.run_shell(f"rm -f {shlex.quote(ENV_FILE)}", check=False, cwd="/")
             self.has_env_file = False
+        if self.mcp_file:
+            self.target.run_shell(f"rm -f {shlex.quote(self.mcp_file)}", check=False, cwd="/")
+            self.mcp_file = ""
 
     def state_dir(self) -> Path:
         """The driver's state for this run: where a delegate keeps what it offloads, for a local target."""
@@ -322,8 +335,10 @@ class ClaudeCodeEngine:
         # its own default, whatever the harness's settings say.
         model = [] if any(arg == "--model" or arg.startswith("--model=") for arg in yours) else ["--model", cfg.model_id]
         # The MCP servers you configured, with their tools allowed: you chose them, and
-        # nobody is there to approve each call.
-        configured, allowed = (mcp.claude(cfg)["mcpServers"], mcp.claude_tools(cfg)) if mcp.servers(cfg) else ({}, [])
+        # nobody is there to approve each call. On the command line without keys, or from
+        # the file that has them (prepare()).
+        configured = {} if self.mcp_file else mcp.claude(cfg, keys=False)["mcpServers"]
+        allowed = mcp.claude_tools(cfg)
         lead = ""
         if self.delegate is not None:
             from .agent import LEAD_PROMPT
@@ -332,8 +347,9 @@ class ClaudeCodeEngine:
             # Answered in the driver, over this claude's stdin and stdout (claude_lead.py).
             configured, allowed = {**configured, SERVER: {"type": "sdk", "name": SERVER}}, [*allowed, TOOL]
             lead = LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to))
-        servers = ["--mcp-config", json.dumps({"mcpServers": configured}), "--allowedTools", ",".join(allowed)] \
-            if configured else []
+        configs = [*([self.mcp_file] if self.mcp_file else []),
+                   *([json.dumps({"mcpServers": configured})] if configured else [])]
+        servers = ["--mcp-config", *configs, "--allowedTools", ",".join(allowed)] if configs else []
         argv = [
             "claude", *args, *model,
             "--permission-mode", cfg.claude_permission_mode,

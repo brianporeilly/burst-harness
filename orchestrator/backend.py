@@ -323,7 +323,7 @@ class PodmanBackend:
                          "allow": list(cfg.egress_allow), "allowed_for_good": containers.approved(cfg),
                          "mcp": list(cfg.mcp)},
             # Which servers' keys this process holds, for the gateway to add (never the keys).
-            "mcp_keys": {name: bool(mcp.headers(name)) for name in mcp.servers(cfg)},
+            "mcp_keys": {name: bool(mcp.auth(name)) for name in mcp.servers(cfg)},
             "agents": list(session.AGENTS), "providers": list(PROVIDERS), "task_providers": task_providers(),
         }
 

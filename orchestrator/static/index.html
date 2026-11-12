@@ -201,9 +201,10 @@
   <section class="panel">
     <h2>MCP servers</h2>
     <p class="muted">Servers a session's or task's agent can connect to, over HTTPS. New sessions and tasks get the
-      ones on by default, and their forms show every one here to pick from. A server's key goes in the Credentials
-      as NAME_API_KEY, and the gateway adds it. Those from the configuration (HARNESS_MCP) can be turned off by
-      default, or replaced by one of the same name.</p>
+      ones on by default, and their forms show every one here to pick from. A server's key goes in the Credentials:
+      NAME_API_KEY for a bearer token, or NAME_BASIC_AUTH as user:secret (not encoded) for a server that takes Basic
+      auth, such as an Atlassian personal API token. The gateway adds it. Those from the configuration (HARNESS_MCP)
+      can be turned off by default, or replaced by one of the same name.</p>
     <div id="mcp-servers"><p class="muted">Loading...</p></div>
     <form id="mcp-form" autocomplete="off">
       <div class="grid2">
@@ -1176,7 +1177,8 @@ async function refreshMcp() {
       el("td", {}, el("code", {}, s.name), el("div", { class: "muted" }, s.url),
         el("div", { class: "muted" }, s.source === "settings"
           ? (s.configuration_too ? "saved here, over the configuration's" : "saved here") : "from the configuration")),
-      el("td", {}, el("code", {}, s.key), s.key_set ? " ✓" : el("span", { class: "muted" }, " not set")),
+      el("td", {}, el("code", {}, s.key), s.key_problem ? el("div", { class: "error" }, s.key_problem)
+        : s.key_set ? (s.auth === "basic" ? " ✓ Basic" : " ✓") : el("span", { class: "muted" }, ` not set (or ${s.basic_key})`)),
       el("td", {}, s.updated ? when(s.updated) + (s.updated_by ? ` by ${s.updated_by}` : "") : ""),
       el("td", {}, el("div", { class: "row" },
         el("button", { onclick: () => {

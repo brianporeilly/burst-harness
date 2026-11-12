@@ -560,7 +560,7 @@ def launch(
                     raise SessionError(f"Could not add the MCP servers to Claude Code's config: {proc.stderr.strip()}")
         else:
             if (written := opencode_file(cfg, config)) is not None:
-                target.run_shell(f"mkdir -p {shlex.quote(str(Path(OPENCODE_CONFIG).parent))} && "
+                target.run_shell(f"umask 077 && mkdir -p {shlex.quote(str(Path(OPENCODE_CONFIG).parent))} && "
                                  f"cat > {shlex.quote(OPENCODE_CONFIG)}", stdin=json.dumps(written, indent=2) + "\n", cwd="/")
             if config is None:
                 notes.append(

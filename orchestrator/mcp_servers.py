@@ -22,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from harness import credentials, mcp
+from harness import mcp
 from harness.config import HarnessConfig
 
 URL_CHARS = 500
@@ -90,7 +90,9 @@ class McpServerStore:
             rows.append({"name": name, "url": server["url"], "default": server["default"], "source": server["source"],
                          "configuration_too": name in configured,
                          # Whether the gateway has a key to add for it (never the key).
-                         "key": mcp.key_var(name), "key_set": bool(credentials.get(mcp.key_var(name))),
+                         "key": mcp.basic_var(name) if mcp.auth(name) == "basic" else mcp.key_var(name),
+                         "basic_key": mcp.basic_var(name), "auth": mcp.auth(name), "key_set": bool(mcp.auth(name)),
+                         "key_problem": mcp.problem(name),
                          "updated": record.get("updated"), "updated_by": record.get("updated_by", "")})
         return {"servers": rows}
 

@@ -13,10 +13,22 @@ Context7's (https://mcp.context7.com/mcp).
 The first two connect from the sandbox, so each server's host goes on the
 gateway's allowlist, and in a report-only job its POSTs (MCP's requests) are let
 through to the server's URL: a server is configured by the user, like the
-model. A key the driver holds as <NAME>_API_KEY (CONTEXT7_API_KEY) is sent as a
-bearer token: added by the gateway on the way out, so the sandbox never holds
-it, or sent by MCPClient itself for strands. Without a gateway (egress open) the
-server is used without it.
+model.
+
+A server's key is one of the driver's credentials, and which one says how it is
+sent (headers(), the one place they are made, for every engine):
+
+- <NAME>_API_KEY (CONTEXT7_API_KEY): `Authorization: Bearer <key>`.
+- <NAME>_BASIC_AUTH, as user:secret (ATLASSIAN_BASIC_AUTH=you@example.com:token):
+  `Authorization: Basic <base64(user:secret)>`, encoded here. Split at the
+  first colon, as servers do, so the secret may hold more.
+
+Both for one server is refused, as is a BASIC_AUTH without a colon. The key is
+added by the gateway on the way out, so the sandbox never holds it, or sent by
+MCPClient itself for strands. A sandbox engine with no gateway (a container
+with egress open, a claimed sandbox with no gateway_control, the local and
+kubectl targets) is given the header itself instead (direct()): it is in the
+engine's MCP config, in a file only the sandbox's user can read, for the run.
 
 For strands alone, a server on this machine's loopback may also be plain
 http:// (127.0.0.1, ::1, localhost): MCPClient reaches it from the driver, with
@@ -26,6 +38,7 @@ for one. The sandbox engines keep to https://.
 
 from __future__ import annotations
 
+import base64
 import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -68,10 +81,65 @@ def key_var(name: str) -> str:
     return re.sub(r"[^A-Z0-9_]", "_", name.upper()) + "_API_KEY"
 
 
+def basic_var(name: str) -> str:
+    """The driver's variable holding a server's user:secret for Basic auth: ATLASSIAN_BASIC_AUTH for atlassian."""
+    return re.sub(r"[^A-Z0-9_]", "_", name.upper()) + "_BASIC_AUTH"
+
+
+def key_vars(name: str) -> tuple[str, str]:
+    """Both of a server's credentials, for granting a run whichever is set."""
+    return key_var(name), basic_var(name)
+
+
+def auth(name: str) -> str:
+    """How a server's key is sent: "bearer", "basic", or "" with none. Never raises: for status lines, where
+    a key that cannot be used is said by problem()."""
+    if credentials.get(key_var(name)):
+        return "bearer"
+    return "basic" if credentials.get(basic_var(name)) else ""
+
+
+def problem(name: str) -> str:
+    """Why a server's key cannot be used, or ""."""
+    bearer, basic = credentials.get(key_var(name)), credentials.get(basic_var(name))
+    if bearer and basic:
+        return (f"mcp {name}: both {key_var(name)} and {basic_var(name)} are set; keep the one the server takes "
+                "(a bearer token, or Basic's user:secret).")
+    if basic and ":" not in basic:
+        return f"mcp {name}: {basic_var(name)} is user:secret (say you@example.com:token), not encoded: it has no colon."
+    return ""
+
+
 def headers(name: str) -> dict[str, str]:
-    """The headers that carry a server's key, if the driver has one."""
-    key = credentials.get(key_var(name))
-    return {"Authorization": f"Bearer {key}"} if key else {}
+    """The headers that carry a server's key, if the driver has one. Raises MCPError for one that cannot be used."""
+    if found := problem(name):
+        raise MCPError(found)
+    if key := credentials.get(key_var(name)):
+        return {"Authorization": f"Bearer {key}"}
+    if pair := credentials.get(basic_var(name)):
+        return {"Authorization": "Basic " + base64.b64encode(pair.encode()).decode("ascii")}
+    return {}
+
+
+def check_keys(cfg: HarnessConfig) -> None:
+    """Every server's key usable, before a run starts anything. Raises MCPError."""
+    for name in servers(cfg):
+        headers(name)
+
+
+def through_gateway(cfg: HarnessConfig) -> bool:
+    """Whether a sandbox engine's requests pass a gateway that adds the keys: a container with egress log or
+    allowlist, or a claimed sandbox registered with a shared gateway."""
+    if cfg.target in ("podman", "docker"):
+        return cfg.egress != "open"
+    return cfg.target == "agent-sandbox" and bool(cfg.gateway_control)
+
+
+def direct(cfg: HarnessConfig) -> dict[str, dict[str, str]]:
+    """{name: headers} a sandbox engine sends itself, with no gateway to add them; {} otherwise."""
+    if not in_sandbox(cfg) or through_gateway(cfg):
+        return {}
+    return {name: found for name in servers(cfg) if (found := headers(name))}
 
 
 def in_sandbox(cfg: HarnessConfig) -> bool:
@@ -113,13 +181,18 @@ def writes(cfg: HarnessConfig) -> tuple[dict[str, str], ...]:
 
 
 def opencode(cfg: HarnessConfig) -> dict[str, Any]:
-    """opencode.json's `mcp` section."""
-    return {name: {"type": "remote", "url": url, "enabled": True} for name, url in servers(cfg).items()}
+    """opencode.json's `mcp` section, with the keys' headers when there is no gateway to add them (direct())."""
+    keys = direct(cfg)
+    return {name: {"type": "remote", "url": url, "enabled": True, **({"headers": keys[name]} if name in keys else {})}
+            for name, url in servers(cfg).items()}
 
 
-def claude(cfg: HarnessConfig) -> dict[str, Any]:
-    """Claude Code's `mcpServers`, as --mcp-config and ~/.claude.json take it."""
-    return {"mcpServers": {name: {"type": "http", "url": url} for name, url in servers(cfg).items()}}
+def claude(cfg: HarnessConfig, *, keys: bool = True) -> dict[str, Any]:
+    """Claude Code's `mcpServers`, as --mcp-config and ~/.claude.json take it, with the keys' headers when there
+    is no gateway to add them (direct()); never with keys=False, for a command line."""
+    keys = direct(cfg) if keys else {}
+    return {"mcpServers": {name: {"type": "http", "url": url, **({"headers": keys[name]} if name in keys else {})}
+                           for name, url in servers(cfg).items()}}
 
 
 def claude_tools(cfg: HarnessConfig) -> list[str]:

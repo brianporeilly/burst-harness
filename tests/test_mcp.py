@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,8 @@ _spec.loader.exec_module(gw)
 
 @pytest.fixture(autouse=True)
 def no_keys(monkeypatch):
-    monkeypatch.delenv("CONTEXT7_API_KEY", raising=False)
+    for name in ("CONTEXT7_API_KEY", "CONTEXT7_BASIC_AUTH", "ATLASSIAN_API_KEY", "ATLASSIAN_BASIC_AUTH"):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_servers_are_name_equals_https_url():
@@ -113,8 +115,11 @@ def test_claude_code_runs_get_the_servers_with_their_tools_allowed():
         engine = ClaudeCodeEngine.__new__(ClaudeCodeEngine)
         engine.ctx = SimpleNamespace(cfg=cfg, branch="b", slug="s")
         engine.target, engine.hook_path, engine.has_env_file = LocalTarget("."), "hook.py", False
+        engine.mcp_file = mcp_file
         import shlex
         return shlex.split(engine.command("-p", "go"))
+
+    mcp_file = ""
 
     argv = command(HarnessConfig(mcp=(CONTEXT7, "docs=https://docs.lan/mcp"), claude_args="--verbose"))
     assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {
@@ -123,6 +128,12 @@ def test_claude_code_runs_get_the_servers_with_their_tools_allowed():
     assert argv[argv.index("--allowedTools") + 1] == "mcp__context7,mcp__docs"
     assert argv[-1] == "--verbose"
     assert "--mcp-config" not in command(HarnessConfig())
+
+    # With no gateway the keys are in a file (prepare()), and the command line has none of them.
+    mcp_file = "/tmp/burst-harness/mcp.json"
+    argv = command(HarnessConfig(engine="claude-code", mcp=(CONTEXT7,)))
+    assert argv[argv.index("--mcp-config") + 1] == mcp_file and argv[argv.index("--mcp-config") + 2] == "--allowedTools"
+    assert argv[argv.index("--allowedTools") + 1] == "mcp__context7"
 
 
 def test_a_report_job_says_where_the_servers_are_reached_from(tmp_path, monkeypatch):
@@ -146,3 +157,75 @@ def test_opencode_gets_the_servers_even_without_a_model_to_describe():
     assert session.opencode_config(cfg) is None  # anthropic, but no key on the driver
     assert session.opencode_file(cfg, None)["mcp"]["context7"]["url"] == "https://mcp.context7.com/mcp"
     assert session.opencode_file(HarnessConfig(), None) is None
+
+
+ATLASSIAN = "atlassian=https://mcp.atlassian.com/v2/mcp"
+BASIC = "Basic bWVAZXhhbXBsZS5jb206dG9rOndpdGg6Y29sb25z"  # base64("me@example.com:tok:with:colons")
+
+
+def test_which_credential_is_set_says_how_the_key_is_sent(monkeypatch):
+    assert mcp.headers("atlassian") == {} and mcp.auth("atlassian") == ""
+    monkeypatch.setenv("ATLASSIAN_API_KEY", "svc-key")
+    assert mcp.headers("atlassian") == {"Authorization": "Bearer svc-key"} and mcp.auth("atlassian") == "bearer"
+    monkeypatch.delenv("ATLASSIAN_API_KEY")
+    # As given, encoded here: the whole value, so a secret may hold colons of its own.
+    monkeypatch.setenv("ATLASSIAN_BASIC_AUTH", "me@example.com:tok:with:colons")
+    assert mcp.headers("atlassian") == {"Authorization": BASIC} and mcp.auth("atlassian") == "basic"
+    assert mcp.key_vars("atlassian") == ("ATLASSIAN_API_KEY", "ATLASSIAN_BASIC_AUTH")
+
+
+def test_a_key_that_cannot_be_used_is_refused_and_said(monkeypatch):
+    monkeypatch.setenv("ATLASSIAN_BASIC_AUTH", "bWVAZXhhbXBsZS5jb206dG9r")  # encoded by hand: no colon
+    with pytest.raises(mcp.MCPError, match="user:secret .* no colon"):
+        mcp.headers("atlassian")
+    assert "no colon" in mcp.problem("atlassian") and mcp.auth("atlassian") == "basic"  # status lines never raise
+    with pytest.raises(mcp.MCPError, match="no colon"):
+        mcp.check_keys(HarnessConfig(mcp=(ATLASSIAN,)))
+    monkeypatch.setenv("ATLASSIAN_BASIC_AUTH", "me@example.com:tok")
+    monkeypatch.setenv("ATLASSIAN_API_KEY", "svc-key")
+    with pytest.raises(mcp.MCPError, match="both ATLASSIAN_API_KEY and ATLASSIAN_BASIC_AUTH"):
+        mcp.check_keys(HarnessConfig(mcp=(ATLASSIAN,)))
+    mcp.check_keys(HarnessConfig(mcp=(CONTEXT7,)))  # another server's keys are not its business
+
+
+def test_the_gateway_and_the_driver_send_the_same_header(monkeypatch):
+    monkeypatch.setenv("ATLASSIAN_BASIC_AUTH", "me@example.com:tok:with:colons")
+    sandboxed = HarnessConfig(engine="claude-code", target="podman", egress="allowlist", mcp=(ATLASSIAN,))
+    (rule,) = containers.inject_rules(sandboxed)
+    assert rule == {"host": "mcp.atlassian.com", "path": "/v2/mcp*", "headers": {"Authorization": BASIC}}
+    sandbox = gw.Sandbox(inject=gw.Inject.parse(json.dumps([rule])))
+    assert sandbox.inject_for("mcp.atlassian.com", "/v2/mcp").headers == (("Authorization", BASIC),)
+
+    made = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            made.append(kwargs)
+
+    import strands.tools.mcp
+    monkeypatch.setattr(strands.tools.mcp, "MCPClient", FakeClient)
+    mcp.clients(HarnessConfig(engine="strands", mcp=(ATLASSIAN,)))
+    assert made[0]["headers"] == rule["headers"]
+
+
+@pytest.mark.parametrize("target, egress, gateway_control, through", [
+    ("podman", "allowlist", "", True), ("docker", "log", "", True), ("podman", "open", "", False),
+    ("agent-sandbox", "open", "http://gw:8081", True), ("agent-sandbox", "allowlist", "", False),
+    ("local", "open", "", False), ("kubectl", "open", "", False),
+])
+def test_with_no_gateway_a_sandbox_engine_sends_the_key_itself(monkeypatch, target, egress, gateway_control, through):
+    monkeypatch.setenv("CONTEXT7_API_KEY", "c7-sekret")
+    cfg = HarnessConfig(engine="claude-code", target=target, egress=egress, gateway_control=gateway_control,
+                        mcp=(CONTEXT7, "docs=https://docs.lan/mcp"))
+    assert mcp.through_gateway(cfg) is through
+    servers = mcp.claude(cfg)["mcpServers"]
+    if through:
+        assert mcp.direct(cfg) == {} and "headers" not in servers["context7"]
+    else:
+        assert mcp.direct(cfg) == {"context7": {"Authorization": "Bearer c7-sekret"}}
+        assert servers["context7"]["headers"] == {"Authorization": "Bearer c7-sekret"}
+        assert "headers" not in servers["docs"]  # no key, nothing to send
+        assert "c7-sekret" not in json.dumps(mcp.claude(cfg, keys=False))  # for a command line
+        opencode = mcp.opencode(replace(cfg, engine="opencode"))
+        assert opencode["context7"]["headers"] == {"Authorization": "Bearer c7-sekret"}
+    assert mcp.direct(replace(cfg, engine="strands")) == {}  # strands sends it from the driver, always

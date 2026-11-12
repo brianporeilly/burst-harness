@@ -116,20 +116,26 @@ def for_task(cfg: HarnessConfig) -> list[str]:
     """What a task's burst is granted: the git token (the driver pushes and opens the PR), the
     model's keys (with those its providers' plugins declare), the cluster gateway's token, and the
     keys of its MCP servers."""
-    from . import mcp, models  # both ask this module for keys
+    from . import models  # asks this module for keys
 
-    return [*GIT, *MODEL, *models.credentials_for(cfg), *GATEWAY, *(mcp.key_var(name) for name in mcp.servers(cfg))]
+    return [*GIT, *MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg)]
 
 
 def for_job(cfg: HarnessConfig, secrets: Iterable[str], outputs: Iterable[str]) -> list[str]:
     """What a job's run is granted: the model's keys, the gateway's token, its MCP servers' keys,
     the secrets its job.toml names, and Slack's if it posts there. Not the git token: a job that
     needs one names it."""
-    from . import mcp, models
+    from . import models
 
     slack = [*SLACK] if any(o == "slack" or o.startswith("slack:") for o in outputs) else []
-    return [*MODEL, *models.credentials_for(cfg), *GATEWAY, *(mcp.key_var(name) for name in mcp.servers(cfg)),
-            *secrets, *slack]
+    return [*MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg), *secrets, *slack]
+
+
+def mcp_keys(cfg: HarnessConfig) -> list[str]:
+    """Both credentials of each MCP server, a bearer key and Basic's user:secret: whichever is set is passed."""
+    from . import mcp
+
+    return [var for name in mcp.servers(cfg) for var in mcp.key_vars(name)]
 
 
 def for_run(granted: Iterable[str], extra: Mapping[str, str] | None = None) -> dict[str, str]:
