@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.25.0 (2026-11-12)
+
+### Features
+
+- **git**: Forgejo repos beside GitHub, each forge's token to its own host
+  ([#9](https://github.com/brianporeilly/burst-harness/pull/9),
+  [`dc2750e`](https://github.com/brianporeilly/burst-harness/commit/dc2750e215d0b6cb083880c340eb6ca89ac743b0))
+
+
 ## v0.24.0 (2026-11-12)
 
 ### Features
