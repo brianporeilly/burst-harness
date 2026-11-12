@@ -605,7 +605,8 @@ choose from: a name and an https:// URL, and whether it is on by default (a
 checkbox in the list). The config file's servers (`mcp`, `HARNESS_MCP`) are
 listed too, on by default; they can be turned off by default there, or
 replaced by one of the same name. A server's key goes in the Credentials as
-`NAME_API_KEY` (the list says whether it is set), and the gateway adds it.
+`NAME_API_KEY`, or `NAME_BASIC_AUTH` for Basic auth (see "Keys" below); the
+list says which is set, and the gateway adds it.
 
 - The session and task forms show every saved server as a checkbox, the
   defaults ticked, and take others for that one alone (`name=https://...`).
@@ -1261,12 +1262,29 @@ mcp = ["context7=https://mcp.context7.com/mcp"]
 
 opencode and Claude Code connect from the sandbox, so each server's host is
 added to the allowlist. A report-only job may send POSTs (MCP's requests) to
-the server's URL and nowhere else on that host. **Keys:** a key in the driver's
-`<NAME>_API_KEY` (`CONTEXT7_API_KEY`) is sent as `Authorization: Bearer`. For
-the sandbox engines the gateway adds it, so the sandbox never holds it. Without
-a gateway (`--egress open`), the server is used without the key. The
-orchestrator's form lists its own servers, which you can change for each
-session, and shows which keys it holds.
+the server's URL and nowhere else on that host.
+
+**Keys.** Which of the driver's credentials holds a server's key says how it's
+sent, the same way for every engine:
+
+| Credential | Sent as |
+|---|---|
+| `<NAME>_API_KEY` (`CONTEXT7_API_KEY`) | `Authorization: Bearer <key>` |
+| `<NAME>_BASIC_AUTH` (`ATLASSIAN_BASIC_AUTH`), as `user:secret` | `Authorization: Basic <base64(user:secret)>` |
+
+Give Basic's value as it is (`you@example.com:token`): the harness encodes it.
+That's what an Atlassian personal API token needs; an Atlassian service-account
+key is a bearer token. Setting both for one server, or a `BASIC_AUTH` with no
+colon, stops the run before anything starts.
+
+For the sandbox engines the gateway adds the header, so the sandbox never holds
+the key. With no gateway (a container with `--egress open`, a claimed sandbox
+without `gateway_control`, the `local` and `kubectl` targets) the engine is
+given it to send itself: Claude Code in a file passed to `--mcp-config` that
+only the sandbox's user can read and that is removed after the run, opencode
+in its `opencode.json` (also readable by that user alone). The orchestrator's
+form lists its own servers, which you can change for each session, and shows
+which keys it holds.
 
 With `--engine strands` only, a server on the driver's loopback may be plain
 `http://` (`127.0.0.1`, `::1` or `localhost`), such as a local test server:

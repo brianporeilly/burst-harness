@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -215,3 +216,34 @@ def test_a_branch_named_with_branch_is_checked():
     for bad in ("-x", "a..b", "a b", "x.lock", "x/", "--upload-pack=y"):
         with pytest.raises(SystemExit, match="not a branch name"):
             cli._branch(cfg, _args(slug="t", branch=bad))
+
+
+def test_with_no_gateway_the_mcp_keys_go_in_a_file_for_the_run(origin, tmp_path, monkeypatch, fake_claude):
+    from harness.claude_code import ClaudeCodeEngine
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "pause")
+    monkeypatch.setenv("HARNESS_MCP", "context7=https://mcp.context7.com/mcp")
+    monkeypatch.setenv("CONTEXT7_API_KEY", "c7-sekret")
+    uploaded = {}
+    upload = ClaudeCodeEngine._upload
+
+    def recorded(self, path, content):
+        uploaded[path] = content
+        upload(self, path, content)
+
+    monkeypatch.setattr(ClaudeCodeEngine, "_upload", recorded)
+    ctx = _ctx(origin, tmp_path)  # the local target: no gateway
+    _start(ctx)
+    (argv,) = fake_claude()
+    path = argv[argv.index("--mcp-config") + 1]
+    assert path.endswith("mcp.json") and json.loads(uploaded[path]) == {"mcpServers": {"context7": {
+        "type": "http", "url": "https://mcp.context7.com/mcp", "headers": {"Authorization": "Bearer c7-sekret"}}}}
+    assert not any("c7-sekret" in arg for arg in argv)
+    assert not Path(path).exists()  # removed with the run
+
+
+def test_a_key_that_cannot_be_used_stops_the_run_before_it_starts(origin, tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_MCP", "atlassian=https://mcp.atlassian.com/v2/mcp")
+    monkeypatch.setenv("ATLASSIAN_BASIC_AUTH", "bWVAZXhhbXBsZS5jb206dG9r")
+    with pytest.raises(SystemExit, match="ATLASSIAN_BASIC_AUTH is user:secret"):
+        _ctx(origin, tmp_path)

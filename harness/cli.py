@@ -21,6 +21,7 @@ from . import (
     egress,
     git,
     job,
+    mcp,
     models,
     session,
     state,
@@ -249,7 +250,8 @@ def _open(args: argparse.Namespace) -> HarnessContext:
         raise SystemExit(f"Unknown engine {cfg.engine!r}. Use {' or '.join(ENGINES)}.")
     try:
         agents.check_providers(cfg)  # before a sandbox starts, not when a delegate is first called
-    except agents.AgentsError as err:
+        mcp.check_keys(cfg)  # a server's key that cannot be used, before anything starts
+    except (agents.AgentsError, mcp.MCPError) as err:
         raise SystemExit(str(err)) from err
     repo_toml_read = False
     if cfg.target == "local" and not cfg.repo_url:
@@ -564,7 +566,7 @@ def cmd_session(args: argparse.Namespace) -> int:
         else:
             print(sessions.remove(cfg, args.name))
     except (session.SessionError, containers.ContainerError, git.GitError, ExecError, agent_sandbox.AgentSandboxError,
-            GatewayError) as err:
+            GatewayError, mcp.MCPError) as err:
         raise SystemExit(str(err)) from err
     return 0
 
@@ -623,8 +625,9 @@ def cmd_job(args: argparse.Namespace) -> int:
             return _job_plans(spec, cfg, args)
         if args.action == "apply":
             return job.apply(spec, cfg, args.plan or "")
+        mcp.check_keys(cfg)
         return job.run(spec, cfg)
-    except (job.JobError, containers.ContainerError) as err:
+    except (job.JobError, containers.ContainerError, mcp.MCPError) as err:
         raise SystemExit(str(err)) from err
 
 

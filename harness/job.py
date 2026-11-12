@@ -548,8 +548,12 @@ def describe(spec: JobSpec, cfg: HarnessConfig) -> str:
         f"  egress   {cfg.egress}" + (f": {', '.join(containers.allowlist(cfg, _hosts(spec)))}" if cfg.egress == "allowlist" else ""),
     ]
     for name, url in mcp.servers(cfg).items():
-        key = (f", key ${mcp.key_var(name)} " + ("added by the gateway" if mcp.in_sandbox(cfg) else "sent from the driver")
-               if mcp.headers(name) else "")
+        how = mcp.auth(name)
+        where = "sent from the driver" if not mcp.in_sandbox(cfg) else \
+            "added by the gateway" if mcp.through_gateway(cfg) else "sent by the sandbox, with no gateway"
+        key = (f", {'Basic' if how == 'basic' else 'bearer'} key "
+               f"${mcp.basic_var(name) if how == 'basic' else mcp.key_var(name)} {where}" if how else "")
+        key += f"; {found}" if (found := mcp.problem(name)) else ""
         lines.append(f"  mcp      {name}: {url}" + (" (from the sandbox" if mcp.in_sandbox(cfg) else " (from the driver")
                      + key + ")")
     for s in spec.secrets:
@@ -727,7 +731,8 @@ def _opencode(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple
     config["permission"] = {"edit": "allow", "bash": "allow", "webfetch": "deny"}
     config["instructions"] = [OPENCODE_RULES]
     # $HOME/.config/opencode, as a session's (session.OPENCODE_CONFIG) in the sandbox image.
-    target.run_shell('mkdir -p "$HOME/.config/opencode" && cat > "$HOME/.config/opencode/opencode.json"',
+    # Only the sandbox's user may read it: with no gateway, it holds the MCP servers' keys (mcp.direct()).
+    target.run_shell('umask 077 && mkdir -p "$HOME/.config/opencode" && cat > "$HOME/.config/opencode/opencode.json"',
                      stdin=json.dumps(config, indent=2), cwd="/")
     target.write_file(OPENCODE_RULES, _rules(target, spec, has_scripts=has_scripts, file=True))
     env_file = ""

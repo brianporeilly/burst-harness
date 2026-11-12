@@ -312,8 +312,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         # What this orchestrator's sessions, tasks and jobs would use: its MCP servers' keys, its jobs' secrets.
         base = getattr(backend, "base", None)
         return [*(name for name in credentials.GIT if os.environ.get(name)),
-                *(mcp.key_var(name) for name in (mcp.servers(base) if base else {})),
-                *(mcp.key_var(name) for name in (mcp_servers.servers() if mcp_servers else {})),
+                *(var for name in (mcp.servers(base) if base else {}) for var in mcp.key_vars(name)),
+                *(var for name in (mcp_servers.servers() if mcp_servers else {}) for var in mcp.key_vars(name)),
                 *(jobs.secret_names() if jobs else []),
                 *(s.token for s in (jobs.sources.sources().values() if jobs and jobs.sources else []))]
 

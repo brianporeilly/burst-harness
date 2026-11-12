@@ -29,7 +29,8 @@ def test_saved_servers_are_listed_with_the_configuration_s_and_chosen_by_default
     (configured,) = store.listing()["servers"]
     assert configured | {"updated": None} == {"name": "context7", "url": "https://mcp.context7.com/mcp",
                                               "default": True, "source": "configuration", "configuration_too": True,
-                                              "key": "CONTEXT7_API_KEY", "key_set": False, "updated": None,
+                                              "key": "CONTEXT7_API_KEY", "basic_key": "CONTEXT7_BASIC_AUTH",
+                                              "auth": "", "key_set": False, "key_problem": "", "updated": None,
                                               "updated_by": ""}
     assert store.choose(None) == (CONTEXT7,)  # nothing saved: what new sessions and tasks got before
 
@@ -41,6 +42,11 @@ def test_saved_servers_are_listed_with_the_configuration_s_and_chosen_by_default
     assert [(n, r["default"], r["source"]) for n, r in rows.items()] == [
         ("context7", False, "configuration"), ("docs", True, "settings"), ("search", False, "settings")]
     assert rows["docs"]["key_set"] and rows["docs"]["updated_by"] == "brian"
+    monkeypatch.setenv("SEARCH_BASIC_AUTH", "me@example.com:tok")
+    rows = {row["name"]: row for row in store.listing()["servers"]}
+    assert (rows["search"]["key"], rows["search"]["auth"], rows["search"]["key_set"]) == ("SEARCH_BASIC_AUTH", "basic", True)
+    monkeypatch.setenv("SEARCH_BASIC_AUTH", "already-encoded")
+    assert "no colon" in {row["name"]: row for row in store.listing()["servers"]}["search"]["key_problem"]
     assert store.choose(None) == ("docs=https://mcp.example.com/mcp",)
 
     # Named, or given for this one alone; a name not saved, or a URL the gateway can't pass, is refused.
@@ -88,6 +94,12 @@ def test_a_task_keeps_the_servers_it_was_given_and_its_burst_gets_only_those_and
     env = harness.started[-1][1].env
     assert env["HARNESS_MCP"] == "docs=https://mcp.example.com/mcp" and env["DOCS_API_KEY"] == "docs-key"
     assert "CONTEXT7_API_KEY" not in env
+
+    monkeypatch.delenv("DOCS_API_KEY")
+    monkeypatch.setenv("DOCS_BASIC_AUTH", "me@example.com:tok")  # granted the same way as a bearer key
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "docs-basic", "mcp": ["docs"]})
+    env = harness.started[-1][1].env
+    assert env["DOCS_BASIC_AUTH"] == "me@example.com:tok" and "DOCS_API_KEY" not in env
 
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "none", "mcp": []})
     env = harness.started[-1][1].env
