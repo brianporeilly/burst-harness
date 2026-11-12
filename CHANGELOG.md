@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.18.0 (2026-11-12)
+
+### Features
+
+- **jobs**: Quiet runs that send nothing when there is nothing to send, and a price-watch example
+  ([#98](https://github.com/brianporeilly/strands-harness/pull/98),
+  [`2bbeb01`](https://github.com/brianporeilly/strands-harness/commit/2bbeb013dee80e66bc7f8de8d888b4b34b56ec76))
+
+
 ## v0.17.0 (2026-11-11)
 
 ### Features
