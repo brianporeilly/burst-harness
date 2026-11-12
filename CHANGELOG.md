@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.23.0 (2026-11-12)
+
+### Features
+
+- **mcp**: Basic auth for MCP servers, and keys sent by the engine when there is no gateway
+  ([#3](https://github.com/brianporeilly/burst-harness/pull/3),
+  [`207f2fc`](https://github.com/brianporeilly/burst-harness/commit/207f2fc3e47a4ce874e638261192a9a985ea0b9c))
+
+
 ## v0.22.0 (2026-11-12)
 
 ### Documentation
