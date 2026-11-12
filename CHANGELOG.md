@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.19.1 (2026-11-12)
+
+### Bug Fixes
+
+- **orchestrator**: No "null" text in the task, job and run views
+  ([#102](https://github.com/brianporeilly/strands-harness/pull/102),
+  [`41d2a74`](https://github.com/brianporeilly/strands-harness/commit/41d2a7446d01d13283a74ca6afe7031b11b42d0d))
+
+
 ## v0.19.0 (2026-11-12)
 
 ### Features
