@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.23.1 (2026-11-12)
+
+### Bug Fixes
+
+- **orchestrator**: A queued task says what it waits for, a task slot or its model server
+  ([#5](https://github.com/brianporeilly/burst-harness/pull/5),
+  [`d3abe5c`](https://github.com/brianporeilly/burst-harness/commit/d3abe5c62605d01225a975d29cb88c258ea12285))
+
+### Chores
+
+- **deps-dev**: Bump pytest from 8.4.2 to 9.0.3
+  ([#4](https://github.com/brianporeilly/burst-harness/pull/4),
+  [`45113de`](https://github.com/brianporeilly/burst-harness/commit/45113de5c68b69f41750c5fda42c495b6700c257))
+
+
 ## v0.23.0 (2026-11-12)
 
 ### Features
