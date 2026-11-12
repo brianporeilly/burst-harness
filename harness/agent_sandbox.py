@@ -230,6 +230,10 @@ def acquire(
             gateway.register(claim, body)
             target = replace(target, gateway=gateway, events=events_path(cfg, claim))
             print(f"Egress via {gateway.url} ({summary}).")
+            # For the orchestrator: which sandbox the gateway knows this burst by, to show and approve what it
+            # refuses while the burst runs, and where its events are kept once it ends.
+            print("HARNESS_SANDBOX " + json.dumps({"claim": claim, "mode": body.get("mode", ""),
+                                                   "events": target.events}), flush=True)
         if missing := target.missing_commands(REQUIRED_COMMANDS):
             raise AgentSandboxError(
                 f"Sandbox image is missing required commands: {', '.join(missing)}. "

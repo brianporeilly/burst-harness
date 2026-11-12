@@ -132,6 +132,10 @@ class SubprocessTarget(ExecTarget):
     runs, and interactive sessions all land in the same place by construction.
     """
 
+    # The agent's environment there, beyond the target's own: what build_cache sets (cli.py). Its tools
+    # have it (sandbox()); the harness's own commands do not need it.
+    env: tuple[tuple[str, str], ...] = ()
+
     @abstractmethod
     def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
         """Argv prefix that runs what follows inside the target. Empty for local."""
@@ -165,7 +169,7 @@ class SubprocessTarget(ExecTarget):
         from .exec_sandbox import CommandSandbox
 
         return CommandSandbox(self.exec_prefix(), working_dir=self.repo, where=self.describe(),
-                              stdin_prefix=self.exec_prefix(stdin=True))
+                              stdin_prefix=self.exec_prefix(stdin=True), env=dict(self.env))
 
 
 @dataclass(frozen=True)

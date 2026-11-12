@@ -52,7 +52,7 @@ class CommandSandbox(PosixShellSandbox):
     """Execute commands by prefixing them with an exec argv."""
 
     def __init__(self, prefix: list[str], *, working_dir: str | None = None, where: str = "",
-                 stdin_prefix: list[str] | None = None) -> None:
+                 stdin_prefix: list[str] | None = None, env: dict[str, str] | None = None) -> None:
         """Initialize the sandbox.
 
         Args:
@@ -62,6 +62,7 @@ class CommandSandbox(PosixShellSandbox):
             where: How to describe the target to the model.
             stdin_prefix: The same, passing stdin through (`exec -i`), which
                 write_file uses. None writes as PosixShellSandbox does.
+            env: Set for every command, under what a command is given itself.
         """
         if not prefix:
             raise ValueError("CommandSandbox needs a non-empty exec prefix.")
@@ -69,10 +70,12 @@ class CommandSandbox(PosixShellSandbox):
         self.working_dir = working_dir
         self.where = where
         self.stdin_prefix = list(stdin_prefix) if stdin_prefix else None
+        self.env = dict(env or {})
 
     def _shell(self, command: str, *, cwd: str | None, env: dict[str, str] | None = None) -> str:
         effective_cwd = cwd if cwd is not None else self.working_dir
         prefix = ""
+        env = {**self.env, **(env or {})}
         if env:
             validate_env_keys(env)
             # Values are interpolated into a shell string here (as the SSH backend

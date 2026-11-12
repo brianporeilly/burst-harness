@@ -243,10 +243,12 @@ class ClaudeCodeEngine:
             creds = {name: MODEL_CREDENTIALS[name][1] if name in MODEL_CREDENTIALS else value
                      for name, value in creds.items()}
             print("Model credentials stay at the gateway; the target has placeholders.")
-        if creds:
-            self._upload(ENV_FILE, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in creds.items()))
+        if creds or self.target.env:
+            # With what the target gives the agent (build_cache), which Claude's commands inherit.
+            values = {**dict(self.target.env), **creds}
+            self._upload(ENV_FILE, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in values.items()))
             self.has_env_file = True
-        else:
+        if not creds:
             print(
                 f"! No {' / '.join(CREDENTIAL_VARS[:2])} in the driver's environment; "
                 "Claude Code will use whatever login the target already has.",
