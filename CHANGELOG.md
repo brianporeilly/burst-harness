@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.21.0 (2026-11-12)
+
+### Features
+
+- **tasks**: Rounds, so a merged PR's task carries on with Continue on a fresh branch
+  ([`cceac56`](https://github.com/brianporeilly/burst-harness/commit/cceac568370022a418676c0affc984fbd21641cc))
+
+
 ## v0.20.0 (2026-11-12)
 
 ### Features
