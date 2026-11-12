@@ -209,6 +209,15 @@ class HarnessConfig:
         # Rust's API documentation, and GitHub's source archives (a tag's tarball).
         "docs.rs", "static.docs.rs", "codeload.github.com",
     )
+    # Hosts added to the allowlist, without replacing egress_allow: a task's
+    # own (the orchestrator's task form), or `--egress-add`.
+    egress_extra: tuple[str, ...] = ()
+    # A directory in a sandbox kept between sandboxes (a shared volume): the
+    # agent's builds keep their downloads and output there, so a burst does not
+    # build again what the last one built. For Rust: CARGO_HOME is
+    # BUILD_CACHE/cargo, and each repo's CARGO_TARGET_DIR is
+    # BUILD_CACHE/target/<repo>. Unset, or not there in the sandbox: nothing.
+    build_cache: str = ""
     # MCP servers the agent connects to, as NAME=URL (remote ones, over HTTPS):
     # say, context7=https://mcp.context7.com/mcp. A key in the driver's
     # <NAME>_API_KEY is sent as a bearer token; <NAME>_BASIC_AUTH, as

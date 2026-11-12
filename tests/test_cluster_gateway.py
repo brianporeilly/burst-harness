@@ -189,7 +189,7 @@ def test_credentials_without_a_gateway_are_refused_before_claiming(tmp_path, kub
 @linux_only
 @needs_openssl
 def test_a_claimed_sandbox_is_registered_held_to_its_allowlist_and_unregistered(tmp_path, kubectl, gateway, origin,
-                                                                               monkeypatch):
+                                                                               monkeypatch, capsys):
     monkeypatch.setenv("HARNESS_GATEWAY_TOKEN", TOKEN)
     path, log = kubectl
     proxy_port, control = gateway
@@ -200,6 +200,10 @@ def test_a_claimed_sandbox_is_registered_held_to_its_allowlist_and_unregistered(
     target = agent_sandbox.acquire(cfg, repo="/workspace", slug="job-x", branch="",
                                    allow=(f"127.0.0.1:{origin_port}",))
     assert target.gateway is not None and target.events.endswith("egress/pool-abc12.jsonl")
+    # For the orchestrator, which shows what the gateway refuses this sandbox and approves it there.
+    said = [line for line in capsys.readouterr().out.splitlines() if line.startswith("HARNESS_SANDBOX ")]
+    assert [json.loads(line.split(" ", 1)[1]) for line in said] == [
+        {"claim": "pool-abc12", "mode": "allowlist", "events": target.events}]
     listing = target.gateway._call("GET", "/sandboxes")["sandboxes"]
     assert [(s["name"], s["address"]) for s in listing] == [("pool-abc12", "127.0.0.2")]
 

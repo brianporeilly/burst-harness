@@ -877,6 +877,31 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
 - **Stop** sends the burst Ctrl-C, so the harness cleans up after itself;
   **Remove** forgets the task (not its branch or PR). `--no-tasks` turns tasks
   off.
+- **Network.** A task uses the orchestrator's allowlist unless its form says
+  otherwise. It can choose **permissive** (`egress: "log"` in the API), where
+  everything is let through and recorded. It can also add hosts for itself alone
+  (`allow`, passed to each burst as `--egress-add`). Both are kept for every
+  burst of it.
+  - The task page lists what the gateway refused its last burst: live, from
+    the cluster's gateway, while the burst runs, and from the events kept once
+    it ends. Each refused host has three buttons:
+    - **Allow now:** the running burst gets it through at once.
+    - **For this task:** its later bursts get it, and the running burst too.
+    - **Everywhere:** added to the hosts allowed for good
+      (`egress/approved.json`), for every task and job from then on.
+  - The API is `GET /api/tasks/SLUG/refusals` and `POST /api/tasks/SLUG/allow`
+    (`{"host": ..., "scope": "now" | "task" | "everywhere"}`). An API token
+    can't allow everywhere.
+  - A burst says which sandbox it is in with a `HARNESS_SANDBOX` line. That is
+    how the orchestrator finds its refusals, so this works for a cluster's
+    shared gateway, not a podman container's.
+- **Build cache.** With `build_cache` set (`HARNESS_BUILD_CACHE`) to a
+  directory that a sandbox has on a shared volume, the agent's builds keep
+  their work there between bursts and sandboxes. Cargo gets `CARGO_HOME` (its
+  downloads, shared by every repo) and a `CARGO_TARGET_DIR` per repo, so a
+  burst doesn't build again what the last one built. Cargo locks both itself,
+  so bursts in two sandboxes at once wait for each other rather than collide.
+  A sandbox without the directory builds as before.
 - On a cluster, `--bursts job` (`ORCHESTRATOR_BURSTS=job`) runs each burst,
   and each job's run (scheduled or not), as a Kubernetes Job of its own
   instead of a subprocess (docs/burst-jobs.md). It has its own memory, and it

@@ -63,8 +63,9 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from harness import ask, credentials, git, job, models
+from harness import ask, credentials, egress, git, job, models
 from harness.config import HarnessConfig
+from harness.gateway_control import Gateway, GatewayError
 
 from .backend import SpecError, check_model, model_choice, model_settings, task_providers
 from .jobs import OUTPUT, _iso, _tail, json_file
@@ -81,6 +82,9 @@ URL_REPO = re.compile(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?/[A-Za-z0-9._/-]+")
 BRANCH = re.compile(r"[A-Za-z0-9._/-]{1,100}")
 ENGINES = ("strands", "claude-code")
 RESULT = "HARNESS_RESULT "
+SANDBOX_LINE = "HARNESS_SANDBOX "  # which sandbox the gateway knows a burst by (harness/agent_sandbox.py)
+EGRESS_MODES = ("allowlist", "log")
+ALLOW_SCOPES = ("now", "task", "everywhere")
 JOB_RESULT = "HARNESS_JOB "  # what a question's burst ends with
 # A sandbox a burst kept, as the harness gives the flags that reattach to it. The output carries what
 # the model printed too, so only these shapes are taken from it.
@@ -266,6 +270,9 @@ class TaskRunner:
             raise TasksError(str(err) if isinstance(err, SpecError) else "The context window is a number of tokens.") from err
         delegate_to = self._delegates(raw)
         mcp_chosen = self._mcp(raw, engine)
+        egress_mode = str(raw.get("egress") or "").strip()
+        if egress_mode not in ("", *EGRESS_MODES):
+            raise TasksError("egress is allowlist, or log: everything let through, and recorded.")
         record = {
             "slug": slug, "repo": url, "prompt": prompt, "engine": engine, "model": model,
             "provider": provider, "base_url": base_url, "context_window": context_window, "settings": settings,
@@ -274,6 +281,8 @@ class TaskRunner:
                      "model": models.model_name(replace(self.base, **chosen)),
                      "base_url": chosen.get("base_url", self.base.base_url)},
             "delegate_to": delegate_to, "mcp": mcp_chosen,
+            # Its network: the orchestrator's unless it chose log, and hosts added to the allowlist for it alone.
+            "egress": egress_mode or None, "allow": _hosts(raw.get("allow")),
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
@@ -331,6 +340,78 @@ class TaskRunner:
             self._release(slug, kept)  # on the merged branch: of no use to the next round
         self.dispatch()
         return _summary(self._read(slug))
+
+    # --- its network: what the gateway refused it, and letting that through ---
+
+    def _sandbox(self, record: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+        """The last burst's sandbox (_sandbox_line), and whether that burst is still running."""
+        burst = (record.get("bursts") or [None])[-1]
+        if not burst:
+            return None, False
+        return _sandbox_line(self._output(record["slug"]), burst), record.get("state") == "running" \
+            and not burst.get("ended")
+
+    def refusals(self, slug: str) -> dict[str, Any]:
+        """What the gateway refused the task's last burst and nothing has let through since: from the gateway
+        while the burst runs, from the events it kept once the burst ended."""
+        record = self._read(slug)
+        found, running = self._sandbox(record)
+        answer: dict[str, Any] = {"egress": record.get("egress") or self.base.egress, "allow": record.get("allow") or [],
+                                  "running": running, "sandbox": (found or {}).get("claim"), "refusals": []}
+        if found is None:
+            return answer
+        events: list[dict[str, Any]] = []
+        approvals: list[dict[str, Any]] = []
+        gateway = Gateway.from_config(self.base) if running else None
+        if gateway is not None:
+            try:
+                events = gateway.events(found["claim"]).get("events") or []
+                approvals = gateway.approvals(found["claim"]).get("approvals") or []
+            except GatewayError as err:
+                answer["error"] = str(err)
+        elif found.get("events"):
+            try:
+                with open(found["events"]) as handle:
+                    events = [json.loads(line) for line in handle if line.strip()]
+            except (OSError, ValueError):
+                events = []  # not kept, or not readable from here
+        allowed = set(answer["allow"])
+        answer["refusals"] = [{"destination": event["destination"], "times": event["times"],
+                               "last": event.get("ts") or "", "id": event.get("id") or ""}
+                              for event in egress.unapproved(events, approvals) if event["destination"] not in allowed]
+        return answer
+
+    def allow(self, slug: str, host: str, scope: str, *, everywhere_ok: bool = True) -> dict[str, str]:
+        """Let `host` through for the task: `now`, for its running burst; `task`, for every burst of it from now
+        on (and the running one); `everywhere`, for every task and job from now on (and the running burst)."""
+        if scope not in ALLOW_SCOPES:
+            raise TasksError(f"scope is one of {', '.join(ALLOW_SCOPES)}.")
+        if scope == "everywhere" and not everywhere_ok:
+            raise TasksError("Allowing a host for every task is for the page, not an API token.")
+        (entry,) = _hosts([host]) or [""]
+        if not entry:
+            raise TasksError("Say which host to allow.")
+        said = []
+        with self.lock:
+            record = self._read(slug)
+            if scope == "task" and entry not in (record.get("allow") or []):
+                record["allow"] = [*(record.get("allow") or []), entry]
+                self._write(record)
+                said.append(f"{slug}'s bursts reach {entry} from now on.")
+        if scope == "everywhere":
+            said.append(egress.allow(self.base, entry).replace(
+                " (gateways already running are not changed; approve a refusal for those)", ""))
+        found, running = self._sandbox(record)
+        gateway = Gateway.from_config(self.base) if running and found else None
+        if gateway is not None:
+            try:
+                gateway.approve(found["claim"], {"allow": entry})
+                said.append(f"The running burst reaches {entry} now.")
+            except GatewayError as err:
+                said.append(f"The running burst could not be told: {err}")
+        elif scope == "now":
+            raise TasksError(f"No burst of {slug} is running on a cluster's gateway: allow it for the task instead.")
+        return {"message": " ".join(said)}
 
     @staticmethod
     def _next_round(record: dict[str, Any]) -> None:
@@ -494,6 +575,10 @@ class TaskRunner:
             argv += ["--target", runtime] + (["--egress", "allowlist"] if self.base.egress == "open" else [])
         elif not record.get("repo") and self.base.egress == "open":
             argv += ["--egress", "allowlist"]  # a question runs as a job does: through a gateway
+        if record.get("egress") == "log":
+            argv += ["--egress", "log"]  # chosen for the task: after the above, so it wins
+        if record.get("allow"):
+            argv += ["--egress-add", ",".join(record["allow"])]
         if not record.get("repo"):
             return argv + ["ask", record["slug"], "--task", record["prompt"]] + (
                 ["--message", record["message"]] if record.get("message") else [])
@@ -548,6 +633,7 @@ class TaskRunner:
     def _start(self, record: dict[str, Any]) -> None:
         """Start a burst of a queued task. Called with the lock held."""
         with open(self._output(record["slug"]), "ab") as output:
+            offset = output.tell()  # where this burst's output starts: its HARNESS_SANDBOX line is after it
             heading = f"\n=== burst {len(record['bursts']) + 1}, {_now()}"
             output.write((heading + (f": {record['message']}" if record.get("message") else "") + " ===\n").encode())
             output.flush()
@@ -568,7 +654,7 @@ class TaskRunner:
             self._tell("ended", {**record, "exit": None})
             self.servers.give_back(f"task {record['slug']}", wake=False)  # the lock is held: dispatch goes on
             return
-        record["bursts"].append({"started": _now(), "message": record.get("message"),
+        record["bursts"].append({"started": _now(), "message": record.get("message"), "offset": offset,
                                  **({"run": run[job.RUN_ID_ENV]} if run else {"branch": record.get("branch")})})
         record.update(state="running", boot=self.boot, **launched.record())
         self._write(record)
@@ -595,7 +681,8 @@ class TaskRunner:
                 record = None  # removed meanwhile
             if record is not None:
                 state = "cancelled" if record.get("cancelling") else _state(code, result)
-                record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"))
+                record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"),
+                                            egress=_sandbox_line(self._output(slug), record["bursts"][-1]))
                 if result.get("agent"):  # routed to a profile (harness/agents.py): that is what works on it
                     provider, _, model = str(result.get("model") or "").partition(" ")
                     record["uses"] = {"provider": provider, "model": model, "base_url": result.get("base_url") or "",
@@ -678,10 +765,47 @@ def _result(output: Path, prefix: str = RESULT) -> dict[str, Any]:
     return {}
 
 
+def _hosts(raw: Any) -> list[str]:
+    """Allowlist entries as given (a list, or a string of them separated by commas or spaces), checked."""
+    entries = re.split(r"[,\s]+", raw) if isinstance(raw, str) else raw or []
+    if not isinstance(entries, list):
+        raise TasksError("allow is a list of hosts (host, host:port or *.domain).")
+    found = []
+    for entry in (str(e).strip().lower() for e in entries):
+        if not entry:
+            continue
+        if not egress.HOST.fullmatch(entry):
+            raise TasksError(f"{entry!r} is not a host to allow: host, host:port or *.domain.")
+        found.append(entry)
+    return list(dict.fromkeys(found))
+
+
+def _sandbox_line(output: Path, burst: dict[str, Any]) -> dict[str, Any] | None:
+    """A burst's HARNESS_SANDBOX: which sandbox the gateway knows it by, its mode, and where its events are
+    kept once it ends. None before it has one (still starting), or for a burst with no shared gateway."""
+    if burst.get("egress"):
+        return dict(burst["egress"])
+    try:
+        with open(output, "rb") as handle:
+            handle.seek(int(burst.get("offset") or 0))
+            text = handle.read().decode(errors="replace")
+    except OSError:
+        return None
+    found = None
+    for line in text.splitlines():
+        if line.startswith(SANDBOX_LINE):
+            try:
+                found = json.loads(line[len(SANDBOX_LINE):])
+            except ValueError:
+                continue
+    return found if isinstance(found, dict) and found.get("claim") else None
+
+
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
         "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "branch", "created", "created_by",
-        "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait")} | {
+        "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
+        "allow")} | {
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}
 
 

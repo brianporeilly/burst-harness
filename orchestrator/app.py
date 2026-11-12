@@ -79,12 +79,13 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
             path = request.url.path
             if path != "/api/tasks" and not path.startswith("/api/tasks/") and path != "/version":
                 return JSONResponse({"error": "A token reaches /api/tasks (and /version) only."}, status_code=403)
-            request.state.user = user_of(record)
+            request.state.user, request.state.token = user_of(record), True
             return await call_next(request)
         if local_browser and (request.client is None or request.client.host not in LOOPBACK):
             return JSONResponse({"error": "From another machine, use an API token (Authorization: Bearer ...)."},
                                 status_code=401)
         request.state.user = request.headers.get(user_header, "").strip() if user_header else ""
+        request.state.token = False
         host = request.headers.get("host", "").rsplit(":", 1)[0] if not request.headers.get("host", "").startswith("[") \
             else request.headers.get("host", "").split("]")[0] + "]"
         if host.lower() not in allowed:
@@ -271,6 +272,16 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     async def continue_task(slug: str, request: Request) -> dict[str, Any]:
         raw = await body(request) if await request.body() else {}
         return await run_in_threadpool(task_runner().resume, slug, str(raw.get("message") or ""))
+
+    @app.get("/api/tasks/{slug}/refusals")
+    def task_refusals(slug: str) -> dict[str, Any]:
+        return task_runner().refusals(slug)
+
+    @app.post("/api/tasks/{slug}/allow")
+    async def allow_for_task(slug: str, request: Request) -> dict[str, str]:
+        raw = await body(request)
+        return await run_in_threadpool(task_runner().allow, slug, str(raw.get("host") or ""),
+                                       str(raw.get("scope") or "task"), everywhere_ok=not request.state.token)
 
     @app.post("/api/tasks/{slug}/cancel")
     def cancel_task(slug: str) -> dict[str, Any]:

@@ -133,7 +133,7 @@ def approved(cfg: HarnessConfig) -> list[str]:
 
 def allowlist(cfg: HarnessConfig, extra: tuple[str, ...] = ()) -> list[str]:
     """egress_allow, what has been approved for good, and the hosts this run needs to reach no matter what."""
-    hosts = list(dict.fromkeys((*cfg.egress_allow, *approved(cfg), *extra, *mcp.hosts(cfg))))
+    hosts = list(dict.fromkeys((*cfg.egress_allow, *cfg.egress_extra, *approved(cfg), *extra, *mcp.hosts(cfg))))
     for url in (cfg.repo_url, _model_api(cfg)):
         parts = urlsplit(url)
         if parts.scheme == "https" and parts.hostname and parts.hostname not in hosts:

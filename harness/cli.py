@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import os
 import re
 import sys
@@ -184,6 +185,8 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "egress_inject": tuple(w.strip() for w in args.egress_inject.split(",") if w.strip()) if args.egress_inject else None,
         "egress_webhook": args.egress_webhook,
         "egress_allow": tuple(h.strip() for h in args.egress_allow.split(",") if h.strip()) if args.egress_allow else None,
+        "egress_extra": tuple(h.strip() for h in args.egress_add.split(",") if h.strip())
+        if getattr(args, "egress_add", None) else None,
         "engine": args.engine,
         "agent": args.agent,
         "delegate_to": tuple(n.strip() for n in args.delegate_to.split(",") if n.strip()) if args.delegate_to is not None else None,
@@ -283,18 +286,34 @@ def _open(args: argparse.Namespace) -> HarnessContext:
             )
             print(f"No git identity found; commits will be authored as {cfg.git_user_name}.")
         url = git.remote_url(target, cfg.remote)
+        key = state.state_key(url, target.repo)
+        if cfg.build_cache and not isinstance(target, LocalTarget):
+            target = replace(target, env=_build_cache(target, cfg.build_cache, key))
         return HarnessContext(
             target=target,
             cfg=cfg,
             slug=args.slug,
             branch=_branch(cfg, args),  # with the repo's own config, read from the clone
-            state_key=state.state_key(url, target.repo),
+            state_key=key,
             auth=_git_auth(cfg, url),
             repo_slug=git.repo_slug(url),
         )
     except BaseException:
         target.release()
         raise
+
+
+def _build_cache(target: Any, root: str, key: str) -> tuple[tuple[str, str], ...]:
+    """The agent's build environment for build_cache, made in the target: () when it is not there (a sandbox
+    without the volume) or cannot be written."""
+    cargo, built = f"{root}/cargo", f"{root}/target/{key}"
+    made = target.run_shell(f"test -d {shlex.quote(root)} && mkdir -p {shlex.quote(cargo)} {shlex.quote(built)}",
+                            check=False, cwd="/")
+    if made.returncode != 0:
+        print(f"build_cache {root} is not there in the sandbox (or not writable): builds start from nothing.")
+        return ()
+    print(f"Builds keep their output in {root}: CARGO_HOME={cargo}, CARGO_TARGET_DIR={built}.")
+    return (("CARGO_HOME", cargo), ("CARGO_TARGET_DIR", built))
 
 
 def _close(ctx: HarnessContext) -> None:
@@ -774,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
     where.add_argument("--egress-allow", dest="egress_allow",
                        help="Comma-separated hosts for --egress allowlist; replaces the default list. "
                             "'*.example.com' matches subdomains. The repo's host is always added.")
+    where.add_argument("--egress-add", dest="egress_add",
+                       help="Comma-separated hosts added to the allowlist, keeping egress_allow (a task's own).")
     where.add_argument("--pool", help="SandboxWarmPool to claim a sandbox from, for target=agent-sandbox.")
     where.add_argument("--claim", help="Attach to an existing SandboxClaim instead of claiming a new one.")
     where.add_argument("--claim-ttl", type=int, dest="claim_ttl",

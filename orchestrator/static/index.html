@@ -147,6 +147,13 @@
           same sandbox whose report comes back. Continuing the task keeps the same ones.</p>
       </div>
       <div class="grid2">
+        <label>Network
+          <select name="egress"><option value="">The allowlist (the orchestrator's)</option>
+            <option value="log">Permissive: everything let through, and recorded</option></select>
+        </label>
+        <label>Also allow (hosts, for this task) <input type="text" name="allow" placeholder="docs.example.com, *.example.org"></label>
+      </div>
+      <div class="grid2">
         <label>Base branch <input type="text" name="base_branch" placeholder="default"></label>
         <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
       </div>
@@ -847,6 +854,7 @@ async function renderTask() {
       output.textContent = t.output || "";
       if (atEnd) output.scrollTop = output.scrollHeight;
     }
+    renderNetwork(t, box.querySelector("[data-network]"));
     return;
   }
   box.dataset.key = key;
@@ -903,11 +911,44 @@ async function renderTask() {
     el("h3", {}, "Bursts"),
     bursts.length ? el("table", {}, bursts) : el("p", { class: "muted" },
       t.state !== "queued" ? "None." : t.wait ? `Waiting for ${t.wait}.` : "Starting."),
+    t.repo ? el("div", { "data-network": "" }) : null,
     el("h3", {}, "Output"),
     el("pre", { class: "text", "data-output": "" }, t.output || ""),
   );
   const shown = box.querySelector("pre[data-output]");
   shown.scrollTop = shown.scrollHeight;
+  renderNetwork(t, box.querySelector("[data-network]"));
+}
+
+// A task's network: its mode and extra hosts, and what the gateway refused its last burst, each with a way
+// to let it through (the running burst only, every burst of the task, or every task).
+async function renderNetwork(t, box) {
+  if (!box) return;
+  let n;
+  try { n = await api(`/api/tasks/${t.slug}/refusals`); } catch { return; }
+  const key = JSON.stringify(n);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const allow = (host, scope) => taskAct("Allow", async () => {
+    const said = await api(`/api/tasks/${t.slug}/allow`, { method: "POST", body: JSON.stringify({ host, scope }) });
+    alert(said.message);
+  });
+  const rows = n.refusals.map((r) => el("tr", {},
+    el("td", {}, el("code", {}, r.destination)),
+    el("td", {}, `${r.times}×`, r.last ? el("div", { class: "muted" }, when(r.last)) : null),
+    el("td", {}, el("div", { class: "row" },
+      n.running ? el("button", { onclick: () => allow(r.destination, "now") }, "Allow now") : null,
+      el("button", { onclick: () => allow(r.destination, "task") }, "For this task"),
+      el("button", { onclick: () => allow(r.destination, "everywhere") }, "Everywhere")))));
+  box.replaceChildren(...[
+    el("h3", {}, "Network"),
+    el("p", { class: "muted" }, n.egress === "log" ? "Permissive: everything is let through, and recorded."
+      : "The allowlist" + (n.allow.length ? `, and for this task: ${n.allow.join(", ")}.` : ".")),
+    n.error ? el("p", { class: "error" }, n.error) : null,
+    rows.length ? el("table", {}, el("tr", {}, el("th", {}, `Refused ${n.running ? "while running" : "in the last burst"}`),
+      el("th", {}, "Times"), el("th", {}, "")), ...rows)
+      : el("p", { class: "muted" }, n.sandbox ? "Nothing refused." : "Nothing to show yet."),
+  ].filter((child) => child != null));
 }
 
 document.getElementById("new-task").onclick = () => {
