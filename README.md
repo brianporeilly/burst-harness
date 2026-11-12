@@ -828,7 +828,9 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   picked for the first. `base_branch` and `draft` don't apply. Remove deletes
   its answers too.
 - `--task-limit` (`ORCHESTRATOR_TASK_LIMIT`, default 1) tasks run at once; the
-  rest wait their turn. The queue is in the tasks' records (`tasks/SLUG/` in
+  rest wait their turn. A queued task says what it's waiting for (`wait` in the
+  API, and on the page): a task slot, naming the tasks running, or its model
+  server (`server_wait`). The queue is in the tasks' records (`tasks/SLUG/` in
   the orchestrator's state directory), so it survives a restart, and a burst a restart cut
   short is started again, up to twice.
 - **Stop** sends the burst Ctrl-C, so the harness cleans up after itself;

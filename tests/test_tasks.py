@@ -366,10 +366,15 @@ def test_tasks_queue_beyond_the_limit_and_start_in_order(tmp_path, harness):
     second = runner.create({"repo": "me/proj", "prompt": "second", "slug": "b"})
     runner.create({"repo": "me/proj", "prompt": "third", "slug": "c"})
     assert second["state"] == "queued" and len(harness.started) == 1
+    # Said, so a queued task is not taken for one waiting on a model server.
+    slot = "a task slot: 1 at a time (ORCHESTRATOR_TASK_LIMIT), and a is running"
+    assert runner.task("b")["wait"] == slot
+    assert {t["slug"]: t["wait"] for t in runner.tasks()} == {"a": "", "b": slot, "c": slot}
     harness.started[0][1].finish(1)  # no result line: no terminal state
     assert _settled(runner, "a", "failed")["bursts"][0]["state"] == "failed"
     assert _settled(runner, "b", "running") and runner.task("c")["state"] == "queued"
-    assert harness.argv()[-1] == "second"
+    assert runner.task("c")["wait"] == "a task slot: 1 at a time (ORCHESTRATOR_TASK_LIMIT), and b is running"
+    assert runner.task("b")["wait"] == "" and harness.argv()[-1] == "second"
 
 
 def test_continuing_a_paused_task_is_another_burst_with_the_reply(tmp_path, harness):

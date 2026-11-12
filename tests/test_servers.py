@@ -136,6 +136,7 @@ def test_a_job_waits_while_another_run_has_its_server_and_a_task_starts_once_it_
         jobs.run("watcher")
     made = tasks.create({"repo": "me/proj", "prompt": "x"})
     assert made["state"] == "queued" and "in use by job brief" in tasks.task(made["slug"])["server_wait"]
+    assert tasks.task(made["slug"])["wait"] == "its model server: http://127.0.0.1:9 is in use by job brief"
     assert harness.started == []
 
     runs.ends[0].set()  # the job's run ends: the server is given back, and the queued task takes it
