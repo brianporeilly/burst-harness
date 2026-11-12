@@ -10,6 +10,16 @@ from strands.types.tools import ToolContext
 from . import state, terminal
 from .context import HarnessContext
 
+# In request_state: a tool stopped the loop (stop_loop). Strands keeps a deferred cancel to itself, so this is
+# how the harness's own restarts (agent.py) know to leave it stopped.
+STOPPED = "harness_stopped"
+
+
+def stop_loop(tool_context: ToolContext) -> None:
+    """End the run once this batch of tools has run: a terminal state, a job's report."""
+    tool_context.invocation_state.setdefault("request_state", {})[STOPPED] = True
+    tool_context.agent.cancel(after_current_tools=True)
+
 __all__ = ["HarnessContext", "make_tools"]
 
 
@@ -31,7 +41,7 @@ def make_tools(ctx: HarnessContext) -> list:
             except ValueError as err:
                 return f"Rejected: {err}"
         if ctx.terminal:
-            tool_context.invocation_state.setdefault("request_state", {})["stop_event_loop"] = True
+            stop_loop(tool_context)
         return result
 
     @tool

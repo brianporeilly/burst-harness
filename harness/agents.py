@@ -23,7 +23,7 @@ delegate, whatever brief the lead gives it:
     prompt = "Review adversarially: find bugs, missed requirements and claims the work does not back up."
     read_only = true
 
-prompt is added to its instructions. read_only takes its file editor away and
+prompt is added to its instructions. read_only takes its write and edit tools away and
 tells it to change nothing; it keeps a shell, so the checkout is compared
 before and after, and the lead is told of any file it changed anyway. What it leaves out is the
 default, not the top-level setting: a profile is a whole model, so a hosted
