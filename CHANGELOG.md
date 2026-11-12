@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.23.2 (2026-11-12)
+
+### Bug Fixes
+
+- **orchestrator**: Read the server is a POST behind the change header
+  ([#6](https://github.com/brianporeilly/burst-harness/pull/6),
+  [`2d51a8d`](https://github.com/brianporeilly/burst-harness/commit/2d51a8deeec69b4f11fd04543b6267e143cdb416))
+
+
 ## v0.23.1 (2026-11-12)
 
 ### Bug Fixes
