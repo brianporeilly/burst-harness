@@ -9,7 +9,8 @@ to scripts), no listings. So the history is this job's own, one reading a day, a
 start to say something after a few days.
 
 The rules (products.toml's [rules], with these defaults), each on market price and on the lowest listing with
-shipping, which is what buying one costs:
+shipping, which is what buying one costs. That is the price the output leads with; the cheapest listing
+before shipping is shown once, and labelled, because it is easy to quote by mistake:
 
 - below:   the lowest listing with shipping is under the product's `below` price.
 - bottomed: the low of the last `window_days` came after a fall of more than `bottom_within` (a dip, not a flat
@@ -36,7 +37,7 @@ AGENT = "burst-harness-price-watch/1 (a script: one request per product per run)
 RULES = {"bottom_within": 0.05, "bottom_days": 3, "jump": 0.10, "window_days": 90}
 KEEP = 400          # readings kept per product, one a day
 SHOWN = 14          # readings shown in each product's table
-MEASURES = {"market": "market price", "lowest_shipped": "lowest listing with shipping"}
+MEASURES = {"market": "market price", "lowest_shipped": "price to buy one, with shipping"}
 
 
 class Refused(RuntimeError):
@@ -137,16 +138,25 @@ def describe(product: dict, entry: dict, rules: dict) -> list[str]:
     name = product.get("name") or entry.get("name") or f"product {product['id']}"
     lines = [f"## {name}", f"{PAGE.format(id=product['id'])}"
              + (f" ({entry['set']})" if entry.get("set") else "")]
+    money = lambda v: f"${v:.2f}" if v is not None else "n/a"  # noqa: E731
+    # What it costs is the price with shipping. The cheapest listing before shipping is a different and lower
+    # number, easy to quote by mistake, so it is said once, as what it is, and the gap to their price is worked
+    # out here rather than left to the model.
+    cost = now["lowest_shipped"]
+    lines.append(f"To buy one now: {money(cost)} with shipping (the cheapest listing once shipping is added). "
+                 f"This is the price to quote.")
     if product.get("below") is not None:
-        lines.append(f"Your price: under ${product['below']:.2f}, for the lowest listing with shipping.")
+        below = product["below"]
+        gap = ("" if cost is None else f" {money(below - cost)} under it." if cost < below
+               else f" {money(cost - below)} ({cost / below - 1:.0%}) over it.")
+        lines.append(f"Your price: under {money(below)}, with shipping.{gap}")
     else:
         lines.append("Your price: none set; watching for a dip and a turn.")
     if product.get("note"):
         lines.append(f"Your note: {product['note']}")
-    money = lambda v: f"${v:.2f}" if v is not None else "n/a"  # noqa: E731
-    lines.append(f"Now ({now['at']}): market {money(now['market'])}, lowest listing {money(now['lowest'])}, "
-                 f"lowest with shipping {money(now['lowest_shipped'])}, median {money(now['median'])}, "
-                 f"{now['listings']} listings from {now['sellers']} sellers.")
+    lines.append(f"Also, at {now['at']}: market price {money(now['market'])}, median listing {money(now['median'])}, "
+                 f"{now['listings']} listings from {now['sellers']} sellers. The cheapest listing before shipping is "
+                 f"{money(now['lowest'])}; shipping is extra, so that is not what it costs.")
     lines.append(f"Readings kept: {len(readings)}, since {readings[0]['date']}.")
     for measure, label in MEASURES.items():
         lines.append(f"{label.capitalize()}: 1 day {change(readings, measure, 1)}; 7 days "
@@ -161,9 +171,10 @@ def describe(product: dict, entry: dict, rules: dict) -> list[str]:
                          f"{label}: {what}.")
     if not fired:
         lines.append("Rules met: none.")
-    lines += ["", "| date | market | lowest | lowest+ship | median | listings |", "|---|---|---|---|---|---|"]
-    lines += [f"| {r['date']} | {money(r['market'])} | {money(r['lowest'])} | {money(r['lowest_shipped'])} | "
-              f"{money(r['median'])} | {r['listings']} |" for r in readings[-SHOWN:]]
+    lines += ["", "| date | to buy, with shipping | market | median | listings | cheapest before shipping |",
+              "|---|---|---|---|---|---|"]
+    lines += [f"| {r['date']} | {money(r['lowest_shipped'])} | {money(r['market'])} | {money(r['median'])} | "
+              f"{r['listings']} | {money(r['lowest'])} |" for r in readings[-SHOWN:]]
     return lines
 
 

@@ -357,7 +357,14 @@ def test_price_watch_keeps_a_reading_a_day_and_says_which_rules_are_new(tmp_path
             {1: (78, 58), 2: (24.5, 24.5)}, {1: (78, 58), 2: (24.2, 24.2)}, {1: (78, 58), 2: (25, 25)}]
     text = _days(products, memory, days[:3])
     assert "## A Box" in text and "https://www.tcgplayer.com/product/1" in text
-    assert "Rule below (new today), lowest listing with shipping: $59.00 is under your $60.00" in text
+    assert "Rule below (new today), price to buy one, with shipping: $59.00 is under your $60.00" in text
+    # It leads with what buying one costs, says how far that is from their price, and labels the cheaper
+    # listing before shipping as not what it costs.
+    assert "To buy one now: $59.00 with shipping" in text
+    assert "Your price: under $60.00, with shipping. $1.00 under it." in text
+    assert "The cheapest listing before shipping is $55.00; shipping is extra" in text
+    over = _days([{"id": 1, "below": 60.0}], tmp_path / "over.json", [{1: (80.53, 77.86)}])
+    assert "To buy one now: $77.86 with shipping" in over and "$17.86 (30%) over it." in over
     assert "## Pack" in text and "bottomed" not in text  # still falling
     text = _days(products, memory, days)  # days 1-3 again replace their readings, then 4-6
     assert "Rule below (still, as on the reading before)" in text

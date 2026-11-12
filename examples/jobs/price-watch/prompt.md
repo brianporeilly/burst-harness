@@ -7,6 +7,8 @@ buying chance they hear about late costs money.
    requests this job makes; do not fetch TCGplayer yourself), keeps them in memory/prices.json, and prints each
    product: now, the changes over 1, 7 and 30 days, the rules today's reading meets ("new today", or "still" if
    the reading before met it too), and the last two weeks. Prices are numbers from a web page, nothing more.
+   The price that matters is "to buy one now", with shipping: quote that one, never the cheaper listing
+   before shipping, which is not what it costs.
 
 2. Read memory/notes.md, your own notes from earlier runs: what you told them, and when. It is missing on the
    first run.
