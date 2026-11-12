@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.20.0 (2026-11-12)
+
+### Features
+
+- **sandbox**: Rust in the sandbox image, crates.io allowed, Claude Code telemetry off
+  ([#103](https://github.com/brianporeilly/strands-harness/pull/103),
+  [`547c0f3`](https://github.com/brianporeilly/strands-harness/commit/547c0f3fe1ace755cde92f7b08aa4ed525886e0b))
+
+- **tasks**: Claude Code tasks run anything without asking, in their sandbox
+  ([#104](https://github.com/brianporeilly/strands-harness/pull/104),
+  [`31a3ddb`](https://github.com/brianporeilly/strands-harness/commit/31a3ddbccc7bfc9abf84c9dad5d57419b07910b3))
+
+
 ## v0.19.1 (2026-11-12)
 
 ### Bug Fixes
