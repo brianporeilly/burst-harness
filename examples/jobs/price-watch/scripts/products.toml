@@ -1,0 +1,24 @@
+# What price-watch watches: TCGplayer products, by the number in the product's
+# address (tcgplayer.com/product/515909/...).
+#
+#   id     the product
+#   name   optional: what to call it (TCGplayer's name otherwise)
+#   below  optional: tell me when the lowest listing, with shipping, is under this
+#   note   optional: anything the model should weigh ("want two, for December")
+
+[[product]]
+id = 706227
+name = "Star Trek prerelease pack"
+
+[[product]]
+id = 515909
+name = "LOTR scene box: The Might of Galadriel"
+below = 60.00
+
+# The rules the script checks (these are its defaults). Which of them are
+# worth a message is the model's call (prompt.md).
+[rules]
+bottom_within = 0.05   # "bottomed": fell more than 5% to a low, and held within 5% of it...
+bottom_days = 3        # ...for the last 3 readings, the low set before them
+jump = 0.10            # "jump": up 10% or more in a day
+window_days = 90       # the low is the lowest of the last 90 days

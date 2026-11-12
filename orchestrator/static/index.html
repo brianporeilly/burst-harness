@@ -561,8 +561,11 @@ form.onsubmit = async (event) => {
 // --- jobs ---
 
 let jobs = [], selectedJob = null, selectedRun = null, tab = "sessions";
-const runChip = (state) => el("span", { class: "chip " + ({ reported: "ok", running: "warn", starting: "warn",
-  failed: "bad", interrupted: "bad" }[state] || "") }, state || "never run");
+// A quiet run ([job] quiet = true) reported that there was nothing to send, and sent nothing.
+const runChip = (state, quiet) => quiet && state === "reported"
+  ? el("span", { class: "chip", title: "Nothing worth sending: the report is kept here only" }, "quiet")
+  : el("span", { class: "chip " + ({ reported: "ok", running: "warn", starting: "warn",
+      failed: "bad", interrupted: "bad" }[state] || "") }, state || "never run");
 const when = (iso) => {
   if (!iso) return "";
   const seconds = (Date.now() - Date.parse(iso)) / 1000;
@@ -586,7 +589,7 @@ async function refreshJobs() {
   list.replaceChildren(...jobs.map((j) => el("div", {
       class: "session" + (j.name === selectedJob ? " selected" : ""), onclick: () => selectJob(j.name) },
     el("div", { class: "row spread" }, el("span", { class: "name" }, j.name),
-       j.error ? el("span", { class: "chip bad" }, "broken") : runChip(j.running ? "running" : j.last_run && j.last_run.state)),
+       j.error ? el("span", { class: "chip bad" }, "broken") : runChip(j.running ? "running" : j.last_run && j.last_run.state, !j.running && j.last_run && j.last_run.quiet)),
     el("div", { class: "muted" }, j.error ? j.error.slice(0, 120) : [
       j.engine, j.trigger === "manual" ? "manual" : `cron ${j.trigger}`, scheduleText(j.schedule),
       j.last_success ? `last good ${when(j.last_success.started)}` : "no good run yet",
@@ -636,7 +639,7 @@ async function renderJob() {
   const rows = (j.runs || []).map((r) => el("tr", {
       class: "clickable" + (r.id === selectedRun ? " selected" : ""), onclick: () => { selectedRun = r.id; renderJob(); } },
     el("td", {}, r.started ? new Date(r.started).toLocaleString() : r.id,
-       r.trigger === "schedule" ? el("span", { class: "muted" }, " (scheduled)") : null), el("td", {}, runChip(r.state)),
+       r.trigger === "schedule" ? el("span", { class: "muted" }, " (scheduled)") : null), el("td", {}, runChip(r.state, r.quiet)),
     el("td", {}, r.seconds != null ? `${r.seconds}s` : ""),
     el("td", {}, r.egress && r.egress.refused_count ? el("span", { class: "chip bad" }, `${r.egress.refused_count} refused`) : "")));
   box.replaceChildren(
@@ -708,7 +711,7 @@ async function renderRun(name, id) {
   const hosts = Object.entries(egress.requests || {});
   const openOutput = box.querySelector("details[data-output]")?.open;
   box.replaceChildren(
-    el("h3", {}, "Run ", el("code", {}, r.id), " ", runChip(r.state)),
+    el("h3", {}, "Run ", el("code", {}, r.id), " ", runChip(r.state, r.quiet)),
     r.reason ? el("p", { class: "error" }, r.reason) : null,
     r.delivery_errors ? el("p", { class: "error" }, `Delivery: ${r.delivery_errors.join("; ")}`) : null,
     r.memory ? el("p", { class: r.memory.not_kept ? "error" : "muted" }, memoryLine(r.memory)) : null,

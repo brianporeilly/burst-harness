@@ -1030,6 +1030,16 @@ A run that reads untrusted mail writes its memory having read it, so the
 model is told its memory is its own earlier notes, which never override its
 rules; report mode still stops it doing anything with what it remembers.
 
+**Quiet runs.** A job that watches for something (a price, an outage) mostly
+has nothing to say. With `[job] quiet = true`, the model is told to begin its
+report with "Nothing to send" when nothing is worth its reader's attention,
+followed by a few lines on what it checked. Such a run is recorded as usual,
+with its report, and shown as "quiet" in the Jobs tab, but sent to none of
+its outputs. A run that fails is always sent, and so is any report that does
+not begin that way, so a model unsure whether to speak up speaks up. It is
+for report mode: an act-mode run's plan waits on a person, so it is always
+sent. `examples/jobs/price-watch` is one.
+
 **Act mode: plans and approvals.** A job that should do something (archive
 mail, label it) never lets the model do it. With `mode = "act"`, a run is as
 read-only as a report job's: besides its report, it writes a plan,
@@ -1088,10 +1098,12 @@ Examples: `examples/jobs/repo-digest` (Renovate PRs, GitHub),
 `examples/jobs/cluster-watcher` (what needs attention in a cluster, with a
 read-only ServiceAccount from its `rbac.yaml`), and
 `examples/jobs/daily-brief` (today's Google Calendar and the Gmail that may
-need you, on one sign-in, for a model of your own to read), and
+need you, on one sign-in, for a model of your own to read),
 `examples/jobs/mail-sorter` (act mode: the inbox by sender, with a plan to
 archive, mark read or label that you approve, applied by a script that checks
-each item again and deletes nothing).
+each item again and deletes nothing), and `examples/jobs/price-watch`
+(TCGplayer prices once a day, kept in its memory, and a message only when the
+model judges one worth sending: quiet otherwise).
 
 Jobs default to `target = "podman"`, `engine = "strands"`, `egress =
 "allowlist"`. A job's settings sit between your config file and `HARNESS_*`.

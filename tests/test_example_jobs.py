@@ -322,3 +322,95 @@ def test_the_mail_sorter_is_a_job_that_proposes_and_applies_only_batch_changes()
     assert spec.apply_writes == tuple({"host": "gmail.googleapis.com", "method": "POST", "path": path}
                                       for path in ("/gmail/v1/users/me/messages/batchModify",
                                                    "/gmail/v1/users/me/labels"))
+
+
+# --- price-watch ------------------------------------------------------------
+
+WATCH = Path(__file__).parent.parent / "examples/jobs/price-watch"
+_spec = importlib.util.spec_from_file_location("prices", WATCH / "scripts/prices.py")
+prices = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(prices)
+
+RULES = dict(prices.RULES)
+
+
+def _details(market, shipped, *, lowest=None, listings=20):
+    return {"productName": "A Box", "setName": "A Set", "marketPrice": market, "lowestPrice": lowest or shipped - 4,
+            "lowestPriceWithShipping": shipped, "medianPrice": market + 2, "listings": float(listings),
+            "sellers": float(listings)}
+
+
+def _days(products, path, days):
+    """Run check once a day over `days`: {product id: (market, lowest with shipping)} each day."""
+    text = ""
+    for n, day in enumerate(days, start=1):
+        text, failed = prices.check(products, RULES, path, now=f"2026-11-{n:02d}T22:22:00Z",
+                                    get=lambda pid, day=day: _details(*day[pid]))
+    return text
+
+
+def test_price_watch_keeps_a_reading_a_day_and_says_which_rules_are_new(tmp_path):
+    memory = tmp_path / "memory" / "prices.json"
+    products = [{"id": 1, "below": 60.0}, {"id": 2, "name": "Pack"}]
+    # 1: falls under the price on day 3. 2: falls 20%, then holds near its low for three days, then jumps.
+    days = [{1: (80, 70), 2: (30, 30)}, {1: (79, 66), 2: (27, 27)}, {1: (78, 59), 2: (24, 24)},
+            {1: (78, 58), 2: (24.5, 24.5)}, {1: (78, 58), 2: (24.2, 24.2)}, {1: (78, 58), 2: (25, 25)}]
+    text = _days(products, memory, days[:3])
+    assert "## A Box" in text and "https://www.tcgplayer.com/product/1" in text
+    assert "Rule below (new today), lowest listing with shipping: $59.00 is under your $60.00" in text
+    assert "## Pack" in text and "bottomed" not in text  # still falling
+    text = _days(products, memory, days)  # days 1-3 again replace their readings, then 4-6
+    assert "Rule below (still, as on the reading before)" in text
+    assert ("Rule bottomed (new today), market price: held within 5% of its low ($24.00 on 2026-11-03) "
+            "for the last 3 readings") in text
+    kept = json.loads(memory.read_text())["products"]
+    assert [r["date"] for r in kept["2"]["readings"]] == [f"2026-11-0{n}" for n in range(1, 7)]
+    assert kept["1"]["readings"][-1] == {"date": "2026-11-06", "at": "2026-11-06T22:22:00Z", "market": 78.0,
+                                         "lowest": 54.0, "lowest_shipped": 58.0, "median": 80.0, "listings": 20,
+                                         "sellers": 20}
+    # A jump of 10% in a day; and a flat price is not a bottom.
+    jumped = _days(products, tmp_path / "m2.json", [{1: (50, 70), 2: (20, 20)}, {1: (56, 70), 2: (20, 20)}])
+    assert "Rule jump (new today), market price: up 12% since 2026-11-01 ($50.00)" in jumped
+    flat = [{1: (80, 70), 2: (20, 20)}] * 5
+    assert "bottomed" not in _days(products, tmp_path / "m3.json", flat)
+
+
+def test_price_watch_says_what_it_could_not_read_and_forgets_products_no_longer_watched(tmp_path):
+    import urllib.error
+
+    memory = tmp_path / "prices.json"
+    _days([{"id": 1}, {"id": 2}], memory, [{1: (10, 10), 2: (20, 20)}])
+
+    def refused(pid):
+        raise urllib.error.HTTPError(f"https://example.com/{pid}", 403, "Forbidden", {}, None)
+
+    text, failed = prices.check([{"id": 1}], RULES, memory, now="2026-11-02T22:22:00Z", get=refused)
+    assert failed == 1 and "Could not be read: HTTP 403 (failing since 2026-11-02T22:22:00Z)" in text
+    assert "Its last reading is below." in text and "| 2026-11-01 |" in text
+    assert list(json.loads(memory.read_text())["products"]) == ["1"]
+
+
+@pytest.mark.parametrize("toml, error", [
+    ("", "no \\[\\[product\\]\\]"),
+    ("[[product]]\nid = \"515909\"\n", "has an id"),
+    ("[[product]]\nid = 1\nbelow = \"60\"\n", "below is a price"),
+    ("[[product]]\nid = 1\nprice = 60\n", "unknown setting"),
+    ("[[product]]\nid = 1\n[rules]\njumps = 0.2\n", "unknown \\[rules\\]"),
+])
+def test_price_watch_refuses_a_products_file_it_does_not_read(tmp_path, toml, error):
+    path = tmp_path / "products.toml"
+    path.write_text(toml)
+    with pytest.raises(prices.Refused, match=error):
+        prices.load_products(path)
+
+
+def test_the_price_watch_is_a_quiet_report_job_that_reads_only_tcgplayer_s_product_details():
+    from harness import job
+
+    spec = job.load(WATCH)
+    cfg = job.config(spec)
+    assert (spec.mode, spec.memory, spec.quiet, spec.trigger) == ("report", True, True, "22 13 * * *")
+    assert cfg.egress_allow == ("mp-search-api.tcgplayer.com",) and spec.secrets == ()
+    products, rules = prices.load_products(WATCH / "scripts/products.toml")
+    assert [p["id"] for p in products] == [706227, 515909] and rules == prices.RULES
+    assert prices.DETAILS.startswith("https://mp-search-api.tcgplayer.com/") and "script" in prices.AGENT

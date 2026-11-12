@@ -39,6 +39,8 @@ if remember:
     open("seen-before.txt", "w").write(seen)
 if mode == "report" or (mode == "late" and "--continue" in argv):
     open("report.md", "w").write("# Digest\n\nAll green. Scripts: " + ",".join(sorted(os.listdir("scripts"))) + "\n")
+if mode == "quiet":
+    open("report.md", "w").write("**Nothing to send.** Prices checked; none moved.\n")
 if mode == "fail":
     sys.exit(1)
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "num_turns": 1}), flush=True)
@@ -650,3 +652,47 @@ def test_only_the_last_runs_memories_are_kept_to_go_back_to(tmp_path):
     job.memory.prune(runs)
     left = sorted(p.parent.name for p in runs.glob(f"*/{job.memory.SNAPSHOT}"))
     assert len(left) == job.memory.KEEP and left[0] == "20261110T080003Z-abcd"
+
+
+QUIET = """
+engine = "claude-code"
+[job]
+quiet = true
+output = ["stdout", "slack:C123"]
+"""
+
+
+@pytest.mark.parametrize("mode, sent", [("quiet", False), ("report", True), ("fail", True)])
+def test_a_quiet_job_sends_nothing_when_its_report_says_there_is_nothing_to_send(
+        tmp_path, monkeypatch, fake_claude, slack, capsys, mode, sent):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", mode)
+    spec = job.load(_write_job(tmp_path, QUIET))
+    cfg = job.config(spec)
+    job.run(spec, cfg, acquire=_local(tmp_path))
+    assert bool(slack.received) is sent
+    (record,) = job.list_runs(cfg, "digest")
+    assert record.get("quiet", False) is (not sent)
+    rules = fake_claude()[0]["argv"][fake_claude()[0]["argv"].index("--append-system-prompt") + 1]
+    assert 'begin the report with the words "Nothing to send"' in rules
+    if not sent:  # kept with the run, and in the log, but posted nowhere
+        assert (job.runs_dir(cfg, "digest") / record["id"] / "report.md").read_text().startswith("**Nothing to send.**")
+        assert "digest: nothing to send" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("report, quiet", [
+    ("Nothing to send. All steady.", True), ("## nothing TO SEND\n\nChecked two.", True),
+    ("> **Nothing to send**", True), ("Something to send: it dropped.", False),
+    ("The price fell. Nothing to send otherwise.", False), ("", False), (None, False)])
+def test_what_counts_as_nothing_to_send(report, quiet):
+    assert job.is_quiet(report) is quiet
+
+
+def test_quiet_is_for_report_mode_and_check_shows_it(tmp_path):
+    with pytest.raises(job.JobError, match="quiet is for mode"):
+        job.load(_write_job(tmp_path, '[job]\nmode = "act"\napply = "true"\nquiet = true\n', name="acts"))
+    with pytest.raises(job.JobError, match="quiet is true or false"):
+        job.load(_write_job(tmp_path, '[job]\nquiet = "yes"\n', name="bad"))
+    spec = job.load(_write_job(tmp_path, QUIET))
+    assert "  quiet    " in job.describe(spec, job.config(spec))
+    plain = job.load(_write_job(tmp_path, BASIC.replace("REPORTS", str(tmp_path / "r")), name="plain"))
+    assert "  quiet    " not in job.describe(plain, job.config(plain))

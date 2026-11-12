@@ -1,0 +1,25 @@
+# Price watch: TCGplayer prices for the products in scripts/products.toml,
+# once a day, with a message only when one is worth knowing about: under your
+# price, at the bottom of a dip and turning, or jumping. Most days it sends
+# nothing ([job] quiet), and the run's report says why.
+#
+# The script makes one plain request per product to TCGplayer's product
+# details and keeps one reading a day in the job's memory: TCGplayer does not
+# give scripts its price history, so the history is the job's own, and the
+# rules that need it start to say something after a few days. Whether what
+# the numbers show is worth a message is the model's to judge (prompt.md).
+#
+# Run it on a model of your own if you like; it reads only prices.
+#   provider = "llamacpp"
+#   base_url = "http://llm.lan:8080"
+#   model_id = "qwen3-14b"
+
+# The sandbox reaches TCGplayer's product details, and only to read them.
+egress_allow = ["mp-search-api.tcgplayer.com"]
+
+[job]
+trigger = "22 13 * * *"
+mode = "report"
+memory = true
+quiet = true
+output = ["stdout", "file:~/.burst-harness/reports/price-watch/%Y-%m-%d.md"]
