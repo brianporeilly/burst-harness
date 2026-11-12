@@ -68,6 +68,9 @@ def harness(monkeypatch):
     fake = Harness()
     monkeypatch.setattr(tasks_module.subprocess, "Popen", fake)
     monkeypatch.setattr(tasks_module.git, "default_branch", lambda url: "trunk")
+    fake.prs = {}  # PR URL -> what GitHub says of it; "open" if not given
+    fake.asked = []
+    monkeypatch.setattr(tasks_module.git, "pr_state", lambda url: fake.asked.append(url) or fake.prs.get(url, "open"))
     return fake
 
 
@@ -604,3 +607,96 @@ def test_a_claude_code_task_runs_anything_without_asking_in_its_sandbox(tmp_path
     assert "bypassPermissions" in harness.argv()
     runner.create({"repo": "me/proj", "prompt": "x", "slug": "strands"})
     assert "--permission-mode" not in harness.argv()
+
+
+PR1, PR2 = "https://github.com/me/proj/pull/8", "https://github.com/me/proj/pull/12"
+
+
+def test_once_its_pr_is_merged_continuing_a_task_starts_its_next_round(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "build it in phases", "slug": "t"})
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    done = _settled(runner, "t", "pr")
+    assert done["pr_state"] == "open" and done["bursts"][0]["branch"] == "harness/t"
+    harness.prs[PR1] = "merged"
+    assert runner.task("t")["state"] == "pr"  # looked at moments ago, when the PR was opened
+    runner.check_pr("t", 0)
+    merged = runner.task("t")
+    assert (merged["state"], merged["pr_state"]) == ("merged", "merged")
+
+    runner.resume("t", "now phase 2")
+    argv = harness.argv()
+    assert argv[argv.index("--branch") + 1] == "harness/t-2" and argv[-2:] == ["--message", "now phase 2"]
+    assert argv[argv.index("run") + 1:argv.index("run") + 4] == ["t", "--task", "build it in phases"]
+    record = runner.task("t")
+    assert record["rounds"] == [{"branch": "harness/t", "pr": PR1, "pr_state": "merged"}]
+    assert (record["branch"], record["pr"], record["pr_state"]) == ("harness/t-2", None, None)
+
+    harness.started[1][1].finish(0, state="pr", pr=PR2)
+    done = _settled(runner, "t", "pr")
+    assert (done["pr"], done["pr_state"], done["bursts"][1]["branch"]) == (PR2, "open", "harness/t-2")
+    runner.resume("t", "a review fix")  # an open PR: more on the same round's branch
+    assert harness.argv()[harness.argv().index("--branch") + 1] == "harness/t-2"
+    harness.started[2][1].finish(0, state="pr", pr=PR2)
+    _settled(runner, "t", "pr")
+    harness.prs[PR2] = "merged"
+    runner.resume("t")  # merged since it was last looked at: Continue finds out, and starts round 3
+    assert harness.argv()[harness.argv().index("--branch") + 1] == "harness/t-3"
+    assert [r["branch"] for r in runner.task("t")["rounds"]] == ["harness/t", "harness/t-2"]
+
+
+def test_a_pr_is_looked_at_only_while_its_task_is_idle_and_not_too_often(tmp_path, harness):
+    runner = _runner(tmp_path, limit=2)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t"})
+    runner.create({"prompt": "why?", "slug": "q"})  # a question has no PR
+    runner.check_prs()
+    assert harness.asked == []  # running, and no PR yet
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+    runner.check_prs()
+    assert harness.asked == []  # just opened
+    runner.check_pr("t", 0)
+    runner.check_prs()
+    runner.task("t")
+    assert harness.asked == [PR1]  # once: the background look and the page's go by how fresh it is
+
+    harness.prs[PR1] = "closed"  # closed without merging: still the task's PR, continued on the same branch
+    runner.check_pr("t", 0)
+    assert (runner.task("t")["state"], runner.task("t")["pr_state"]) == ("pr", "closed")
+    runner.resume("t")
+    assert "--branch" not in harness.argv()
+
+
+def test_trouble_asking_about_a_pr_leaves_the_task_as_it_was(tmp_path, harness, monkeypatch, capsys):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t"})
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+
+    def refused(url):
+        raise git.GitError("gh pr view failed: HTTP 401")
+
+    monkeypatch.setattr(tasks_module.git, "pr_state", refused)
+    runner.check_pr("t", 0)
+    assert (runner.task("t")["state"], runner.task("t")["pr_state"]) == ("pr", "open")
+    assert "HTTP 401" in capsys.readouterr().out
+    runner.resume("t", "go on")  # continued on its branch, as before
+    assert "--branch" not in harness.argv()
+
+
+def test_a_prs_state_is_asked_of_github_with_gh(monkeypatch):
+    calls = []
+
+    class Done:
+        returncode, stdout, stderr = 0, "MERGED\n", ""
+
+    monkeypatch.setenv("GH_TOKEN", "a-token")
+    monkeypatch.setattr(git.subprocess, "run", lambda argv, **k: calls.append((argv, k["env"])) or Done())
+    assert git.pr_state(PR1) == "merged"
+    assert calls[0][0][:4] == ["gh", "pr", "view", PR1] and calls[0][1]["GH_TOKEN"] == "a-token"
+    Done.returncode, Done.stdout, Done.stderr = 1, "", "HTTP 401 a-token"
+    with pytest.raises(git.GitError) as err:
+        git.pr_state(PR1)
+    assert "a-token" not in str(err.value)
+    with pytest.raises(git.GitError, match="not a PR"):
+        git.pr_state("https://github.com/me/proj/pull/8 --repo x")

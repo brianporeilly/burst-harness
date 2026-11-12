@@ -65,6 +65,7 @@ def cluster(monkeypatch):
     fake = FakeCluster()
     monkeypatch.setattr(Jobs, "_kubectl", lambda self, *args, stdin=None: fake(*args, stdin=stdin))
     monkeypatch.setattr("orchestrator.tasks.git.default_branch", lambda url: "main")
+    monkeypatch.setattr("orchestrator.tasks.git.pr_state", lambda url: "open")  # no asking GitHub
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
     monkeypatch.setenv("HARNESS_NAMESPACE", "agent-sandbox-system")  # the orchestrator's settings go to the burst
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")  # the orchestrator's pod's, not for a burst

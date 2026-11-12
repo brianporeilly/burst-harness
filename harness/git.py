@@ -223,6 +223,29 @@ def redact_url(url: str) -> str:
     return re.sub(r"^(\w+://)[^@/]+@", r"\1", url)
 
 
+PR_URL = re.compile(r"https://[A-Za-z0-9.-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/[0-9]+")
+
+
+def pr_state(url: str) -> str:
+    """A PR's state, asked of GitHub from the driver with its token: "open", "merged" or "closed"."""
+    if not PR_URL.fullmatch(url):
+        raise GitError(f"{url!r} is not a PR's URL.")
+    env = dict(os.environ)
+    if secret := token():
+        env["GH_TOKEN"] = secret
+    try:
+        proc = subprocess.run(["gh", "pr", "view", url, "--json", "state", "--jq", ".state"],
+                              capture_output=True, text=True, env=env, timeout=60, check=False)
+    except FileNotFoundError as err:
+        raise GitError("gh is not installed on the driver.") from err
+    except subprocess.TimeoutExpired as err:
+        raise GitError(f"gh pr view {url} took too long.") from err
+    state = proc.stdout.strip().lower()
+    if proc.returncode != 0 or state not in ("open", "merged", "closed"):
+        raise GitError(_redact(f"gh pr view failed: {(proc.stderr or proc.stdout).strip()}"))
+    return state
+
+
 def open_pr(*, repo: str, head: str, title: str, body: str, base: str, draft: bool) -> str:
     """Create a PR from the driver and return its URL.
 

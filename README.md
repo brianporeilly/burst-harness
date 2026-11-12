@@ -57,7 +57,10 @@ python -m harness session start my-box                             # a long-live
 
 `run` is idempotent — it starts the task if its branch does not exist yet and
 resumes it otherwise — so a CronJob or a button can fire the same command every
-time. Exit status: `0` for any terminal state (a PR, a pause, an abandon), `3` when
+time. A branch that doesn't exist yet while the task's document is already in the
+base branch is the task's **next round**: its earlier work was merged (and its
+branch deleted, or `--branch` names a new one), so the run carries on from the
+document, with `--message` as what to do next, rather than starting over. Exit status: `0` for any terminal state (a PR, a pause, an abandon), `3` when
 a headless run stopped on a question for the user, `1` otherwise. The last line of
 output is `HARNESS_RESULT {json}` with the slug, branch, state, PR URL, and claim.
 
@@ -795,6 +798,15 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   (`POST /api/tasks/SLUG/continue`, with an optional `{"message": ...}`) is
   another burst, `harness run SLUG --message ...`, from the pushed branch.
   Continuing a task with a PR adds to the PR.
+- **Rounds.** While a task is idle, the orchestrator asks GitHub about its PR
+  (when its page is open, at most once a minute, and every five minutes in the
+  background). Once the PR is merged the task is `merged`, and Continue starts
+  its next round: a fresh branch from the base (`harness/SLUG-2`, `-3`...),
+  whose first burst carries on from the task document that came with the merge
+  (the message, or the document's next step), ending in a PR of its own. The
+  task keeps its earlier rounds' branches and PRs (`rounds` in
+  `GET /api/tasks/SLUG`). So a multi-step piece of work is one task: merge, then
+  Continue.
 - A burst that fails or is stopped with work not yet pushed keeps its
   sandbox. The next burst carries on in it, and the orchestrator removes it
   once a burst pushes or gives up, or the task is removed.

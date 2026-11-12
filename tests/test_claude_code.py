@@ -154,3 +154,50 @@ def test_bypassing_permissions_is_refused_outside_a_sandbox(origin, tmp_path, fa
     with pytest.raises(ClaudeCodeError, match="one of default, acceptEdits, plan, bypassPermissions"):
         ClaudeCodeEngine(ctx).prepare()
     assert fake_claude() == []
+
+
+def _merged_round_one(origin, tmp_path):
+    """The task's first round, merged: its document is on main, its branch gone."""
+    from harness import state
+
+    work = tmp_path / "merged"
+    sh_git(tmp_path, "clone", "-q", str(origin), str(work))
+    (work / "docs" / "tasks").mkdir(parents=True)
+    doc = state.TaskDoc(slug="t", goal="build the thing in phases", done="phase 1",
+                        next_step="phase 2: the second part")
+    (work / "docs" / "tasks" / "t.md").write_text(doc.render())
+    sh_git(work, "add", "-A")
+    sh_git(work, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "phase 1 (#1)")
+    sh_git(work, "push", "-q", "origin", "main")
+
+
+def test_a_new_branch_of_a_task_merged_before_is_its_next_round(origin, tmp_path, monkeypatch, fake_claude):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "pause")
+    _merged_round_one(origin, tmp_path)
+    args = _args(repo=str(tmp_path / "w"), repo_url=str(origin), engine="claude-code", branch="harness/t-2",
+                 task="build the thing in phases", message="do phase 2, and keep it small")
+    cli.cmd_run(args)
+    prompt = (argv := fake_claude()[0])[argv.index("-p") + 1]
+    assert "merged into main" in prompt and "harness/t-2" in prompt and "do phase 2, and keep it small" in prompt
+    assert "build the thing in phases" not in prompt  # not started over from the first prompt
+    assert "harness/t-2" in sh_git(origin, "branch", "--list", "harness/t-2")
+    doc = sh_git(origin, "show", "harness/t-2:docs/tasks/t.md")
+    assert "## Goal\n\nbuild the thing in phases" in doc  # the document carried on, its goal kept
+
+
+def test_without_a_message_the_next_round_carries_on_from_the_next_step(origin, tmp_path, monkeypatch, fake_claude):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "pause")
+    _merged_round_one(origin, tmp_path)
+    cli.cmd_run(_args(repo=str(tmp_path / "w"), repo_url=str(origin), engine="claude-code",
+                      task="build the thing in phases", message=None))  # its own branch, deleted after the merge
+    prompt = (argv := fake_claude()[0])[argv.index("-p") + 1]
+    assert "harness/t," in prompt and cli.NEXT_STEP in prompt
+
+
+def test_a_branch_named_with_branch_is_checked():
+    cfg = cli.HarnessConfig()
+    assert cli._branch(cfg, _args(slug="t")) == "harness/t"
+    assert cli._branch(cfg, _args(slug="t", branch="harness/t-3")) == "harness/t-3"
+    for bad in ("-x", "a..b", "a b", "x.lock", "x/", "--upload-pack=y"):
+        with pytest.raises(SystemExit, match="not a branch name"):
+            cli._branch(cfg, _args(slug="t", branch=bad))

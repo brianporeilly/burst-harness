@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -51,6 +52,11 @@ NO_STRANDED_WORK = """You stopped without reaching a terminal state, and the wor
 Do not leave work stranded. Either finish_with_pr if it is reviewable, or pause_for_review with a summary and the next step."""
 
 RESUME_PROMPT = """Resume this task. Call read_task_doc first and continue from its Next step. Do not re-read the codebase to rebuild context that the document already records."""
+# A run on a new branch of a task whose document is already in the base: its earlier work was merged.
+NEXT_ROUND_PROMPT = """This task's earlier work was merged into {base}. You are on {branch}, a fresh branch from it, for the task's next round, which ends in a PR of its own. Call read_task_doc first; do not redo what it records as done. {instruction}"""
+NEXT_STEP = "Continue from its Next step."
+# A branch named with --branch: what git takes, and nothing an option could be read from.
+BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 
 # Approximate per-million-token input/output prices, for the burst report only.
 _PRICES = {
@@ -192,7 +198,17 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str) -> ExecTarget:
+def _branch(cfg: HarnessConfig, args: argparse.Namespace) -> str:
+    """The branch the task works on: --branch, or the prefix and the slug."""
+    named = getattr(args, "branch", None)
+    if not named:
+        return cfg.branch_prefix + args.slug
+    if not BRANCH_NAME.fullmatch(named) or ".." in named or named.endswith((".lock", "/", ".")):
+        raise SystemExit(f"{named!r} is not a branch name.")
+    return named
+
+
+def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str, branch: str = "") -> ExecTarget:
     """Construct the execution target. For `local`, the path is resolved here."""
     kind = cfg.target
     if kind == "local":
@@ -205,7 +221,7 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str) -> ExecTa
     if kind == "agent-sandbox":
         if not cfg.repo_url and not cfg.claim_name:
             raise SystemExit("target=agent-sandbox starts from an empty sandbox: pass --repo-url.")
-        return agent_sandbox.acquire(cfg, repo=repo, slug=slug, branch=cfg.branch_prefix + slug)
+        return agent_sandbox.acquire(cfg, repo=repo, slug=slug, branch=branch or cfg.branch_prefix + slug)
     if kind == "kubectl":
         if not cfg.pod:
             raise SystemExit("--pod (or HARNESS_POD) is required for target=kubectl.")
@@ -245,7 +261,7 @@ def _open(args: argparse.Namespace) -> HarnessContext:
 
     if cfg.egress_inject and cfg.target not in ("docker", "podman"):
         raise SystemExit("--egress-inject needs a gateway: --target podman or docker, with --egress log or allowlist.")
-    target = _build_target(cfg, args.repo, args.slug)
+    target = _build_target(cfg, args.repo, args.slug, _branch(cfg, args))
     try:
         if cfg.repo_url:
             if git.is_repo(target):
@@ -268,7 +284,7 @@ def _open(args: argparse.Namespace) -> HarnessContext:
             target=target,
             cfg=cfg,
             slug=args.slug,
-            branch=cfg.branch_prefix + args.slug,
+            branch=_branch(cfg, args),  # with the repo's own config, read from the clone
             state_key=state.state_key(url, target.repo),
             auth=_git_auth(cfg, url),
             repo_slug=git.repo_slug(url),
@@ -387,7 +403,7 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
     return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
 
-def _start(ctx: HarnessContext, task: str) -> str | None:
+def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | None:
     if git.is_dirty(ctx.target):
         raise SystemExit(
             "The working tree has uncommitted changes. Commit or stash them first — "
@@ -395,6 +411,12 @@ def _start(ctx: HarnessContext, task: str) -> str | None:
         )
     # Branch setup happens here, deterministically, rather than being asked of the model.
     print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    if ctx.target.read_file(state.doc_relpath(ctx.cfg, ctx.slug)) is not None:
+        # The task's document came with the base: its earlier work was merged (and its branch is gone, or
+        # this round has a branch of its own). Carry on from the document rather than start over.
+        print(f"{state.doc_relpath(ctx.cfg, ctx.slug)} is in {ctx.cfg.base_branch}: the task's next round.")
+        return _drive(ctx, NEXT_ROUND_PROMPT.format(base=ctx.cfg.base_branch, branch=ctx.branch,
+                                                    instruction=message or NEXT_STEP), resume=False)
     state.write(ctx.target, ctx.cfg, state.merge(state.read(ctx.target, ctx.cfg, ctx.slug), goal=task))
     return _drive(ctx, task, resume=False)
 
@@ -428,7 +450,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             return _resume(ctx, args.message)
         if not args.task:
             raise SystemExit(f"{ctx.branch} does not exist yet, so --task is needed to start it.")
-        return _start(ctx, args.task)
+        return _start(ctx, args.task, args.message)
 
     return _session(args, body)
 
@@ -807,7 +829,10 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("run", help="Start the task if its branch is new, else resume it. For Jobs and cron.")
     run.add_argument("slug")
     run.add_argument("--task", help="What to do. Needed only when the task has not started yet.")
-    run.add_argument("--message", help="Instruction for this burst, when resuming.")
+    run.add_argument("--message", help="Instruction for this burst, when resuming, or for a next round.")
+    run.add_argument("--branch", help="The branch to work on (default: the branch prefix and the slug). A new one, "
+                                      "when the task's document is already in the base branch, is a next round: "
+                                      "it carries on from the document, after earlier work was merged.")
     run.set_defaults(func=cmd_run)
 
     chat = sub.add_parser("chat", help="Drive a task interactively, starting it if needed.")
