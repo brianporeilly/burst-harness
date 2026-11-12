@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.19.0 (2026-11-12)
+
+### Features
+
+- **orchestrator**: Jobs from git repos, set in Settings or ORCHESTRATOR_JOB_REPOS
+  ([#101](https://github.com/brianporeilly/strands-harness/pull/101),
+  [`45950c8`](https://github.com/brianporeilly/strands-harness/commit/45950c89450ec93a5418719a733c2720cbcd8f9a))
+
+
 ## v0.18.1 (2026-11-12)
 
 ### Bug Fixes
