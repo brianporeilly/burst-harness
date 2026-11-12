@@ -80,6 +80,7 @@ from .jobs import JobRunner
 from .launch import Jobs, LaunchError
 from .mcp_servers import McpServerStore
 from .profiles import ProfileStore
+from .task_settings import TaskSettings
 from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
 from .tasks import TaskRunner
@@ -148,6 +149,7 @@ def main() -> None:
         parser.error(str(err))
     profiles = ProfileStore(state / "profiles.json", base)
     mcp_servers = McpServerStore(state / "mcp.json", base)
+    task_settings = TaskSettings(state / "task-settings.json", base)
     try:
         sources = JobSources(state / "sources", state / "job-sources.json",
                              parse_sources(os.environ.get(SOURCES_ENV, "")),
@@ -188,7 +190,7 @@ def main() -> None:
         jobs.start()
     tasks = TaskRunner(base, limit=args.task_limit, claim_ttl=task_ttl, launcher=launcher,
                        records=state / "tasks", profiles=profiles, servers=servers,
-                       mcp_servers=mcp_servers) if args.tasks else None
+                       mcp_servers=mcp_servers, settings=task_settings) if args.tasks else None
     if tasks:
         print(f"Tasks in {tasks.root}, {tasks.limit} at a time" + (f", bursts {launcher.describe()}" if launcher else ""))
         try:
@@ -207,7 +209,7 @@ def main() -> None:
         slack.start()
     tokens = TokenStore(state / "tokens.json")
     app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, profiles=profiles,
-                     mcp_servers=mcp_servers, slack=slack,
+                     mcp_servers=mcp_servers, task_settings=task_settings, slack=slack,
                      hosts=tuple(args.host),
                      user_header=args.user_header, local_browser=local_browser)
     uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")

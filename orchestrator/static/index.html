@@ -199,6 +199,15 @@
       <span class="error" id="delegates-error"></span></div>
   </section>
   <section class="panel">
+    <h2>Tasks</h2>
+    <label class="inline"><input type="checkbox" id="claude-attribution"> Claude Code adds its attribution to what a
+      task commits and the PRs it opens</label>
+    <p class="muted">For Claude Code tasks' bursts that start from now on, new tasks and continued ones.</p>
+    <p class="muted" id="claude-attribution-source"></p>
+    <div class="row"><button id="claude-attribution-reset">Use the configuration's</button>
+      <span class="error" id="claude-attribution-error"></span></div>
+  </section>
+  <section class="panel">
     <h2>MCP servers</h2>
     <p class="muted">Servers a session's or task's agent can connect to, over HTTPS. New sessions and tasks get the
       ones on by default, and their forms show every one here to pick from. A server's key goes in the Credentials
@@ -1331,6 +1340,27 @@ document.getElementById("delegates-save").onclick = () =>
   saveDelegates([...document.querySelectorAll("#delegates-default input:checked")].map((box) => box.value));
 document.getElementById("delegates-reset").onclick = () => saveDelegates(null);
 
+async function refreshTaskSettings() {
+  const source = document.getElementById("claude-attribution-source");
+  let found;
+  try { found = await api("/api/settings/tasks"); } catch (err) { source.textContent = err.message; return; }
+  document.getElementById("claude-attribution").checked = found.claude_attribution;
+  source.textContent = found.claude_attribution_source === "settings"
+    ? `Set here${found.updated ? `, ${when(found.updated)}${found.updated_by ? ` by ${found.updated_by}` : ""}` : ""}.`
+    : "The configuration's (claude_attribution).";
+  document.getElementById("claude-attribution-reset").disabled = found.claude_attribution_source !== "settings";
+}
+
+async function saveAttribution(value) {
+  const error = document.getElementById("claude-attribution-error");
+  error.textContent = "";
+  try { await api("/api/settings/tasks", { method: "PUT", body: JSON.stringify({ claude_attribution: value }) }); }
+  catch (err) { error.textContent = err.message; }
+  refreshTaskSettings();
+}
+document.getElementById("claude-attribution").onchange = (event) => saveAttribution(event.target.checked);
+document.getElementById("claude-attribution-reset").onclick = () => saveAttribution(null);
+
 profileForm.onsubmit = async (event) => {
   event.preventDefault();
   const error = document.getElementById("profile-form-error");
@@ -1402,7 +1432,7 @@ document.getElementById("token-form").onsubmit = async (event) => {
 };
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
-  settings: () => { refreshCredentials(); refreshMcp(); refreshSources(); refreshProfiles(); refreshTokens(); } };
+  settings: () => { refreshCredentials(); refreshMcp(); refreshSources(); refreshProfiles(); refreshTaskSettings(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;

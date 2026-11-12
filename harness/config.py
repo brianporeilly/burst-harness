@@ -259,6 +259,10 @@ class HarnessConfig:
     claude_settings: str = ""
     # Extra arguments for every `claude` invocation, e.g. "--model opus".
     claude_args: str = ""
+    # Claude Code's own attribution in what it commits and the PRs it opens (a
+    # trailer on each commit, a line at the end of a PR's description). false
+    # leaves both out.
+    claude_attribution: bool = True
 
     # --- git / PR ---
     base_branch: str = "main"

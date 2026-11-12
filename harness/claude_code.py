@@ -25,7 +25,9 @@ target, where Claude would run as you on your machine, and orchestrator tasks
 (always in a sandbox) use it. The harness answers no prompts on your behalf.
 The git rules (git_policy.py) are added to every invocation as a PreToolUse
 hook via ``--settings``; a hook that refuses a command blocks it in every
-permission mode, bypassPermissions included.
+permission mode, bypassPermissions included. With ``claude_attribution =
+false`` the same settings leave out Claude Code's attribution, in commits and
+in PR descriptions; being given on the command line, they win over any file's.
 
 With ``delegate_to``, Claude Code leads and hands pieces of the work to Strands
 profiles through a ``delegate`` tool: headless runs then go through the Claude
@@ -312,6 +314,8 @@ class ClaudeCodeEngine:
         ]}}
         if self.keeper is not None:
             settings["apiKeyHelper"] = f"cat {shlex.quote(TOKEN_FILE)}"
+        if not cfg.claude_attribution:
+            settings["attribution"] = {"commit": "", "pr": ""}  # empty: none, rather than Claude Code's own
         return json.dumps(settings)
 
     def command(self, *args: str) -> str:
