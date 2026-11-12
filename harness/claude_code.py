@@ -19,9 +19,13 @@ changes is the agent loop: instead of a Strands agent driven from outside,
 Permissions are Claude Code's own: headless runs use ``claude_permission_mode``
 (default ``acceptEdits``), and what else Claude may run comes from the settings
 you supply (``claude_settings``, merged into the target's
-``~/.claude/settings.json``). The harness passes no permission-bypass flag and
-answers no prompts on your behalf. The git rules (git_policy.py) are added to
-every invocation as a PreToolUse hook via ``--settings``.
+``~/.claude/settings.json``). ``bypassPermissions`` lets Claude run anything
+without asking, which is what a sandbox is for: it is refused on the local
+target, where Claude would run as you on your machine, and orchestrator tasks
+(always in a sandbox) use it. The harness answers no prompts on your behalf.
+The git rules (git_policy.py) are added to every invocation as a PreToolUse
+hook via ``--settings``; a hook that refuses a command blocks it in every
+permission mode, bypassPermissions included.
 
 With ``delegate_to``, Claude Code leads and hands pieces of the work to Strands
 profiles through a ``delegate`` tool: headless runs then go through the Claude
@@ -92,6 +96,11 @@ NO_OUTCOME = """You stopped without writing {outcome}. Write it now (finish, pau
 
 BAD_OUTCOME = """{outcome} could not be applied: {error}
 Fix the problem and write {outcome} again, then end your turn."""
+
+
+# Claude Code's headless permission modes; BYPASS runs anything without asking, only in a sandbox.
+BYPASS = "bypassPermissions"
+PERMISSION_MODES = ("default", "acceptEdits", "plan", BYPASS)
 
 
 class ClaudeCodeError(RuntimeError):
@@ -169,6 +178,12 @@ class ClaudeCodeEngine:
     def prepare(self) -> None:
         """Check the target, install the git hook and credentials, apply your config."""
         cfg = self.ctx.cfg
+        if cfg.claude_permission_mode not in PERMISSION_MODES:
+            raise ClaudeCodeError(f"claude_permission_mode is one of {', '.join(PERMISSION_MODES)}, "
+                                  f"not {cfg.claude_permission_mode!r}.")
+        if cfg.claude_permission_mode == BYPASS and not self.remote:
+            raise ClaudeCodeError(f"claude_permission_mode {BYPASS} runs anything without asking: only in a sandbox "
+                                  "(a container or a cluster target), not on the local target.")
         if missing := self.target.missing_commands(("claude", "python3")):
             raise ClaudeCodeError(
                 f"engine=claude-code needs {', '.join(missing)} in {self.target.describe()} "

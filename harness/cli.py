@@ -767,8 +767,9 @@ def main(argv: list[str] | None = None) -> int:
     engine.add_argument("--claude-settings", dest="claude_settings",
                         help="JSON file merged into the target's ~/.claude/settings.json (engine=claude-code).")
     engine.add_argument("--permission-mode", dest="permission_mode",
-                        choices=["default", "acceptEdits", "plan"],
-                        help="Claude Code permission mode (default: acceptEdits).")
+                        choices=["default", "acceptEdits", "plan", "bypassPermissions"],
+                        help="Claude Code permission mode (default: acceptEdits; bypassPermissions runs "
+                             "anything without asking, in a sandbox only).")
 
     model = parser.add_argument_group("model")
     model.add_argument("--provider", help="anthropic (default), openai, bedrock, llamacpp, ollama, gemini, "

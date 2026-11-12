@@ -1184,8 +1184,11 @@ commit, push, PR, release — is the same.
   is paused.
 - **Permissions are Claude Code's own.** Headless runs use
   `--permission-mode` (default `acceptEdits`: file edits allowed); what else Claude
-  may run comes from the settings you supply. The harness never passes a
-  permission-bypass flag or answers a prompt for you.
+  may run comes from the settings you supply. `--permission-mode bypassPermissions`
+  lets Claude run anything without asking, which is what the sandbox is for: it is
+  refused on the `local` target, and the orchestrator's tasks use it (they always
+  run in a sandbox). The git rules are a hook, and still refuse what they refuse
+  in every mode. The harness never answers a prompt for you.
 - **Credentials.** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`),
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_BASE_URL` are copied
   from the driver's environment into a 0600 file in the target for the run and

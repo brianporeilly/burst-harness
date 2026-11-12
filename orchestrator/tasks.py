@@ -402,6 +402,10 @@ class TaskRunner:
 
     def _argv(self, record: dict[str, Any]) -> list[str]:
         argv = [sys.executable, "-m", "harness", "--engine", record["engine"], "--claim-ttl", str(self.claim_ttl)]
+        if record["engine"] == "claude-code":
+            # Nobody is there to approve a command, and a task is always in a sandbox: it may run anything
+            # (the git rules still hold, as a hook).
+            argv += ["--permission-mode", "bypassPermissions"]
         if self.base.target in ("local", "podman", "docker"):
             # Never on the orchestrator's own machine: in a container, through a gateway.
             runtime = "docker" if self.base.target == "docker" else "podman"

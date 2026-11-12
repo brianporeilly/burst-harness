@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import sys
+from dataclasses import replace
 
 import pytest
 
@@ -140,3 +141,16 @@ def test_claude_is_given_the_model_unless_claude_args_names_one(origin, tmp_path
     _start(ctx)
     argv = fake_claude()[-1]
     assert argv.count("--model") == 1 and argv[argv.index("--model") + 1] == "sonnet"
+
+
+def test_bypassing_permissions_is_refused_outside_a_sandbox(origin, tmp_path, fake_claude):
+    from harness.claude_code import ClaudeCodeEngine, ClaudeCodeError
+
+    ctx = cli._open(_args(repo=str(tmp_path / "w"), repo_url=str(origin), engine="claude-code",
+                          permission_mode="bypassPermissions"))
+    with pytest.raises(ClaudeCodeError, match="not on the local target"):
+        ClaudeCodeEngine(ctx).prepare()
+    ctx.cfg = replace(ctx.cfg, claude_permission_mode="yolo")
+    with pytest.raises(ClaudeCodeError, match="one of default, acceptEdits, plan, bypassPermissions"):
+        ClaudeCodeEngine(ctx).prepare()
+    assert fake_claude() == []

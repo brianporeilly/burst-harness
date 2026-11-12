@@ -249,7 +249,8 @@ class HarnessConfig:
     keep_claim: bool = False
 
     # --- engine=claude-code ---
-    # Claude Code permission mode for headless runs: default | acceptEdits | plan.
+    # Claude Code permission mode for headless runs: default | acceptEdits | plan |
+    # bypassPermissions (anything, without asking: sandboxed targets only).
     # What it may run beyond that comes from your settings (claude_settings).
     claude_permission_mode: str = "acceptEdits"
     # Driver-side JSON files merged into the target's ~/.claude.json and

@@ -592,3 +592,15 @@ def test_a_pr_that_already_exists_is_the_tasks_pr(monkeypatch):
     Done.stderr = "HTTP 422: Validation Failed"
     with pytest.raises(git.GitError):
         git.open_pr(repo="me/proj", head="harness/t", title="t", body="b", base="main", draft=False)
+
+
+def test_a_claude_code_task_runs_anything_without_asking_in_its_sandbox(tmp_path, harness):
+    runner = _runner(tmp_path, limit=3)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "cc", "engine": "claude-code"})
+    argv = harness.argv()
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+    assert argv[argv.index("--target") + 1] == "podman"  # never the orchestrator's own machine
+    runner.create({"prompt": "why?", "slug": "asked", "engine": "claude-code"})
+    assert "bypassPermissions" in harness.argv()
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "strands"})
+    assert "--permission-mode" not in harness.argv()
