@@ -786,8 +786,8 @@ function memoryLine(m) {
 
 let selectedTask = null;
 const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", answered: "ok", merged: "ok", running: "warn", queued: "warn", paused: "warn",
-  waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn", max_tokens: "bad" }[state] || "") },
-  { pr: "PR", merged: "PR merged", pushed_no_pr: "pushed, no PR", waiting: "needs input", max_tokens: "output limit" }[state] || state);
+  waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn", push_failed: "bad", max_tokens: "bad" }[state] || "") },
+  { pr: "PR", merged: "PR merged", pushed_no_pr: "pushed, no PR", push_failed: "push refused", waiting: "needs input", max_tokens: "output limit" }[state] || state);
 // A PR's link, with what GitHub last said of it when that is not "open".
 const prLink = (url, state) => el("span", {}, el("a", { href: url, target: "_blank", rel: "noopener" }, url),
   state && state !== "open" ? el("span", { class: "muted" }, ` (${state})`) : null);

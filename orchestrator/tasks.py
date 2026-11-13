@@ -96,7 +96,7 @@ TASK_FILE = "task.json"
 # How many times a burst cut short by the orchestrator stopping is started again.
 RESTARTS = 2
 # States in which nothing is running or waiting to run.
-IDLE = ("pr", "pushed_no_pr", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled",
+IDLE = ("pr", "pushed_no_pr", "push_failed", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled",
         "answered", "merged")
 # How old a look at an idle task's PR may be when its page is read, and between looks in the background (s).
 PR_FRESH = 60
@@ -745,7 +745,7 @@ class TaskRunner:
 def _state(code: int, result: dict[str, Any]) -> str:
     """What a burst ended in: its HARNESS_RESULT's terminal state, or failed when it has none."""
     state = result.get("state")
-    if state in (*FINISHED, "waiting", "max_tokens"):
+    if state in (*FINISHED, "push_failed", "waiting", "max_tokens"):
         return state
     return "failed"
 

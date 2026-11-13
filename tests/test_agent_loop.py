@@ -139,3 +139,29 @@ def test_a_sigint_cancels_the_run_at_once_rather_than_when_strands_returns():
         assert agent not in harness_agent._running
     finally:
         signal.signal(signal.SIGINT, previous)
+
+
+def test_a_refused_push_opens_no_pr_and_says_push_failed(tmp_path, origin, capsys):
+    """The remote refusing the push (a token without `workflow` scope, say) is its own end: no PR is tried,
+    and the run says why, rather than claiming the work was pushed."""
+    from harness import cli
+
+    from . import fake_llama
+    from .conftest import git
+
+    hook = origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\necho 'refusing to allow this push' >&2\nexit 1\n")
+    hook.chmod(0o755)
+    finish = {"tool": "finish_with_pr", "args": {"title": "Fix it", "body": "Fixed."}}
+    server, _ = fake_llama.serve([finish, {"text": "Done."}])
+    try:
+        work = tmp_path / "work"
+        git(tmp_path, "clone", "-q", str(origin), str(work))
+        args = ["--provider", "llamacpp", "--base-url", f"http://127.0.0.1:{server.server_port}", "--repo", str(work)]
+        assert cli.main([*args, "start", "t1", "--task", "Fix it."]) == 0
+        out = capsys.readouterr().out
+        result = json.loads(out.split("HARNESS_RESULT ", 1)[1].splitlines()[0])
+        assert result["state"] == "push_failed" and "refusing to allow this push" in result["said"]["error"]
+        assert "Could not open the PR" not in out and "the push was refused" in out
+    finally:
+        server.shutdown()

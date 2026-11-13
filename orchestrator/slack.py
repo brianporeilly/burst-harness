@@ -66,6 +66,7 @@ Anything without a repo first is a question: I answer it in the thread, and a re
 ENDED = {
     "pr": ":white_check_mark: Opened a PR: {pr}",
     "pushed_no_pr": ":warning: Pushed `{branch}`, but the PR could not be opened.",
+    "push_failed": ":x: The push to `{branch}` was refused; the commits are kept in its sandbox. Fix access and continue it to push them.",
     "paused": ":double_vertical_bar: Paused, with the work pushed to `{branch}`.",
     "waiting": ":question: It needs an answer.",
     "abandoned": ":x: It gave up.",

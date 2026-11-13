@@ -25,6 +25,7 @@ def _wrap_up(ctx: HarnessContext, message: str) -> list[str]:
         try:
             steps.append(git.push(ctx.target, ctx.branch, remote=cfg.remote, auth=ctx.auth))
         except git.GitError as err:
+            ctx.push_error = str(err)
             steps.append(f"Push failed (work is committed locally): {err}")
     return steps
 
@@ -34,6 +35,12 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
     cfg = ctx.cfg
     update_doc(ctx, next_step=next_step or "Awaiting PR review.")
     steps = _wrap_up(ctx, title)
+    if ctx.push_error:
+        # Nothing on the remote to open a PR from. The sandbox is kept (cli._close), so a later burst
+        # pushes the same commits once the remote accepts them.
+        ctx.terminal = "push_failed"
+        ctx.said = {"error": ctx.push_error}
+        return "\n".join([*steps, "No PR opened: the branch is not on the remote."])
     try:
         if not ctx.repo_slug:
             raise git.GitError(f"the {cfg.remote} remote is not a recognisable host/owner/repo URL")
