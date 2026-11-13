@@ -128,6 +128,22 @@ def seconds_left(cfg: HarnessConfig, claim: str, now: datetime | None = None) ->
     return max(60, int((deadline - (now or datetime.now(timezone.utc))).total_seconds()))
 
 
+def renew_claim(cfg: HarnessConfig, claim: str, now: datetime | None = None) -> int:
+    """Move an attached claim's deadline to claim_ttl from now, so a burst that reattaches to a kept sandbox
+    gets the same time as one that claimed it. Returns the seconds left after: the old deadline when the
+    claim cannot be changed (no `patch` on sandboxclaims), which is said, not fatal."""
+    deadline = (now or datetime.now(timezone.utc)) + timedelta(seconds=cfg.claim_ttl)
+    patch = {"spec": {"lifecycle": {"shutdownTime": deadline.strftime("%Y-%m-%dT%H:%M:%SZ")}}}
+    try:
+        _kubectl(cfg, "patch", "sandboxclaim", claim, "--type=merge", "-p", json.dumps(patch))
+    except AgentSandboxError as err:
+        left = seconds_left(cfg, claim, now)
+        print(f"Could not move {claim}'s deadline ({err}); it is deleted in {left}s, whatever is running then.")
+        return left
+    print(f"Attached to {claim}: deleted by {cfg.claim_ttl}s from now at the latest.")
+    return cfg.claim_ttl
+
+
 def delete_claim(cfg: HarnessConfig, claim: str) -> None:
     _kubectl(cfg, "delete", "sandboxclaim", claim, "--wait=false", "--ignore-not-found")
 
@@ -209,8 +225,11 @@ def acquire(
     else:
         claim = cfg.claim_name
     target: AgentSandboxTarget | None = None
+    ttl = cfg.claim_ttl
     try:
         pod = wait_ready(cfg, claim)
+        if not owned:
+            ttl = renew_claim(cfg, claim)
         target = AgentSandboxTarget(
             repo=repo,
             pod=pod,
@@ -226,7 +245,7 @@ def acquire(
 
             # An attached claim is registered again too: the gateway may have
             # restarted since, and forgotten it. Its registration ends with the claim.
-            body.update(address=pod_address(cfg, pod), ttl=cfg.claim_ttl if owned else seconds_left(cfg, claim))
+            body.update(address=pod_address(cfg, pod), ttl=ttl)
             gateway.register(claim, body)
             target = replace(target, gateway=gateway, events=events_path(cfg, claim))
             print(f"Egress via {gateway.url} ({summary}).")
