@@ -65,7 +65,7 @@ WORKDIR /workspace
 # container.
 # Holds no credentials: pass CLAUDE_CODE_OAUTH_TOKEN (from `claude
 # setup-token`) or ANTHROPIC_API_KEY at run time.
-ARG CLAUDE_CODE_VERSION=2.1.285
+ARG CLAUDE_CODE_VERSION=2.1.323
 RUN curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_CODE_VERSION}"
 USER root
 RUN install -m 755 "$(readlink -f /home/agent/.local/bin/claude)" /usr/local/bin/claude \
