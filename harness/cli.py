@@ -330,6 +330,10 @@ def _close(ctx: HarnessContext) -> None:
         print(f"Kept {target.describe()}: a session is still running in it. {hint}")
         ctx.kept = True
         return
+    if ctx.push_error:
+        print(f"Kept {target.describe()}: the push was refused, so its commits exist only there. {hint}")
+        ctx.kept = True
+        return
     try:
         dirty = git.is_dirty(target)
         ahead = 0 if dirty or ctx.terminal else git.unpushed(target, cfg.remote)
@@ -349,6 +353,8 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
         print(f"Finished: {ctx.pr_url}")
     elif ctx.terminal == "pushed_no_pr":
         print("Committed and pushed, but the PR could not be opened (see above).")
+    elif ctx.terminal == "push_failed":
+        print("Committed, but the push was refused (see above); the sandbox is kept with the commits.")
     elif ctx.terminal == "paused":
         print(f"Paused. State: {state.doc_relpath(ctx.cfg, ctx.slug)}")
     elif ctx.terminal == "abandoned":

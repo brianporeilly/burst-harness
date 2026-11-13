@@ -182,7 +182,7 @@ def test_a_task_finished_on_a_forge_opens_its_pr_there(monkeypatch):
 
     class Ctx:
         cfg = HarnessConfig(forges=(FORGEJO,))
-        repo_slug, branch, terminal, pr_url = "forgejo.example.com/me/proj", "harness/t", None, None
+        repo_slug, branch, terminal, pr_url, push_error = "forgejo.example.com/me/proj", "harness/t", None, None, None
 
     ctx = Ctx()
     assert "Opened PR: https://forgejo.example.com/p/1" in terminal.finish(ctx, title="t", body="b")
