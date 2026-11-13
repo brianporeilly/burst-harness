@@ -32,7 +32,7 @@ needs_openssl = pytest.mark.skipif(shutil.which("openssl") is None, reason="need
 FAKE_KUBECTL = textwrap.dedent('''\
     #!{python}
     """kubectl, as much of it as agent_sandbox uses. Every call is logged."""
-    import json, subprocess, sys
+    import json, os, subprocess, sys
     args = sys.argv[1:]
     with open({log!r}, "a") as log:
         log.write(json.dumps(args) + "\\n")
@@ -54,6 +54,9 @@ FAKE_KUBECTL = textwrap.dedent('''\
         sys.exit(subprocess.run(args[args.index("--") + 1:]).returncode)
     elif verb == "delete":
         pass
+    elif verb == "patch":
+        if os.environ.get("FAKE_KUBECTL_NO_PATCH"):
+            sys.exit("Error from server (Forbidden): cannot patch resource sandboxclaims")
     else:
         sys.exit("fake kubectl: " + " ".join(args))
 ''')
@@ -235,16 +238,34 @@ def test_a_refused_registration_releases_the_claim(tmp_path, kubectl, gateway, m
     assert calls[-1][2:4] == ["delete", "sandboxclaim"]
 
 
-def test_an_attached_claim_is_registered_until_its_deadline(tmp_path, kubectl, monkeypatch):
-    path, _ = kubectl
+def test_an_attached_claim_gets_a_new_deadline_and_is_registered_until_it(tmp_path, kubectl, monkeypatch, capsys):
+    """A burst that reattaches to a kept sandbox gets claim_ttl again: before, it had what was left of the
+    first burst's, and a long second burst had its sandbox deleted under it."""
+    path, log = kubectl
     registered = {}
     monkeypatch.setenv("HARNESS_GATEWAY_TOKEN", TOKEN)
     monkeypatch.setattr(Gateway, "register", lambda self, name, body: registered.update(name=name, body=body))
-    cfg = _cfg(tmp_path, path, "http://gw:8081", claim_name="pool-abc12")
+    cfg = _cfg(tmp_path, path, "http://gw:8081", claim_name="pool-abc12", claim_ttl=3600)
     target = agent_sandbox.acquire(cfg, repo="/workspace", slug="t", branch="")
+    patch = next(c for c in map(json.loads, log.read_text().splitlines()) if "patch" in c)
+    assert patch[2:6] == ["patch", "sandboxclaim", "pool-abc12", "--type=merge"]
+    assert set(json.loads(patch[-1])["spec"]["lifecycle"]) == {"shutdownTime"}
     assert registered["name"] == "pool-abc12" and registered["body"]["address"] == "127.0.0.2"
-    assert registered["body"]["ttl"] > 10 * 365 * 86400  # the fake claim's deadline is in 2099
+    assert registered["body"]["ttl"] == 3600
+    assert "Attached to pool-abc12: deleted by 3600s" in capsys.readouterr().out
     assert target.release() == ""  # not ours to release, or to unregister
+
+
+def test_a_claim_that_cannot_be_renewed_keeps_its_deadline_and_says_so(tmp_path, kubectl, monkeypatch, capsys):
+    path, _ = kubectl
+    registered = {}
+    monkeypatch.setenv("HARNESS_GATEWAY_TOKEN", TOKEN)
+    monkeypatch.setenv("FAKE_KUBECTL_NO_PATCH", "1")
+    monkeypatch.setattr(Gateway, "register", lambda self, name, body: registered.update(name=name, body=body))
+    cfg = _cfg(tmp_path, path, "http://gw:8081", claim_name="pool-abc12", claim_ttl=3600)
+    agent_sandbox.acquire(cfg, repo="/workspace", slug="t", branch="")
+    assert registered["body"]["ttl"] > 10 * 365 * 86400  # the fake claim's deadline is in 2099
+    assert "Could not move pool-abc12's deadline" in capsys.readouterr().out
 
 
 def test_a_kubectl_url_reaches_the_gateway_by_port_forward(tmp_path, monkeypatch):
