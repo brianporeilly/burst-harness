@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.26.1 (2026-11-13)
+
+### Bug Fixes
+
+- **sandbox**: Claude Code 2.1.323, for the newest models
+  ([#12](https://github.com/brianporeilly/burst-harness/pull/12),
+  [`624ad5d`](https://github.com/brianporeilly/burst-harness/commit/624ad5da139afa934a220e992391cab861b83414))
+
+
 ## v0.26.0 (2026-11-12)
 
 ### Features
