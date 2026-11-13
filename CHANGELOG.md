@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.26.2 (2026-11-13)
+
+### Bug Fixes
+
+- **tasks**: A refused push is push_failed, opens no PR, and keeps the sandbox
+  ([#13](https://github.com/brianporeilly/burst-harness/pull/13),
+  [`2049e8a`](https://github.com/brianporeilly/burst-harness/commit/2049e8a90783019fe6b5f23b16fff7e2cf7d7d37))
+
+
 ## v0.26.1 (2026-11-13)
 
 ### Bug Fixes
