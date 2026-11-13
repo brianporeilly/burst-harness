@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.26.3 (2026-11-13)
+
+### Bug Fixes
+
+- **tasks**: A burst that reattaches to a kept sandbox renews the claim's deadline
+  ([#14](https://github.com/brianporeilly/burst-harness/pull/14),
+  [`49e3726`](https://github.com/brianporeilly/burst-harness/commit/49e37261ce1f0b76e0886f6d7619f01e28b40ebe))
+
+
 ## v0.26.2 (2026-11-13)
 
 ### Bug Fixes
