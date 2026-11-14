@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.28.0 (2026-11-14)
+
+### Features
+
+- **tasks**: A run whose sandbox ran out of memory says so, with its limit
+  ([#19](https://github.com/brianporeilly/burst-harness/pull/19),
+  [`38abbb3`](https://github.com/brianporeilly/burst-harness/commit/38abbb32e6ef0ac9deff19d814607e6212a38e0a))
+
+
 ## v0.27.0 (2026-11-14)
 
 ### Features
