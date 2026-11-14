@@ -18,6 +18,7 @@ import subprocess
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -54,6 +55,11 @@ class ExecTarget(ABC):
 
     def attach_hint(self) -> str:
         """Flags that reattach a later run to this same target."""
+        return ""
+
+    def out_of_memory(self, since: float) -> str:
+        """Why the target's work was killed, if it ran out of memory after `since` (a time.time()): one
+        line naming its limit, or "" when it did not, or this kind of target cannot tell."""
         return ""
 
     @property
@@ -256,8 +262,56 @@ class DockerTarget(SubprocessTarget):
         path.write_bytes(proc.stdout)
         return f" Egress events: {path}{refused_summary(proc.stdout)}"
 
+    def out_of_memory(self, since: float) -> str:
+        proc = subprocess.run([self.binary, "inspect", "--format", "{{json .State}}|{{.HostConfig.Memory}}",
+                               self.container], capture_output=True, text=True)
+        state, _, memory = proc.stdout.strip().rpartition("|")
+        try:
+            found = json.loads(state) if proc.returncode == 0 else {}
+        except ValueError:
+            return ""
+        if not found.get("OOMKilled"):
+            return ""
+        limit = f"its {_bytes(int(memory))} memory limit" if memory.isdigit() and int(memory) else "the memory it had"
+        return (f"{self.describe()} ran out of memory: it was killed at {limit} (OOMKilled), with what was "
+                "running in it.")
+
     def attach_hint(self) -> str:
         return f"--target {self.binary} --docker-container {self.container}"
+
+
+def _bytes(count: int) -> str:
+    for unit, size in (("Gi", 2**30), ("Mi", 2**20)):
+        if count >= size and count % (size // 4) == 0:
+            return f"{count / size:g}{unit}"
+    return f"{count} bytes"
+
+
+def oom_killed(pod: dict, container: str | None, since: float, where: str) -> str:
+    """A line saying `pod`'s container (`container`, or its first) was OOMKilled after `since`, naming its
+    memory limit; "" if it was not. Kubernetes restarts it, so the kill is its last state, or its state
+    while it is down."""
+    statuses = pod.get("status", {}).get("containerStatuses") or []
+    status = next((s for s in statuses if not container or s.get("name") == container), None)
+    if status is None:
+        return ""
+    for state in (status.get("lastState", {}), status.get("state", {})):
+        ended = state.get("terminated") or {}
+        if ended.get("reason") != "OOMKilled":
+            continue
+        try:
+            at = datetime.fromisoformat(str(ended.get("finishedAt", "")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if at < since:
+            continue  # an earlier run's
+        spec = next((c for c in pod.get("spec", {}).get("containers", []) if c.get("name") == status.get("name")), {})
+        limit = spec.get("resources", {}).get("limits", {}).get("memory")
+        return (f"{where} ran out of memory: its container was killed at "
+                f"{f'its {limit} memory limit' if limit else 'the memory it had'} (OOMKilled) and restarted, "
+                "with what was running in it. Use less at once (fewer build jobs, one build at a time), or "
+                "give the sandbox more memory.")
+    return ""
 
 
 def refused_summary(events: bytes, limit: int = 8) -> str:
@@ -307,6 +361,15 @@ class KubectlTarget(SubprocessTarget):
             argv += ["-c", self.container]
         # `--` ends kubectl's flag parsing so the command is never read as flags.
         return [*argv, "--"]
+
+    def out_of_memory(self, since: float) -> str:
+        proc = subprocess.run([*self.kubectl_base(), "get", "pod", self.pod, "-o", "json"],
+                              capture_output=True, text=True)
+        try:
+            pod = json.loads(proc.stdout) if proc.returncode == 0 else {}
+        except ValueError:
+            return ""
+        return oom_killed(pod, self.container, since, self.describe())
 
     def describe(self) -> str:
         where = self.pod + (f"/{self.container}" if self.container else "")

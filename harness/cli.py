@@ -8,6 +8,7 @@ import shlex
 import os
 import re
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -393,17 +394,34 @@ def _cut(value: object) -> str:
     return text if len(text) <= SAID_LIMIT else text[:SAID_LIMIT] + " [...]"
 
 
+def _killed(ctx: HarnessContext, since: float) -> None:
+    """A run that ended short of a terminal state: say so if its target ran out of memory, before it is
+    released, and pass it on as the reason (HARNESS_RESULT's `said`)."""
+    if ctx.terminal or ctx.waiting:
+        return
+    try:
+        why = ctx.target.out_of_memory(since)
+    except Exception:  # noqa: BLE001 -- only an explanation; the run's end is what it is either way
+        return
+    if why:
+        print(f"! {why}", flush=True)
+        ctx.said = {**ctx.said, "reason": ctx.said.get("reason") or why}
+
+
 def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | None]) -> int:
     ctx = _open(args)
     report = None
+    since = time.time()
     try:
         print(f"Working in: {ctx.target.describe()} (engine: {ctx.cfg.engine})")
         report = body(ctx)
     except BaseException:
+        _killed(ctx, since)
         _close(ctx)
         # Said even when the run dies, so a launcher knows whether the sandbox was kept.
         _result_line(ctx, ctx.terminal or "error")
         raise
+    _killed(ctx, since)
     _close(ctx)
     return _finish(report, ctx)
 
