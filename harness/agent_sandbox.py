@@ -144,6 +144,10 @@ def renew_claim(cfg: HarnessConfig, claim: str, now: datetime | None = None) -> 
     return cfg.claim_ttl
 
 
+def claim_exists(cfg: HarnessConfig, claim: str) -> bool:
+    return bool(_kubectl(cfg, "get", "sandboxclaim", claim, "--ignore-not-found", "-o", "name"))
+
+
 def delete_claim(cfg: HarnessConfig, claim: str) -> None:
     _kubectl(cfg, "delete", "sandboxclaim", claim, "--wait=false", "--ignore-not-found")
 
@@ -217,6 +221,12 @@ def acquire(
     body, summary = registration(cfg, address="", ttl=0, allow=allow, inject=inject, read_only=read_only,
                                  upstream_ca=upstream_ca) if gateway is not None else ({}, "")
     owned = not cfg.claim_name
+    if not owned and cfg.pool and not claim_exists(cfg, cfg.claim_name):
+        # Deleted at its deadline, or released, since the run that kept it: what it held that was not pushed
+        # is gone either way, and a fresh sandbox picks the branch up from the remote.
+        print(f"{cfg.claim_name} is gone (deleted at its deadline, or released): claiming a fresh sandbox. "
+              "Anything it held that was not pushed is lost.")
+        owned = True
     if owned:
         if not cfg.pool:
             raise AgentSandboxError("target=agent-sandbox needs --pool or --claim.")

@@ -46,6 +46,9 @@ FAKE_KUBECTL = textwrap.dedent('''\
         pass
     elif verb == "get" and args[1] == "sandboxclaim" and "sandbox.name" in args[-1]:
         print("pod-abc12")
+    elif verb == "get" and args[1] == "sandboxclaim" and "--ignore-not-found" in args:
+        if not os.environ.get("FAKE_KUBECTL_NO_CLAIM"):
+            print("sandboxclaim.extensions.agents.x-k8s.io/" + args[2])
     elif verb == "get" and args[1] == "sandboxclaim":
         print("2099-01-01T00:00:00Z")
     elif verb == "get" and args[1] == "pod":
@@ -254,6 +257,23 @@ def test_an_attached_claim_gets_a_new_deadline_and_is_registered_until_it(tmp_pa
     assert registered["body"]["ttl"] == 3600
     assert "Attached to pool-abc12: deleted by 3600s" in capsys.readouterr().out
     assert target.release() == ""  # not ours to release, or to unregister
+
+
+def test_a_claim_that_is_gone_is_replaced_by_a_fresh_one(tmp_path, kubectl, monkeypatch, capsys):
+    """The task's kept sandbox was deleted at its deadline: the next burst claims a new one rather than
+    failing on a claim that is not there."""
+    path, log = kubectl
+    monkeypatch.setenv("HARNESS_GATEWAY_TOKEN", TOKEN)
+    monkeypatch.setenv("FAKE_KUBECTL_NO_CLAIM", "1")
+    monkeypatch.setattr(Gateway, "register", lambda self, name, body: None)
+    cfg = _cfg(tmp_path, path, "http://gw:8081", claim_name="pool-gone1", claim_ttl=3600)
+    target = agent_sandbox.acquire(cfg, repo="/workspace", slug="t", branch="")
+    assert target.claim == "pool-abc12" and target.owned
+    calls = [json.loads(line)[2:] for line in log.read_text().splitlines()]
+    assert ["create", "-f", "-", "-o", "jsonpath={.metadata.name}"] in calls
+    assert not any(c[0] == "patch" for c in calls)
+    out = capsys.readouterr().out
+    assert "pool-gone1 is gone" in out and "Claimed pool-abc12" in out
 
 
 def test_a_claim_that_cannot_be_renewed_keeps_its_deadline_and_says_so(tmp_path, kubectl, monkeypatch, capsys):
