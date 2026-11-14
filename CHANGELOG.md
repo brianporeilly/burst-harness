@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.27.0 (2026-11-14)
+
+### Features
+
+- **tasks**: Opt-in auto_continue starts a task's next round once its PR is merged
+  ([#16](https://github.com/brianporeilly/burst-harness/pull/16),
+  [`4aee7f6`](https://github.com/brianporeilly/burst-harness/commit/4aee7f6f6152361d84024b7a09db1eb9fdd1bb8a))
+
+### Testing
+
+- **jobs**: An unreachable model is retried without backoff, taking the suite from 8 minutes to 20s
+  ([#17](https://github.com/brianporeilly/burst-harness/pull/17),
+  [`1e28ab1`](https://github.com/brianporeilly/burst-harness/commit/1e28ab144edb0fb59078d20e40fefbb0e1eff295))
+
+
 ## v0.26.4 (2026-11-14)
 
 ### Bug Fixes
