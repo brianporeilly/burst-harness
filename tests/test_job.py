@@ -380,7 +380,12 @@ def test_replies_cut_off_again_and_again_end_the_run_as_max_tokens(tmp_path, lla
     assert len(requests) == 3
 
 
-def test_strands_with_an_unreachable_model_is_reported(tmp_path, capsys):
+def test_strands_with_an_unreachable_model_is_reported(tmp_path, capsys, monkeypatch):
+    from strands.event_loop._retry import ModelRetryStrategy
+
+    # Retried as a server that went away (models.retry_strategy), with no wait between: with Strands' backoff
+    # the eight attempts took about eight minutes, nearly all of the suite's time.
+    monkeypatch.setattr(ModelRetryStrategy, "_calculate_delay", lambda self, attempt: 0)
     spec = _strands_job(tmp_path, "http://127.0.0.1:9")
     assert job.run(spec, job.config(spec), acquire=_local(tmp_path)) == 1
     assert "produced no report:" in capsys.readouterr().out
