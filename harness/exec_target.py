@@ -47,6 +47,9 @@ class ExecTarget(ABC):
     # A target the harness created for this run (a sandbox claim, a container)
     # and so may remove afterwards. Subclasses that create targets override it.
     owned = False
+    # Where the harness puts its own files in the target for a run (Claude Code's credentials, hooks): one
+    # target per run, except a shared host (runner.SshTarget), which keeps them in the run's directory.
+    scratch = "/tmp/burst-harness"
 
     def release(self) -> str:
         """Remove a target this run created. Returns what was done, for the log."""
@@ -218,6 +221,8 @@ class DockerTarget(SubprocessTarget):
     proxy: str = ""
     network: str = ""
     events: str = ""
+    # The runner whose engine it is on (runner.py), to reattach through: "" for this machine's.
+    runner: str = ""
 
     def exec_prefix(self, *, stdin: bool = False, tty: bool = False) -> list[str]:
         argv = [self.binary, "exec"]
@@ -257,7 +262,8 @@ class DockerTarget(SubprocessTarget):
         return f" Egress events: {path}{refused_summary(proc.stdout)}"
 
     def attach_hint(self) -> str:
-        return f"--target {self.binary} --docker-container {self.container}"
+        on = f"--runner {self.runner} " if self.runner else ""
+        return f"{on}--target {self.binary} --docker-container {self.container}"
 
 
 def refused_summary(events: bytes, limit: int = 8) -> str:

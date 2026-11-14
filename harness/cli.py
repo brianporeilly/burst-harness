@@ -24,6 +24,7 @@ from . import (
     job,
     mcp,
     models,
+    runner,
     session,
     state,
 )
@@ -193,6 +194,9 @@ def _overrides(args: argparse.Namespace) -> dict[str, Any]:
         "router": "" if named else args.router,
         "mcp": tuple(args.mcp) if args.mcp else None,
         "forges": tuple(args.forges) if getattr(args, "forges", None) else None,
+        "runners": tuple(args.runners) if getattr(args, "runners", None) else None,
+        "runner": getattr(args, "runner", None),
+        "runner_workdir": getattr(args, "runner_workdir", None),
         "claude_json": args.claude_json,
         "claude_settings": args.claude_settings,
         "claude_permission_mode": args.permission_mode,
@@ -219,9 +223,20 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str, branch: s
     if kind == "local":
         return LocalTarget(repo=str(Path(repo_arg or ".").expanduser().resolve()))
     repo = repo_arg or DEFAULT_REMOTE_REPO
+    if kind == "ssh":
+        if not cfg.repo_url and not cfg.runner_workdir:
+            raise SystemExit("A runner's host starts from an empty directory: pass --repo-url.")
+        try:
+            return runner.acquire(cfg, slug=slug)
+        except (runner.RunnerError, ExecError) as err:
+            raise SystemExit(str(err)) from err
     if kind in ("docker", "podman"):
         if not cfg.docker_container and not cfg.repo_url:
             raise SystemExit(f"target={kind} starts a fresh container: pass --repo-url (or --docker-container to attach).")
+        try:
+            runner.connect_engine(cfg)
+        except runner.RunnerError as err:
+            raise SystemExit(str(err)) from err
         return containers.acquire(cfg, binary=kind, repo=repo, slug=slug)
     if kind == "agent-sandbox":
         if not cfg.repo_url and not cfg.claim_name:
@@ -238,7 +253,7 @@ def _build_target(cfg: HarnessConfig, repo_arg: str | None, slug: str, branch: s
             context=cfg.kube_context or None,
             kubectl=cfg.kubectl,
         )
-    raise SystemExit(f"Unknown target {kind!r}. Use local, docker, podman, kubectl, or agent-sandbox.")
+    raise SystemExit(f"Unknown target {kind!r}. Use local, docker, podman, kubectl, agent-sandbox, or ssh.")
 
 
 def _git_auth(cfg: HarnessConfig, url: str) -> git.Auth:
@@ -562,6 +577,9 @@ def cmd_session(args: argparse.Namespace) -> int:
     cfg = HarnessConfig.load(None, _overrides(args))
     if cfg.target not in ("local", "podman", "docker", "agent-sandbox"):
         raise SystemExit(f"harness session runs on podman, docker or agent-sandbox (target is {cfg.target}).")
+    if cfg.runner:
+        raise SystemExit("Sessions don't run on a runner yet: their UI would be served on the runner, which "
+                         "nothing forwards. Run tasks and jobs there.")
     session.use(cfg.target)
     # On a cluster: the same commands, on a claimed sandbox behind the shared gateway.
     sessions: Any = cluster_session if cfg.target == "agent-sandbox" else session
@@ -743,10 +761,18 @@ def cmd_release(args: argparse.Namespace) -> int:
             repo=DEFAULT_REMOTE_REPO, pod="", claim=cfg.claim_name, owned=True,
             namespace=cfg.namespace or None, context=cfg.kube_context or None, kubectl=cfg.kubectl,
         )
+    elif cfg.runner_workdir:
+        found = runner.find(cfg, cfg.runner) if cfg.runner else None
+        if found is None or found.kind != "ssh":
+            raise SystemExit("--runner-workdir is a directory on a plain-host runner: name it with --runner.")
+        target = runner.SshTarget(repo=cfg.runner_workdir, ssh=runner.connection(found).argv, runner=found.name,
+                                  destination=found.destination, workdir=cfg.runner_workdir, owned=True)
     elif cfg.docker_container:
+        runner.connect_engine(cfg)
         target = containers.kept(cfg, binary=cfg.target if cfg.target in ("docker", "podman") else "podman")
     else:
-        raise SystemExit("Name what to release: --claim NAME, or --docker-container NAME (with --target docker/podman).")
+        raise SystemExit("Name what to release: --claim NAME, --docker-container NAME (with --target docker/podman), "
+                         "or --runner-workdir PATH (with --runner).")
     print(target.release())
     return 0
 
@@ -771,8 +797,15 @@ def main(argv: list[str] | None = None) -> int:
                              f"profiles and settings, say. Also {CONFIG_FILES_ENV}, os.pathsep-separated.")
 
     where = parser.add_argument_group("where work happens")
-    where.add_argument("--target", choices=["local", "docker", "podman", "kubectl", "agent-sandbox"],
-                       help="Execution target (default: local).")
+    where.add_argument("--target", choices=["local", "docker", "podman", "kubectl", "agent-sandbox", "ssh"],
+                       help="Execution target (default: local). ssh is a runner's: --runner picks it.")
+    where.add_argument("--runners", action="append", metavar="NAME=URL",
+                       help="A host of your own to run on (repeatable; replaces the runners setting): "
+                            "ssh://user@host (a plain host), podman+ssh://user@host/SOCKET or docker+ssh://user@host "
+                            "(its engine). See harness/runner.py.")
+    where.add_argument("--runner", help="Run on this runner (one of runners); it decides the target.")
+    where.add_argument("--runner-workdir", dest="runner_workdir",
+                       help="Attach to this directory on a plain-host runner, which an earlier run kept.")
     where.add_argument("--pod", help="Pod name, for target=kubectl.")
     where.add_argument("--namespace", help="Namespace of the pod, or of the sandbox claims.")
     where.add_argument("--container", help="Container within the pod.")
