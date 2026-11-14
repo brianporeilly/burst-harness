@@ -74,6 +74,14 @@ def test_a_mention_starts_a_task_and_its_bursts_are_told_in_the_thread(bot, harn
     _flush(bot, lambda texts: "Opened a PR" in texts[-1])
     assert bot.web.texts()[-1] == ":white_check_mark: Opened a PR: https://github.com/me/proj/pull/8"
 
+    # With auto_continue, the merge starts the next round, and the thread is told why.
+    bot.tasks.auto_continue(task["slug"], True)
+    harness.prs["https://github.com/me/proj/pull/8"] = "merged"
+    bot.tasks.check_pr(task["slug"], 0)
+    _flush(bot, lambda texts: "round 2" in texts[-1])
+    assert bot.web.texts()[-1] == (":arrow_forward: The PR was merged, so round 2 started by itself on "
+                                   f"`harness/{task['slug']}-2`.")
+
 
 def test_a_failure_says_how_it_ended_and_a_pause_its_questions(bot, harness):  # noqa: F811
     bot.handle({"type": "message", "channel_type": "im", "user": ALLOWED, "channel": "D1", "ts": "5.0",

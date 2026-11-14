@@ -245,6 +245,9 @@ class SlackBot:
         if event == "started":
             if not record.get("repo"):
                 return ":hourglass_flowing_sand: Working on " + ("your follow-up." if record.get("message") else "it.")
+            if record.get("by_merge"):
+                return (f":arrow_forward: The PR was merged, so round {len(record.get('rounds') or []) + 1} started "
+                        f"by itself on `{record.get('branch')}`.")
             return f":arrow_forward: Burst {count} started" + (" with your reply." if record.get("message") else ".")
         state = str(record.get("state") or "")
         if not record.get("repo"):

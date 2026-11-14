@@ -39,6 +39,11 @@ round is a fresh branch from the base (the first round's branch, with -2, -3... 
 its own; its first burst carries on from the task document, which came to the base with the merge
 (harness `run --branch`). The task keeps its earlier rounds' branches and PRs (`rounds`).
 
+A task can opt in to carrying on by itself (`auto_continue`): when a look finds the PR of a round that
+ended in a PR merged, the next round is started then, as if Continue had been pressed with no message.
+A round that ends any other way (paused, waiting on a question, abandoned, failed) stops there, so the
+task runs until the work runs out or it needs someone.
+
 A burst that will call a llama.cpp server of ours takes it first (servers.py). While another run has it, or
 it is busy, the task stays queued with the reason in its record (`server_wait`), and is tried again when a
 server is given back, and every RETRY seconds (`start`), since what keeps a server busy may not be ours.
@@ -284,6 +289,7 @@ class TaskRunner:
             # Its network: the orchestrator's unless it chose log, and hosts added to the allowlist for it alone.
             "egress": egress_mode or None, "allow": _hosts(raw.get("allow")),
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
+            "auto_continue": bool(raw.get("auto_continue")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
             "sandbox": None, "said": None, "slack": slack,
@@ -321,10 +327,10 @@ class TaskRunner:
         except McpServersError as err:
             raise TasksError(str(err)) from err
 
-    def resume(self, slug: str, message: str = "") -> dict[str, Any]:
+    def resume(self, slug: str, message: str = "", *, merged: bool = False) -> dict[str, Any]:
         """Queue another burst: with the user's reply, or to carry on from where it stopped. Once the task's
-        PR is merged, the burst starts the task's next round."""
-        self.check_pr(slug, 0)  # merged since it was last looked at?
+        PR is merged, the burst starts the task's next round. `merged`: started by auto_continue, not a person."""
+        self.check_pr(slug, 0, auto=False)  # merged since it was last looked at?
         with self.lock:
             record = self._read(slug)
             if record["state"] not in IDLE:
@@ -334,7 +340,8 @@ class TaskRunner:
             kept = record.get("sandbox") if record["state"] == "merged" else None
             if record["state"] == "merged":
                 self._next_round(record)
-            record.update(state="queued", queued=time.time_ns(), message=message.strip() or None, restarts=0)
+            record.update(state="queued", queued=time.time_ns(), message=message.strip() or None, restarts=0,
+                          by_merge=merged)
             self._write(record)
         if kept:
             self._release(slug, kept)  # on the merged branch: of no use to the next round
@@ -421,9 +428,23 @@ class TaskRunner:
         record.update(rounds=rounds, branch=f"{rounds[0]['branch']}-{len(rounds) + 1}", pr=None, pr_state=None,
                       pr_checked=None, sandbox=None)
 
-    def check_pr(self, slug: str, fresh: int) -> None:
+    def auto_continue(self, slug: str, on: bool) -> dict[str, Any]:
+        """Turn carrying on by itself on or off. Turned on for a task whose PR is already merged, it starts
+        the next round now, as the look that found it merged would have."""
+        with self.lock:
+            record = self._read(slug)
+            if not record.get("repo"):
+                raise TasksError(f"{slug} is a question: it has no PR to be merged.")
+            record["auto_continue"] = bool(on)
+            self._write(record)
+        if on and record["state"] == "merged":
+            return self.resume(slug)
+        return _summary(record)
+
+    def check_pr(self, slug: str, fresh: int, *, auto: bool = True) -> None:
         """Look at the task's PR on GitHub, unless it was looked at in the last `fresh` seconds, and note
-        its state; a merged PR makes an idle task `merged`. Trouble asking is printed, not raised."""
+        its state; a merged PR makes an idle task `merged`, and, with `auto` and the task's auto_continue,
+        starts its next round if the round ended in that PR. Trouble asking is printed, not raised."""
         try:
             record = self._read(slug)
         except TasksError:
@@ -437,6 +458,7 @@ class TaskRunner:
         except git.GitError as err:
             print(f"tasks: {slug}: {err}", flush=True)
             found = None
+        carry_on = False
         with self.lock:
             try:
                 record = self._read(slug)
@@ -448,8 +470,15 @@ class TaskRunner:
             if found:
                 record["pr_state"] = found
                 if found == "merged" and record.get("state") in IDLE:
+                    carry_on = auto and bool(record.get("auto_continue")) and record["state"] == "pr"
                     record["state"] = "merged"
             self._write(record)
+        if carry_on:
+            print(f"tasks: {slug}: its PR is merged; starting its next round (auto_continue).", flush=True)
+            try:
+                self.resume(slug, merged=True)
+            except TasksError as err:  # removed or continued meanwhile
+                print(f"tasks: {slug}: {err}", flush=True)
 
     def check_prs(self) -> None:
         """Look at every idle task's PR that was not looked at in the last PR_CHECK seconds."""
@@ -655,6 +684,7 @@ class TaskRunner:
             self.servers.give_back(f"task {record['slug']}", wake=False)  # the lock is held: dispatch goes on
             return
         record["bursts"].append({"started": _now(), "message": record.get("message"), "offset": offset,
+                                 **({"by_merge": True} if record.get("by_merge") else {}),
                                  **({"run": run[job.RUN_ID_ENV]} if run else {"branch": record.get("branch")})})
         record.update(state="running", boot=self.boot, **launched.record())
         self._write(record)
@@ -803,7 +833,7 @@ def _sandbox_line(output: Path, burst: dict[str, Any]) -> dict[str, Any] | None:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
         "allow")} | {
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}

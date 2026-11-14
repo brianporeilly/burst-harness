@@ -158,6 +158,7 @@
         <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
       </div>
       <label class="inline"><input type="checkbox" name="draft"> Open the PR as a draft</label>
+      <label class="inline"><input type="checkbox" name="auto_continue"> Once its PR is merged, start the next round by itself</label>
       <p class="muted">With no repository, the task is a question (a summary, some research): it runs in a fresh
         sandbox whose network only reads, and ends in an answer rather than a PR. Continuing it asks a follow-up.</p>
       <div class="row"><button class="primary" type="submit">Start</button><span class="error" id="task-form-error"></span></div>
@@ -846,7 +847,7 @@ async function renderTask() {
   catch (err) { box.replaceChildren(el("p", { class: "muted" }, "Gone.")); delete box.dataset.key; return; }
   if (selectedTask !== t.slug) return;
   const output = box.querySelector("pre[data-output]");
-  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox]);
+  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue]);
   if (box.dataset.key === key) {
     // Only the output moves while a burst runs; keep it scrolled to the end if it was.
     if (output && output.textContent !== (t.output || "")) {
@@ -875,7 +876,7 @@ async function renderTask() {
     el("td", {}, String(i + 1)), el("td", {}, new Date(b.started).toLocaleString()),
     el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
     el("td", { class: "muted" }, (rounds.length > 1 && b.branch ? `round ${rounds.findIndex((r) => r.branch === b.branch) + 1}: ` : "")
-      + (b.message || (i ? (asking ? "asked again" : "carry on") : "the prompt")))));
+      + (b.message || (b.by_merge ? "next round, started when the PR was merged" : i ? (asking ? "asked again" : "carry on") : "the prompt")))));
   // A question's conversation: what each burst asked, and its answer.
   const answers = asking ? t.bursts.filter((b) => b.ended).map((b, i) => el("div", {},
     el("p", { class: "muted" }, b.message ? `Follow-up: ${b.message}` : i ? "Asked again:" : "The prompt:"),
@@ -891,6 +892,10 @@ async function renderTask() {
     rounds.length > 1 ? el("div", {}, el("h3", {}, "Rounds"), el("table", {}, rounds.map((r, i) => el("tr", {},
       el("td", {}, String(i + 1)), el("td", {}, el("code", {}, r.branch)),
       el("td", {}, r.pr ? prLink(r.pr, r.pr_state) : el("span", { class: "muted" }, i === rounds.length - 1 ? "no PR yet" : "no PR")))))) : null,
+    t.repo ? el("label", { class: "inline" }, el("input", { type: "checkbox", checked: !!t.auto_continue, onchange: (event) =>
+      taskAct(event.target.checked ? "Auto-continue on" : "Auto-continue off", () => api(`/api/tasks/${t.slug}/auto-continue`,
+        { method: "POST", body: JSON.stringify({ on: event.target.checked }) })) }),
+      " Once its PR is merged, start the next round by itself (it stops at a round that ends without a PR)") : null,
     t.state === "paused" ? el("p", { class: "muted" }, "Paused: the work is pushed, with where it stands and any questions "
       + "in the task document on the branch (and at the end of the output).") : null,
     t.state === "max_tokens" ? el("p", { class: "muted" }, "Stopped: the model's replies kept hitting the output limit "
@@ -1115,6 +1120,7 @@ taskForm.onsubmit = async (event) => {
   error.textContent = "";
   const data = Object.fromEntries(new FormData(taskForm));
   data.draft = taskForm.draft.checked;
+  data.auto_continue = taskForm.auto_continue.checked;
   // Only Anthropic takes effort and thinking as settings; elsewhere they are in the JSON already.
   if (taskProvider !== "anthropic") { delete data.effort; delete data.thinking; }
   if (taskForm.engine.value === "claude-code") { delete data.max_tokens; delete data.model_params; }

@@ -590,6 +590,9 @@ def test_the_tasks_api(tmp_path, harness):
     assert made.status_code == 202 and made.json()["created_by"] == "brian"
     listed = client.get("/api/tasks", headers=signed_in).json()
     assert listed["on"] and [t["slug"] for t in listed["tasks"]] == ["readme"]
+    switched = client.post("/api/tasks/readme/auto-continue", json={"on": True}, headers=signed_in)
+    assert switched.status_code == 200 and switched.json()["auto_continue"] is True
+    assert client.post("/api/tasks/readme/auto-continue", json={"on": True}, headers={"Remote-User": "b"}).status_code == 403
     bad = client.post("/api/tasks", json={"repo": "nope", "prompt": "x"}, headers=signed_in)
     assert bad.status_code == 400 and "not a repo" in bad.json()["error"]
     assert client.post("/api/tasks/readme/continue", headers=signed_in).status_code == 400  # still running
@@ -669,6 +672,66 @@ def test_once_its_pr_is_merged_continuing_a_task_starts_its_next_round(tmp_path,
     runner.resume("t")  # merged since it was last looked at: Continue finds out, and starts round 3
     assert harness.argv()[harness.argv().index("--branch") + 1] == "harness/t-3"
     assert [r["branch"] for r in runner.task("t")["rounds"]] == ["harness/t", "harness/t-2"]
+
+
+def test_with_auto_continue_a_merged_pr_starts_the_next_round_by_itself(tmp_path, harness, capsys):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "build it in phases", "slug": "t", "auto_continue": True})
+    assert runner.task("t")["auto_continue"] is True
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+    harness.prs[PR1] = "merged"
+    runner.check_prs()
+    assert len(harness.started) == 1  # looked at moments ago, when the PR was opened
+    runner.check_pr("t", 0)  # as the background look does, once PR_CHECK has gone by
+    assert len(harness.started) == 2
+    argv = harness.argv()
+    assert argv[argv.index("--branch") + 1] == "harness/t-2" and "--message" not in argv
+    record = runner.task("t")
+    assert record["rounds"] == [{"branch": "harness/t", "pr": PR1, "pr_state": "merged"}]
+    assert record["bursts"][1]["by_merge"] is True and "by_merge" not in record["bursts"][0]
+    assert "starting its next round (auto_continue)" in capsys.readouterr().out
+
+    # A round that ends without a PR stops it: a pause waits for a person, whatever happens to the old PR.
+    harness.started[1][1].finish(0, state="paused")
+    _settled(runner, "t", "paused")
+    runner.check_prs()
+    assert len(harness.started) == 2
+    runner.resume("t", "go on")  # a person's Continue is not marked as the merge's
+    assert "by_merge" not in runner.task("t")["bursts"][2]
+
+
+def test_a_merged_pr_waits_for_continue_unless_the_round_ended_in_it(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t", "auto_continue": True})
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+    runner.resume("t", "a review fix")
+    harness.started[1][1].finish(0, state="paused")  # paused on the PR's branch, with a question
+    _settled(runner, "t", "paused")
+    harness.prs[PR1] = "merged"
+    runner.check_pr("t", 0)
+    assert runner.task("t")["state"] == "merged" and len(harness.started) == 2
+
+
+def test_auto_continue_is_off_unless_asked_and_can_be_turned_on_later(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t"})
+    assert runner.task("t")["auto_continue"] is False
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+    harness.prs[PR1] = "merged"
+    runner.check_pr("t", 0)
+    assert runner.task("t")["state"] == "merged" and len(harness.started) == 1
+    # Turned on once merged: the next round starts now, as the look would have started it.
+    runner.auto_continue("t", True)
+    assert len(harness.started) == 2
+    assert harness.argv()[harness.argv().index("--branch") + 1] == "harness/t-2"
+    assert runner.auto_continue("t", False)["auto_continue"] is False
+    runner.create({"prompt": "why?", "slug": "q", "auto_continue": True})
+    assert runner.task("q")["auto_continue"] is False  # a question has no PR
+    with pytest.raises(TasksError, match="no PR"):
+        runner.auto_continue("q", True)
 
 
 def test_a_pr_is_looked_at_only_while_its_task_is_idle_and_not_too_often(tmp_path, harness):
