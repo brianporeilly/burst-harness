@@ -385,7 +385,7 @@ def acquire(
     so values stay out of argv.
     """
     if cfg.docker_container:
-        return DockerTarget(repo=repo, container=cfg.docker_container, binary=binary)
+        return DockerTarget(repo=repo, container=cfg.docker_container, binary=binary, runner=cfg.runner)
     if not cfg.image:
         raise ContainerError(f"target={binary} needs --docker-container or --image.")
     if cfg.egress not in EGRESS_MODES:
@@ -406,6 +406,7 @@ def acquire(
                                                     upstream_ca=upstream_ca)
     env = env or {}
     target = DockerTarget(repo=repo, container=name, binary=binary, owned=True, proxy=proxy, network=network,
+                          runner=cfg.runner,
                           events=events_path(cfg, name) if proxy else "")
     try:
         proc = subprocess.run(
@@ -441,7 +442,7 @@ def kept(cfg: HarnessConfig, *, binary: str) -> DockerTarget:
     has_proxy = subprocess.run([binary, "container", "exists" if binary == "podman" else "inspect", proxy],
                                capture_output=True).returncode == 0
     has_network = subprocess.run([binary, "network", "inspect", network], capture_output=True).returncode == 0
-    return DockerTarget(repo="/", container=name, binary=binary, owned=True,
+    return DockerTarget(repo="/", container=name, binary=binary, owned=True, runner=cfg.runner,
                         proxy=proxy if has_proxy else "", network=network if has_network else "",
                         events=events_path(cfg, name) if has_proxy else "")
 

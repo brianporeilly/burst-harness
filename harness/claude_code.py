@@ -173,6 +173,9 @@ class ClaudeCodeEngine:
         self.ctx = ctx
         self.target: SubprocessTarget = ctx.target
         self.remote = not isinstance(ctx.target, LocalTarget)
+        # The target's place for the harness's files: REMOTE_DIR, but a run's own directory on a shared host.
+        self.dir = getattr(ctx.target, "scratch", REMOTE_DIR) if self.remote else REMOTE_DIR
+        self.env_file, self.token_file = f"{self.dir}/claude.env", f"{self.dir}/model-token"
         self.has_env_file = False
         self.hook_path = ""
         self.result: dict[str, Any] | None = None
@@ -199,7 +202,7 @@ class ClaudeCodeEngine:
         mcp.check_keys(cfg)
         if mcp.direct(cfg):
             # No gateway to add the servers' keys: Claude Code sends them, from a file only its user can read.
-            self.mcp_file = f"{REMOTE_DIR}/{MCP_FILE}" if self.remote else str(self.state_dir() / MCP_FILE)
+            self.mcp_file = f"{self.dir}/{MCP_FILE}" if self.remote else str(self.state_dir() / MCP_FILE)
             self._upload(self.mcp_file, json.dumps(mcp.claude(cfg)))
             print(f"MCP keys: no gateway to add them, so Claude Code sends them itself ({self.mcp_file}, for the run).")
         if cfg.delegate_to:
@@ -221,8 +224,8 @@ class ClaudeCodeEngine:
                 print("Local target: ignoring claude_json/claude_settings; your own ~/.claude config applies.")
             return
 
-        self._upload(f"{REMOTE_DIR}/git_policy.py", Path(git_policy.__file__).read_text())
-        self.hook_path = f"{REMOTE_DIR}/git_policy.py"
+        self._upload(f"{self.dir}/git_policy.py", Path(git_policy.__file__).read_text())
+        self.hook_path = f"{self.dir}/git_policy.py"
 
         endpoint = models.target_endpoint(cfg)
         if endpoint is not None:
@@ -231,7 +234,7 @@ class ClaudeCodeEngine:
             if "model" in cfg.egress_inject:
                 raise ClaudeCodeError(f"provider {cfg.provider} gives Claude Code its own endpoint and token, "
                                       "which egress_inject = model cannot hold yet: drop model from egress_inject.")
-            self.keeper = TokenKeeper(endpoint, lambda token: self._upload(TOKEN_FILE, token))
+            self.keeper = TokenKeeper(endpoint, lambda token: self._upload(self.token_file, token))
             self.keeper.start()
             creds = {"ANTHROPIC_BASE_URL": endpoint.base_url, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": str(HELPER_TTL_MS),
                      **endpoint.env}
@@ -246,7 +249,7 @@ class ClaudeCodeEngine:
         if creds or self.target.env:
             # With what the target gives the agent (build_cache), which Claude's commands inherit.
             values = {**dict(self.target.env), **creds}
-            self._upload(ENV_FILE, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in values.items()))
+            self._upload(self.env_file, "".join(f"export {k}={shlex.quote(v)}\n" for k, v in values.items()))
             self.has_env_file = True
         if not creds:
             print(
@@ -266,7 +269,7 @@ class ClaudeCodeEngine:
                     raise ValueError("not a JSON object")
             except (OSError, ValueError) as err:
                 raise ClaudeCodeError(f"{path}: {err}") from err
-            remote = f"{REMOTE_DIR}/seed-{flag.strip('-')}.json"
+            remote = f"{self.dir}/seed-{flag.strip('-')}.json"
             self._upload(remote, content)
             seeds += [flag, remote]
         if seeds:
@@ -291,9 +294,9 @@ class ClaudeCodeEngine:
         if self.keeper is not None:
             self.keeper.stop()
             self.keeper = None
-            self.target.run_shell(f"rm -f {shlex.quote(TOKEN_FILE)}", check=False, cwd="/")
+            self.target.run_shell(f"rm -f {shlex.quote(self.token_file)}", check=False, cwd="/")
         if self.has_env_file:
-            self.target.run_shell(f"rm -f {shlex.quote(ENV_FILE)}", check=False, cwd="/")
+            self.target.run_shell(f"rm -f {shlex.quote(self.env_file)}", check=False, cwd="/")
             self.has_env_file = False
         if self.mcp_file:
             self.target.run_shell(f"rm -f {shlex.quote(self.mcp_file)}", check=False, cwd="/")
@@ -328,7 +331,7 @@ class ClaudeCodeEngine:
             {"matcher": "Bash", "hooks": [{"type": "command", "command": command}]}
         ]}}
         if self.keeper is not None:
-            settings["apiKeyHelper"] = f"cat {shlex.quote(TOKEN_FILE)}"
+            settings["apiKeyHelper"] = f"cat {shlex.quote(self.token_file)}"
         if not cfg.claude_attribution:
             settings["attribution"] = {"commit": "", "pr": ""}  # empty: none, rather than Claude Code's own
         return json.dumps(settings)
@@ -364,7 +367,7 @@ class ClaudeCodeEngine:
             *servers,
             *yours,
         ]
-        env = f"set -a && . {shlex.quote(ENV_FILE)} && set +a && " if self.has_env_file else ""
+        env = f"set -a && . {shlex.quote(self.env_file)} && set +a && " if self.has_env_file else ""
         return env + shlex.join(argv)
 
     # --- headless --------------------------------------------------------
