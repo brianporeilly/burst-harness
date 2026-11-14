@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.26.4 (2026-11-14)
+
+### Bug Fixes
+
+- **tasks**: A kept sandbox that is gone is replaced by a fresh claim
+  ([#15](https://github.com/brianporeilly/burst-harness/pull/15),
+  [`f2daf28`](https://github.com/brianporeilly/burst-harness/commit/f2daf2807514f3e5c059bbd30ca089f86a4ac8b0))
+
+
 ## v0.26.3 (2026-11-13)
 
 ### Bug Fixes
