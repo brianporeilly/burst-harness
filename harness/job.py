@@ -784,6 +784,12 @@ def _acquire(cfg: HarnessConfig, spec: JobSpec) -> SubprocessTarget:
             read_only=write_rules(spec, cfg),
             upstream_ca=tuple(ca for s in spec.secrets if (ca := s.upstream_ca())),
         )
+    from .runner import RunnerError, connect_engine
+
+    try:
+        connect_engine(cfg)  # a runner's podman or docker: the run's container goes there
+    except RunnerError as err:
+        raise JobError(str(err)) from err
     return containers.acquire(
         cfg, binary=cfg.target, repo=WORKDIR, slug=_slug(spec),
         allow=_hosts(spec), inject=tuple(s.rule() for s in spec.secrets if s.host),

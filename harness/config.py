@@ -164,7 +164,7 @@ class HarnessConfig:
     engine: str = "strands"
 
     # --- where work happens ---
-    target: str = "local"  # local | docker | podman | kubectl | agent-sandbox
+    target: str = "local"  # local | docker | podman | kubectl | agent-sandbox | ssh (a runner's)
     # Clone this into the target rather than expecting a checkout to be there.
     # Required for agent-sandbox, whose sandboxes start empty.
     repo_url: str = ""
@@ -228,6 +228,13 @@ class HarnessConfig:
     # pushed with the credential <NAME>_TOKEN, and its PRs opened and read
     # through the forge's API. See harness/forge.py.
     forges: tuple[str, ...] = ()
+    # Hosts of your own to run on, as NAME=URL (harness/runner.py): ssh://user@host for a plain host,
+    # podman+ssh://user@host/SOCKET or docker+ssh://user@host for its container engine. `runner` picks one,
+    # and with it the target (ssh, podman or docker); <NAME>_SSH_KEY and <NAME>_SSH_KNOWN_HOSTS are its key.
+    runners: tuple[str, ...] = ()
+    runner: str = ""
+    # A plain host's directory an earlier run kept, to attach to (as docker_container is a container).
+    runner_workdir: str = ""
     kubectl: str = "kubectl"
     # target=agent-sandbox (kubernetes-sigs/agent-sandbox)
     pool: str = ""
@@ -366,7 +373,8 @@ class HarnessConfig:
         servers(cfg)  # a bad entry fails here, not halfway through starting a sandbox
         forges(cfg)
         agents.check(cfg)
-        return cfg
+        from .runner import resolve
+        return resolve(cfg)
 
     def _env_values(self) -> dict[str, Any]:
         """Read HARNESS_* overrides, coerced to each field's type."""

@@ -166,6 +166,7 @@ directory and the real work would never be recorded.
 | `podman` / `docker` | `--image`, `--egress`, or `--docker-container` | Start a fresh container for the run and remove it after, or attach to a running one. |
 | `kubectl` | `--pod`, `--namespace`, `--container`, `--kube-context` | Work in an existing pod. |
 | `agent-sandbox` | `--pool` or `--claim`, `--repo-url`, `--claim-ttl`, `--keep-claim` | Claim a kubernetes-sigs/agent-sandbox sandbox, work in it, release it. |
+| `ssh` (a runner) | `--runner`, `--repo-url`, `--runner-workdir` | Work in a directory of its own on a host of yours, over SSH. |
 
 `--repo-url` clones into the target first (to `--repo`, default
 `/workspace/repo` for remote targets); without it the target must already hold a
@@ -372,6 +373,29 @@ GitHub, for tasks, sessions and jobs alike:
 Each token goes to its own forge alone. A repo on a host that is neither
 github.com nor listed gets no token, so it can be cloned only if it is public,
 and a PR can't be opened there.
+
+### Runners: hosts of your own (`--runners NAME=URL`, `--runner NAME`)
+
+```toml
+runners = [
+  "vm1=ssh://agent@vm1.example.com",                                         # a plain host
+  "box=podman+ssh://agent@box.example.com/run/user/1000/podman/podman.sock",  # its podman
+  "big=docker+ssh://agent@big.example.com",                                   # its docker
+]
+```
+
+`--runner NAME` runs there, and decides the target.
+
+- **A podman or docker runner** is the container target with the engine on that host. The harness forwards
+  the engine's socket over SSH for the run, so the container and its gateway sidecar run there, isolated as
+  they are on this machine.
+- **A plain host** (`ssh://`) gets a directory per run under the URL's path (`~/burst` without one). The repo
+  is cloned there, and the directory is removed afterwards, or kept while it holds unpushed work
+  (`--runner-workdir` attaches to it). It has no gateway, and the agent's credentials are written there for
+  the run, so give it a machine of its own that you reset; the harness refuses `--egress log`/`allowlist` for it.
+- **SSH** runs with BatchMode and a checked host key. The credential `<NAME>_SSH_KEY` (a private key) and
+  `<NAME>_SSH_KNOWN_HOSTS` are used when set; otherwise your own SSH setup applies. Details in
+  `harness/runner.py`. Sessions don't run on a runner yet.
 
 ### agent-sandbox (`--target agent-sandbox`)
 
