@@ -769,6 +769,17 @@ ORCHESTRATOR_JOB_REPOS="https://github.com/you/jobs.git#main:jobs" python -m orc
 - **Names must be unique:** a job's name is its folder's name. The `--jobs`
   directories come first, then the repos in order. A job whose name is already
   taken is left out, and the Jobs tab and the repo's row say so.
+- **Changes to a job's access wait for your Accept.** Anyone who can push to the
+  repo could otherwise give a job a secret, a write rule or a wider network. So
+  a commit that changes a job's access waits in the Jobs tab, showing each
+  setting before and after, and the job keeps running as it was last accepted
+  until you click Accept. A job's access is everything in its `job.toml` except
+  `[job] trigger`, `memory`, `quiet` and `plan_ttl`, plus the contents of the
+  files it names (a secret's `ca_file`, `claude_json`, `claude_settings`).
+  Changes to only the prompt, the scripts or those four settings go straight
+  through. A job new to the repo waits for Accept too. When an orchestrator
+  from before this first syncs a repo, its jobs as they are then count as
+  accepted.
 
 `--jobs` directories still work as before, alongside repos, as on a cluster
 where jobs come from ConfigMaps.

@@ -178,9 +178,10 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     @app.get("/api/jobs")
     def list_jobs() -> dict[str, Any]:
         if jobs is None:
-            return {"directories": [], "sources": [], "jobs": []}
+            return {"directories": [], "sources": [], "jobs": [], "waiting": []}
         return {"directories": [str(d) for d in jobs.directories], "jobs": jobs.jobs(),
                 "sources": list(jobs.sources.sources()) if jobs.sources else [],
+                "waiting": jobs.sources.waiting() if jobs.sources else [],
                 "schedule": {"on": jobs.schedule, "timezone": str(jobs.zone)}}
 
     @app.get("/api/jobs/{name}")
@@ -430,7 +431,9 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         listed = next((r for r in source_store().listing(jobs.clashes, jobs.discover())["sources"]
                        if r["name"] == name), {})
         found = ", ".join(listed.get("jobs") or []) or "no jobs"
-        return f"{name} is at {listed.get('commit', '')[:12]}: {found}."
+        waiting = listed.get("waiting") or []
+        return f"{name} is at {listed.get('commit', '')[:12]}: {found}." + (
+            f" Waiting for your Accept in the Jobs tab: {', '.join(waiting)}." if waiting else "")
 
     @app.get("/api/settings/job-sources")
     def list_sources() -> dict[str, Any]:
@@ -449,6 +452,13 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         if status.get("error"):
             raise SourcesError(f"{name} could not be synced: {status['error']}")
         return {"message": source_message(name, status)}
+
+    @app.post("/api/settings/job-sources/{name}/accept")
+    async def accept_job(name: str, request: Request) -> dict[str, str]:
+        raw = await body(request)
+        job_name, commit = str(raw.get("job") or ""), str(raw.get("commit") or "")
+        source_store().accept(name, job_name, commit, user=request.state.user)
+        return {"message": f"Accepted {job_name} at {commit[:12]}: it runs from that commit from now on."}
 
     @app.delete("/api/settings/job-sources/{name}")
     def remove_source(name: str) -> dict[str, str]:

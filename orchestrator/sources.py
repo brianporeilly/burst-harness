@@ -20,11 +20,23 @@ ones are removed. Nothing is ever written back to the repo.
 
 A job's name is the name of its folder, here as in --jobs, and must be unique: the job directories come first,
 then the sources in order, and a job of a name already found is left out, which its source's row says.
+
+Review: whoever can push to the repo could otherwise give a job any secret, write rule or network, so a commit
+that changes a job's access waits for a person to Accept it (`accept`, the Jobs tab), and until then the job
+runs as it was last accepted. A job's access is everything in its job.toml but its schedule (`[job] trigger`),
+`memory`, `quiet` and `plan_ttl`, with the contents of the files it names there (a secret's ca_file,
+claude_json, claude_settings). Its prompt and scripts are not: a commit changing only those goes straight
+through. A job new to the source waits for Accept too, and one gone from it is gone. A source's jobs are read
+from SOURCE/jobs/JOB, a link to the job in the tree of the commit it was accepted at; that tree is kept while a
+job is held at it. What was accepted, and what waits, is in SOURCE/review.json. When the review first meets a
+source that was already synced (an orchestrator from before it), the jobs as they are then are taken as
+accepted, since they were trusted until then.
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -35,6 +47,7 @@ import sys
 import tarfile
 import threading
 import time
+import tomllib
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -52,6 +65,12 @@ SHA = re.compile(r"[0-9a-f]{40}")
 URL_CHARS = 500
 GIT_TIMEOUT = 120
 MAX_TREE = 50 * 1024 * 1024  # what a commit may unpack to: a repo of jobs, not of anything else
+REVIEW_FILE = "review.json"
+# [job] settings that are not a job's access: a commit changing only these (and the prompt, the scripts) needs
+# no Accept.
+NOT_ACCESS = ("trigger", "memory", "quiet", "plan_ttl")
+# Settings naming a file in the job whose contents are part of its access.
+FILE_SETTINGS = ("claude_json", "claude_settings")
 
 
 class SourcesError(ValueError):
@@ -119,6 +138,10 @@ class JobSources:
         self.lock = threading.Lock()       # the store
         self.syncing = threading.Lock()    # one sync at a time
         self.status: dict[str, dict[str, Any]] = {}  # name -> {synced, error, checked}, since this start
+        with self.syncing:  # sources synced before the review: their jobs as they are now, accepted
+            for source in self.sources().values():
+                if (sha := self.commit(source.name)) and not (self.root / source.name / REVIEW_FILE).is_file():
+                    self._review(source, sha, baseline=True)
 
     # --- what is configured and saved ---
 
@@ -203,11 +226,12 @@ class JobSources:
         return sha if SHA.fullmatch(sha) else ""
 
     def directories(self) -> list[tuple[Source, Path]]:
-        """Each source that has been copied, and the folder its jobs are in (at its current commit)."""
+        """Each source that has been copied, and the folder its jobs are read from: links to each job as it was
+        last accepted."""
         found = []
         for source in self.sources().values():
-            if sha := self.commit(source.name):
-                found.append((source, self.root / source.name / "trees" / sha / source.path))
+            if (jobs := self.root / source.name / "jobs").is_dir():
+                found.append((source, jobs))
         return found
 
     def origin(self, path: Path) -> tuple[str, str] | None:
@@ -217,6 +241,108 @@ class JobSources:
         except ValueError:
             return None
         return (parts[0], parts[2]) if len(parts) > 3 and parts[1] == "trees" and SHA.fullmatch(parts[2]) else None
+
+    # --- review: what changes a job's access waits for Accept ---
+
+    def _tree_jobs(self, source: Source, sha: str) -> dict[str, Path]:
+        """The jobs in a commit's tree: name -> folder."""
+        tree = self.root / source.name / "trees" / sha / source.path
+        if (tree / "job.toml").is_file():
+            return {tree.name: tree}
+        return {p.parent.name: p.parent for p in sorted(tree.glob("*/job.toml"))} if tree.is_dir() else {}
+
+    def review(self, name: str) -> dict[str, Any]:
+        """A source's review.json: {"seen": commit, "accepted": {job: ...}, "pending": {job: ...}}."""
+        try:
+            data = json.loads((self.root / name / REVIEW_FILE).read_text())
+        except (OSError, ValueError):
+            return {"accepted": {}, "pending": {}}
+        return {"accepted": {}, "pending": {}, **data} if isinstance(data, dict) else {"accepted": {}, "pending": {}}
+
+    def _save_review(self, name: str, data: dict[str, Any]) -> None:
+        path = self.root / name / REVIEW_FILE
+        part = path.with_suffix(".part")
+        part.write_text(json.dumps(data, indent=1) + "\n")
+        part.replace(path)
+
+    def _link(self, source: Source, job_name: str, folder: Path | None) -> None:
+        """Point SOURCE/jobs/JOB at a job's folder in a tree, in one step; None removes it."""
+        jobs = self.root / source.name / "jobs"
+        jobs.mkdir(parents=True, exist_ok=True)
+        if folder is None:
+            (jobs / job_name).unlink(missing_ok=True)
+            return
+        link = jobs / f".{job_name}.new"
+        link.unlink(missing_ok=True)
+        link.symlink_to(os.path.relpath(folder, jobs))
+        link.replace(jobs / job_name)
+
+    def _review(self, source: Source, sha: str, *, baseline: bool = False) -> None:
+        """Hold each job of the commit to what was accepted: a job whose access is as accepted (or every job, for
+        a baseline) is taken at this commit, and one whose access changed, or that is new, waits. Called with
+        `syncing` held."""
+        data = self.review(source.name)
+        accepted, pending = data["accepted"], data["pending"]
+        found = self._tree_jobs(source, sha)
+        (self.root / source.name / "jobs").mkdir(parents=True, exist_ok=True)
+        for job_name, folder in found.items():
+            access = job_access(folder)
+            mark = _fingerprint(access)
+            was = accepted.get(job_name)
+            if baseline or (was and was.get("fingerprint") == mark):
+                self._link(source, job_name, folder)
+                accepted[job_name] = {"commit": sha, "fingerprint": mark, "access": access,
+                                      "by": was.get("by", "") if was else "", "at": was.get("at") if was else _now(),
+                                      **({"baseline": True} if baseline and not was else {})}
+                pending.pop(job_name, None)
+            else:
+                pending[job_name] = {"commit": sha, "fingerprint": mark, "access": access, "new": was is None,
+                                     "changes": changes(was["access"] if was else {}, access),
+                                     "since": (pending.get(job_name) or {}).get("since") or _now()}
+        for job_name in [j for j in accepted if j not in found]:  # gone from the repo: gone from the jobs
+            self._link(source, job_name, None)
+            del accepted[job_name]
+        for job_name in [j for j in pending if j not in found]:
+            del pending[job_name]
+        data["seen"] = sha
+        self._save_review(source.name, data)
+
+    def held(self, name: str) -> set[str]:
+        """The commits a source's jobs are held at: their trees are kept."""
+        return {str(r.get("commit")) for r in self.review(name)["accepted"].values()}
+
+    def accept(self, name: str, job_name: str, commit: str, *, user: str = "") -> dict[str, Any]:
+        """Accept the change waiting for a job: the one at `commit`, which the person saw. The job runs from it
+        from now on."""
+        source = self.sources().get(name)
+        if source is None:
+            raise SourcesError(f"No source named {name}.")
+        with self.syncing:
+            data = self.review(name)
+            waiting = data["pending"].get(job_name)
+            if waiting is None:
+                raise SourcesError(f"Nothing of {job_name} waits for Accept in {name}.")
+            if waiting["commit"] != commit:
+                raise SourcesError(f"{job_name} has changed again since (now at {waiting['commit'][:12]}): look at "
+                                   "what it changes now, and accept that.")
+            folder = self._tree_jobs(source, commit).get(job_name)
+            if folder is None or _fingerprint(job_access(folder)) != waiting["fingerprint"]:
+                raise SourcesError(f"{job_name} at {commit[:12]} is not there to accept: sync {name} again.")
+            self._link(source, job_name, folder)
+            data["accepted"][job_name] = {"commit": commit, "fingerprint": waiting["fingerprint"],
+                                          "access": waiting["access"], "by": user, "at": _now()}
+            del data["pending"][job_name]
+            self._save_review(name, data)
+        return data["accepted"][job_name]
+
+    def waiting(self) -> list[dict[str, Any]]:
+        """What waits for Accept, in every source: for the Jobs tab."""
+        found = []
+        for name in self.sources():
+            for job_name, item in sorted(self.review(name)["pending"].items()):
+                found.append({"source": name, "job": job_name,
+                              **{k: item.get(k) for k in ("commit", "new", "changes", "since")}})
+        return found
 
     def sync(self, name: str | None = None) -> dict[str, dict[str, Any]]:
         """Fetch one source, or all; the status of each synced."""
@@ -230,6 +356,9 @@ class JobSources:
                 try:
                     before = self.commit(source.name)
                     sha = self._fetch(source)
+                    if self.review(source.name).get("seen") != sha:
+                        self._review(source, sha)
+                        self._prune(source, sha, before)
                     status.update(synced=status["checked"], error="")
                     if sha != before:
                         print(f"sources: {source.name} at {sha[:12]}" + (f" (was {before[:12]})" if before else ""),
@@ -279,11 +408,17 @@ class JobSources:
         link.unlink(missing_ok=True)
         link.symlink_to(f"trees/{sha}")
         link.replace(home / "current")  # in one step: a job is read from one commit or the other
-        for old in trees.iterdir():  # keep this commit's and the one before, which a run may be copying
-            if old.name not in (sha, before):
-                shutil.rmtree(old, ignore_errors=True)
         self._git(source, "--git-dir", str(repo), "gc", "--quiet", "--prune=now")
         return sha
+
+    def _prune(self, source: Source, sha: str, before: str) -> None:
+        """Remove the trees no longer needed: those of neither this commit, the one before (which a run may be
+        copying), nor one a job is held at."""
+        keep = {sha, before, *self.held(source.name)}
+        trees = self.root / source.name / "trees"
+        for old in trees.iterdir() if trees.is_dir() else ():
+            if old.name not in keep:
+                shutil.rmtree(old, ignore_errors=True)
 
     def _default_branch(self, source: Source) -> str:
         out = self._git(source, "ls-remote", "--symref", source.url, "HEAD")
@@ -337,20 +472,55 @@ class JobSources:
         rows = []
         for name, source in self.sources().items():
             sha = self.commit(name)
-            tree = self.root / name / "trees" / sha / source.path if sha else None
-            jobs = sorted(p.parent.name for p in tree.glob("*/job.toml")) if tree and tree.is_dir() else []
-            if tree and (tree / "job.toml").is_file():
-                jobs = [tree.name]
-            mine = [j for j in jobs if found is None or (found.get(j) and self.origin(found[j]) == (name, sha))]
+            linked = self.root / name / "jobs"
+            jobs = sorted(p.name for p in linked.iterdir() if not p.name.startswith(".")) if linked.is_dir() else []
+            mine = [j for j in jobs if found is None or (found.get(j) and (self.origin(found[j]) or ("",))[0] == name)]
             status = self.status.get(name, {})
             record = stored.get(name, {})
             rows.append({**{k: v for k, v in asdict(source).items()}, "commit": sha,
                          "token_set": bool(credentials.get(source.token)),
                          "synced": status.get("synced"), "checked": status.get("checked"),
                          "error": status.get("error", ""), "jobs": mine,
+                         "waiting": sorted(self.review(name)["pending"]),
                          "left_out": [j for j in jobs if j not in mine and j in (clashes or {})],
                          "updated": record.get("updated"), "updated_by": record.get("updated_by", "")})
         return {"sources": rows, "interval": self.interval}
+
+
+def job_access(folder: Path) -> dict[str, Any]:
+    """What of a job's job.toml is its access, flattened ("[job] secrets", "egress_allow"...), with the hashes of
+    the files it names; for one that does not parse, its text's hash."""
+    try:
+        text = (folder / "job.toml").read_text()
+        values = tomllib.loads(text)
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as err:
+        raw = (folder / "job.toml").read_bytes() if (folder / "job.toml").is_file() else b""
+        return {"job.toml": f"does not parse ({type(err).__name__}), sha256 {hashlib.sha256(raw).hexdigest()[:16]}"}
+    table = values.pop("job", {})
+    access: dict[str, Any] = {key: value for key, value in values.items()}
+    if isinstance(table, dict):
+        access |= {f"[job] {key}": value for key, value in table.items() if key not in NOT_ACCESS}
+    else:
+        access["[job]"] = table
+    named = [values.get(key) for key in FILE_SETTINGS]
+    secrets = table.get("secrets") if isinstance(table, dict) else None
+    named += [item.get("ca_file") for item in secrets.values() if isinstance(item, dict)] if isinstance(secrets, dict) else []
+    for name in sorted({n for n in named if isinstance(n, str) and n}):
+        path = (folder / name).resolve()
+        inside = path.is_relative_to(folder.resolve())
+        access[f"file {name}"] = (hashlib.sha256(path.read_bytes()).hexdigest()[:16] if inside and path.is_file()
+                                  else "outside the job" if not inside else "missing")
+    return json.loads(json.dumps(access, default=str))  # as review.json keeps it (a TOML date as text)
+
+
+def _fingerprint(access: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(access, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each setting of a job's access that differs: what it was and is (None for not set)."""
+    return [{"setting": key, "before": before.get(key), "after": after.get(key)}
+            for key in sorted({*before, *after}) if before.get(key) != after.get(key)]
 
 
 def _now() -> str:
