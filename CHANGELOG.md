@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.32.0 (2026-11-15)
+
+### Continuous Integration
+
+- **release**: A run overtaken by a newer merge stands down instead of failing
+  ([#25](https://github.com/brianporeilly/burst-harness/pull/25),
+  [`45d399b`](https://github.com/brianporeilly/burst-harness/commit/45d399bbe252599eb4966751744d6a771c58e118))
+
+### Features
+
+- **orchestrator**: Webhooks from GitHub and Forgejo, signed, make a merged PR or a job repo push
+  seen now ([#24](https://github.com/brianporeilly/burst-harness/pull/24),
+  [`1d6d4bb`](https://github.com/brianporeilly/burst-harness/commit/1d6d4bbbb784fa23bb72f926c971f0f1cd7f3481))
+
+
 ## v0.31.0 (2026-11-15)
 
 ### Features
