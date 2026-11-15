@@ -262,6 +262,15 @@
     </form>
   </section>
   <section class="panel">
+    <h2>Webhooks</h2>
+    <p class="muted">A forge can tell the orchestrator when a PR is merged or a branch is pushed, so a task carries on
+      and a job repo syncs straight away rather than at the next look (every few minutes, which goes on anyway). In
+      the repo's settings, add a webhook to the address below, content type <code>application/json</code>, with the
+      secret set here as the credential named, for Pull request and Push events. What a delivery says is only a
+      hint: the orchestrator looks for itself.</p>
+    <div id="hooks"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="panel">
     <h2>Job repos</h2>
     <p class="muted">Git repos of jobs, beside the orchestrator's job directories. Each is synced every few
       minutes, or now with Sync, and its jobs are read from one commit at a time; a run records the commit it ran
@@ -1412,6 +1421,31 @@ runnerForm.onsubmit = async (event) => {
   } catch (err) { error.textContent = err.message; }
 };
 
+// --- webhooks (Settings) ---
+
+async function refreshHooks() {
+  const box = document.getElementById("hooks");
+  let found;
+  try { found = await api("/api/settings/hooks"); } catch (err) {
+    box.replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const address = (path) => found.port
+    ? `http://ORCHESTRATOR-HOST:${found.port}${path} (the hooks port), or ${location.origin}${path}`
+    : `${location.origin}${path}`;
+  box.replaceChildren(el("table", {},
+    el("tr", {}, el("th", {}, "Forge"), el("th", {}, "Address"), el("th", {}, "Secret"), el("th", {}, "Last deliveries")),
+    ...found.forges.map((f) => el("tr", {},
+      el("td", {}, el("code", {}, f.name), el("div", { class: "muted" }, f.host)),
+      el("td", {}, el("code", {}, address(f.path))),
+      el("td", {}, el("code", {}, f.secret), f.secret_set ? " ✓" : el("span", { class: "muted" }, " not set: deliveries are refused")),
+      el("td", {}, f.deliveries.length ? el("ul", {}, ...f.deliveries.slice(0, 5).map((d) =>
+        el("li", { class: d.outcome.startsWith("refused") ? "error" : "" }, `${when(d.at)}: ${d.event || "?"}, ${d.outcome}`)))
+        : el("span", { class: "muted" }, "none since the orchestrator started"))))));
+}
+
 // --- job repos (Settings) ---
 
 const sourceForm = document.getElementById("source-form");
@@ -1631,7 +1665,7 @@ document.getElementById("token-form").onsubmit = async (event) => {
 };
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
-  settings: () => { refreshCredentials(); refreshMcp(); refreshRunners(); refreshSources(); refreshProfiles(); refreshTaskSettings(); refreshTokens(); } };
+  settings: () => { refreshCredentials(); refreshMcp(); refreshRunners(); refreshHooks(); refreshSources(); refreshProfiles(); refreshTaskSettings(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;

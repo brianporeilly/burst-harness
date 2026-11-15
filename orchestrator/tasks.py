@@ -521,6 +521,11 @@ class TaskRunner:
             except TasksError as err:  # removed or continued meanwhile
                 print(f"tasks: {slug}: {err}", flush=True)
 
+    def by_pr(self, url: str) -> list[str]:
+        """The tasks whose PR (this round's) is at that URL: for a forge's webhook (hooks.py)."""
+        want = url.strip().lower().rstrip("/")
+        return [str(r["slug"]) for r in self._records() if str(r.get("pr") or "").lower().rstrip("/") == want]
+
     def check_prs(self) -> None:
         """Look at every idle task's PR that was not looked at in the last PR_CHECK seconds."""
         for record in self._records():

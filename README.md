@@ -789,6 +789,28 @@ ORCHESTRATOR_JOB_REPOS="https://github.com/you/jobs.git#main:jobs" python -m orc
 `--jobs` directories still work as before, alongside repos, as on a cluster
 where jobs come from ConfigMaps.
 
+**Webhooks.** A forge can tell the orchestrator when a PR closes or a branch
+is pushed, so a task's merged PR is seen (and, with auto-continue, its next
+round started) and a job repo synced straight away, not at the next poll.
+Polling carries on regardless, for any delivery that doesn't arrive.
+
+- **Address:** `/hooks/NAME`, NAME being the forge's: `github`, or a name from
+  `forges` such as `forgejo`. Content type `application/json`; events Pull
+  request and Push.
+- **Secret:** each forge's is the credential `<NAME>_WEBHOOK_SECRET` (Settings),
+  given to the forge as the hook's secret. A delivery with a missing or wrong
+  signature, or for a forge with no secret set, is refused.
+- **A hint, not a fact:** a delivery only says what to look at. The
+  orchestrator asks the forge for the PR's state, or syncs the job repo,
+  exactly as polling would, and a redelivery isn't acted on twice.
+- **A port of its own:** `ORCHESTRATOR_HOOKS_PORT` also listens on a port that
+  answers `/hooks/` and nothing else. Use it for a forge that can reach the
+  orchestrator directly (inside a cluster) but mustn't reach the rest of it,
+  since the main port trusts its sign-in header. A forge outside reaches
+  `/hooks/NAME` through a route that passes only that path.
+- **Deliveries:** Settings (Webhooks) shows each forge's address, whether its
+  secret is set, and its last deliveries.
+
 **Schedules.** With `--schedule` (or `ORCHESTRATOR_SCHEDULE=1`), a job whose
 `[job] trigger` is a cron schedule (`"0 7 * * 1-5"`) is also run when it's due:
 
