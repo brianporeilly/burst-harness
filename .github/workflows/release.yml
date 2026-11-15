@@ -13,7 +13,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One release at a time, in the order of the merges.
+# One release at a time, in the order of the merges. A run waits for the one before it; of several waiting,
+# GitHub keeps only the newest, which is enough, since a release counts every commit since the last tag.
+#
+# Two merges close together used to fail the first run: main had moved by the time it pushed its version
+# commit. Now a run whose commit is no longer main's head stands down, leaving it to the newer merge's run
+# (queued behind it), and one that fails because a merge landed while it was releasing is not a failure
+# either, for the same reason. A failure with nothing newer on main is still one.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -39,13 +45,32 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0  # every commit and tag since the last release
           token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
-      # The commit that started this, not a later one merged meanwhile: that
-      # one gets its own run.
-      - run: git reset --hard "$GITHUB_SHA"
+      # Main's head, or nothing: a run for an older commit leaves it to the newer one's.
+      - id: head
+        run: |
+          if [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ]; then
+            echo "newest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main has moved past ${GITHUB_SHA::12}: the release is the newer merge's run's to make."
+          fi
       - id: release
+        if: steps.head.outputs.newest == 'true'
+        continue-on-error: true
         uses: python-semantic-release/python-semantic-release@v10.7.0
         with:
           github_token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+      # Failed because a merge landed meanwhile (its push refused): that merge's run releases both. Anything
+      # else, including a failure after this run's own version commit was pushed, fails the run.
+      - if: steps.release.outcome == 'failure'
+        run: |
+          git fetch -q origin "${GITHUB_REF_NAME}"
+          newer=$(git log --format=%s "$GITHUB_SHA..origin/${GITHUB_REF_NAME}" | grep -v '^chore(release): ' || true)
+          if [ -n "$newer" ]; then
+            echo "::notice::A merge landed while this was releasing; its run releases this too: ${newer%%$'\n'*}"
+          else
+            echo "::error::The release failed, with nothing newer on main to make it."
+            exit 1
+          fi
 
   # A tag pushed with the workflow's own token starts no workflow, so the
   # release builds its images itself.
