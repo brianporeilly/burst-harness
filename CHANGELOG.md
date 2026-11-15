@@ -5,6 +5,19 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.30.0 (2026-11-15)
+
+### Features
+
+- **jobs**: A job repo's commit that changes a job's access waits for Accept, and the job runs as
+  accepted meanwhile ([#21](https://github.com/brianporeilly/burst-harness/pull/21),
+  [`e40ec79`](https://github.com/brianporeilly/burst-harness/commit/e40ec7943317748141e96d786403c070ac554be6))
+
+- **orchestrator**: Runners in Settings, picked per task, with their SSH keys granted to the runs on
+  them ([#20](https://github.com/brianporeilly/burst-harness/pull/20),
+  [`6d83ab3`](https://github.com/brianporeilly/burst-harness/commit/6d83ab3d70b11d1dcc859f08ed97f3f6176b2c4c))
+
+
 ## v0.29.0 (2026-11-15)
 
 ### Features
