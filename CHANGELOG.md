@@ -5,6 +5,19 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.31.0 (2026-11-15)
+
+### Features
+
+- **orchestrator**: Warm pools' idle sandboxes out of date with their template are replaced, so an
+  image bump needs no hand recycling ([#23](https://github.com/brianporeilly/burst-harness/pull/23),
+  [`35628ca`](https://github.com/brianporeilly/burst-harness/commit/35628ca90be7eb0c532833f935deca6f341f51b2))
+
+- **tasks**: The agent is told its sandbox's memory limit and CPUs, to keep its builds within them
+  ([#22](https://github.com/brianporeilly/burst-harness/pull/22),
+  [`8e2b956`](https://github.com/brianporeilly/burst-harness/commit/8e2b95663377d85e50eb1f111a44bdc509498547))
+
+
 ## v0.30.0 (2026-11-15)
 
 ### Features
