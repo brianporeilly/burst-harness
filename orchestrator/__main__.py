@@ -31,6 +31,12 @@ Runs that call a llama.cpp server take turns on it, across jobs and tasks. With
 while the server's /health says it is busy with someone else's. A run that names
 its model (model_id) waits while the server serves another. See servers.py.
 
+Webhooks (hooks.py): a forge posts to /hooks/NAME (github, or a forge of HARNESS_FORGES), signed with
+<NAME>_WEBHOOK_SECRET, when a PR closes or a branch is pushed, and the task or job repo it concerns is looked
+at then rather than at the next poll. ORCHESTRATOR_HOOKS_PORT also listens on a port that answers /hooks/ and
+nothing else, for a forge that may reach the orchestrator directly (inside a cluster) but must not reach the
+rest of it.
+
 On a cluster, the warm pools' idle sandboxes that are out of date with their template (an image bump) are
 replaced every ORCHESTRATOR_RECYCLE seconds (default 300, 0 for never). See recycle.py.
 
@@ -68,6 +74,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 from datetime import UTC, timedelta, tzinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -84,6 +91,7 @@ from .launch import Jobs, LaunchError
 from .mcp_servers import McpServerStore
 from .runners import RunnerStore, RunnersError
 from .profiles import ProfileStore
+from .hooks import PORT_ENV as HOOKS_PORT_ENV, Hooks
 from .recycle import ENV as RECYCLE_ENV, INTERVAL as RECYCLE_INTERVAL, Recycler
 from .task_settings import TaskSettings
 from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
@@ -225,11 +233,36 @@ def main() -> None:
     if slack:
         slack.start()
     tokens = TokenStore(state / "tokens.json")
+    try:
+        hooks_port = int(os.environ.get(HOOKS_PORT_ENV) or 0)
+    except ValueError:
+        parser.error(f"{HOOKS_PORT_ENV} is a port number.")
+    if hooks_port == args.port:
+        parser.error(f"{HOOKS_PORT_ENV} is a port of its own, not --port's.")
+    hooks = Hooks(base, tasks=tasks, sources=sources, port=hooks_port)
+    print("Webhooks at /hooks/NAME" + (f", and on port {hooks_port} alone ({HOOKS_PORT_ENV})" if hooks_port else "")
+          + ": " + ", ".join(f"{name} ({'secret set' if row['secret_set'] else row['secret'] + ' not set'})"
+                             for name, row in ((r["name"], r) for r in hooks.listing()["forges"])))
     app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, profiles=profiles,
-                     mcp_servers=mcp_servers, task_settings=task_settings, runners=runners, slack=slack,
+                     mcp_servers=mcp_servers, task_settings=task_settings, runners=runners, hooks=hooks, slack=slack,
                      hosts=tuple(args.host),
                      user_header=args.user_header, local_browser=local_browser)
-    uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
+    if not hooks_port:
+        uvicorn.run(app, host=args.listen, port=args.port, log_level="warning")
+        return
+    # One server, two sockets: the app tells them apart by the port a request came in on (app.py's guard).
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    server.run(sockets=[_bind(args.listen, args.port), _bind(args.listen, hooks_port)])
+
+
+def _bind(host: str, port: int) -> socket.socket:
+    family, kind, proto, _, address = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM,
+                                                         flags=socket.AI_PASSIVE)[0]
+    sock = socket.socket(family, kind, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(address)
+    sock.set_inheritable(True)
+    return sock
 
 
 def _flag(name: str) -> bool:

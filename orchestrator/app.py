@@ -39,6 +39,7 @@ from harness.exec_target import ExecError
 from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
 from .launch import HANDOFF_PATH, LaunchError
+from .hooks import PATH as HOOKS_PATH, HookError, Hooks
 from .mcp_servers import McpServersError, McpServerStore
 from .runners import RunnersError, RunnerStore
 from .sources import SourcesError
@@ -64,13 +65,19 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
                tokens: TokenStore | None = None, settings: CredentialStore | None = None,
                profiles: ProfileStore | None = None, mcp_servers: McpServerStore | None = None,
                task_settings: TaskSettings | None = None, runners: RunnerStore | None = None,
-               slack: SlackBot | None = None,
+               hooks: Hooks | None = None, slack: SlackBot | None = None,
                hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
 
     @app.middleware("http")
     async def guard(request: Request, call_next: Any) -> Any:
+        port = (request.scope.get("server") or ("", 0))[1]
+        if hooks is not None and hooks.port and port == hooks.port and not request.url.path.startswith(HOOKS_PATH):
+            # The port a forge inside the cluster reaches (hooks.py): webhooks, and nothing else.
+            return JSONResponse({"error": "This port answers webhooks (/hooks/NAME) only."}, status_code=404)
+        if request.url.path.startswith(HOOKS_PATH) and request.method == "POST":
+            return await call_next(request)  # a forge: the delivery's signature is checked there
         if request.url.path == HANDOFF_PATH:
             return await call_next(request)  # a burst's pod, by its address: its one-time token is checked there
         scheme, _, presented = request.headers.get("authorization", "").partition(" ")
@@ -321,6 +328,24 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         record = token_store().revoke(ident)
         return {"message": f"Revoked {record['name']}."}
 
+    # --- webhooks: a forge saying something changed (hooks.py); signed, so outside the guard ---
+
+    @app.post(HOOKS_PATH + "{forge_name}", status_code=202)
+    async def webhook(forge_name: str, request: Request) -> Any:
+        if hooks is None:
+            return JSONResponse({"error": "Webhooks are not on in this orchestrator."}, status_code=404)
+        body = await request.body()
+        try:
+            return await run_in_threadpool(hooks.receive, forge_name, dict(request.headers), body)
+        except HookError as err:
+            return JSONResponse({"error": str(err)}, status_code=err.status)
+
+    @app.get("/api/settings/hooks")
+    def list_hooks() -> dict[str, Any]:
+        if hooks is None:
+            raise SettingsError("Webhooks are not on in this orchestrator.")
+        return hooks.listing()
+
     # --- Settings: credentials (never with a token: see the guard) ---
 
     def credential_store() -> CredentialStore:
@@ -337,7 +362,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
                 *(var for name in (mcp_servers.servers() if mcp_servers else {}) for var in mcp.key_vars(name)),
                 *(jobs.secret_names() if jobs else []),
                 *(s.token for s in (jobs.sources.sources().values() if jobs and jobs.sources else [])),
-                *(var for r in (runners.listing()["runners"] if runners else []) for var in (r["key"], r["known_hosts"]))]
+                *(var for r in (runners.listing()["runners"] if runners else []) for var in (r["key"], r["known_hosts"])),
+                *(f["secret"] for f in (hooks.listing()["forges"] if hooks else []))]
 
     @app.get("/api/settings/credentials")
     def list_credentials() -> list[dict[str, Any]]:
