@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.32.1 (2026-11-15)
+
+### Bug Fixes
+
+- **tasks**: A gateway error on a task's refusals goes to the log, not the page
+  ([#26](https://github.com/brianporeilly/burst-harness/pull/26),
+  [`73be5a7`](https://github.com/brianporeilly/burst-harness/commit/73be5a7f42238e5853bf62bdb8bf1200b5abcf28))
+
+
 ## v0.32.0 (2026-11-15)
 
 ### Continuous Integration
