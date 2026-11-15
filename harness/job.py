@@ -105,7 +105,7 @@ from urllib.parse import urlencode, urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers, credentials, cron, mcp, memory, models, plans
+from . import agent_sandbox, containers, credentials, cron, mcp, memory, models, plans, resources
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -595,8 +595,10 @@ def _rules(target: SubprocessTarget, spec: JobSpec, *, has_scripts: bool, file: 
                                   decisions=f"{target.repo}/{plans.DECISIONS_FILE}")
                 if spec.mode == "act" and not spec.asking else "")
     quiet = QUIET_RULES if spec.quiet and not spec.asking else ""
+    limits = resources.note(target)
     return RULES.format(workdir=target.repo, scripts=scripts, memory=remembers, plan=proposes, quiet=quiet,
-                        ending=ending.format(report=f"{target.repo}/{REPORT}"), **wording)
+                        ending=ending.format(report=f"{target.repo}/{REPORT}"), **wording) + (
+        f"\n{limits}" if limits else "")
 
 
 def _written_report(target: SubprocessTarget) -> str | None:
