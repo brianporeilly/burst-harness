@@ -37,6 +37,12 @@ with buttons to approve or reject each item, or all that are left (harness/plans
 decide; the message shows the decisions, and how applying them went, as they happen. Once every item is decided
 with something approved, the apply run starts. The message's place is kept with the plan, so a restart loses
 nothing. The Slack app needs Interactivity on (with Socket Mode, no request URL).
+
+A job from a repo of jobs whose access changes, or that is new there, waits for Accept (sources.py). Each
+listed user is told in a direct message: what changed, and an Accept button for that commit when the message
+can show the whole change (otherwise the Jobs tab has it). The message is kept up to date: accepted (here or
+in the page), changed again (a new message), or no longer waiting. One that waited while Slack was off is
+told once it connects.
 """
 
 from __future__ import annotations
@@ -52,6 +58,7 @@ from typing import Any
 from harness import credentials
 
 from .jobs import JobRunner, JobsError
+from .sources import SourcesError
 from .tasks import SHORT_REPO, URL_REPO, TaskRunner, TasksError, repo_url, slug_for
 
 POLL = 30
@@ -77,6 +84,13 @@ ENDED = {
 }
 
 
+REVIEW_VALUE = 300  # characters of a setting's value in a review's message
+REVIEW_TEXT = 2800  # of its list of changes: a section's text is at most 3,000
+REVIEW_STATES = {
+    "accepted": ":white_check_mark: Accepted by {by}: it runs as it is at `{commit}` from now on.",
+    "withdrawn": "No longer waits: the repo put its access back as accepted, or removed the job.",
+    "superseded": "Changed again since: a newer message has it.",
+}
 PLAN_SHOWN = 22  # items with their own buttons: two blocks each, under Slack's 50 a message
 DETAIL_CHARS = 300
 PLAN_STATES = {
@@ -101,10 +115,14 @@ class SlackBot:
         self.seen: OrderedDict[str, None] = OrderedDict()
         self.lock = threading.Lock()
         self.plans: queue.Queue[tuple[str, str, dict[str, Any]]] = queue.Queue()
+        self.reviews: queue.Queue[tuple[str, str, str, dict[str, Any]]] = queue.Queue()
+        self.sources = jobs.sources if jobs is not None else None
         if tasks is not None:
             tasks.watch(self.burst)
         if jobs is not None:
             jobs.watch(self.plan_changed)
+        if self.sources is not None:
+            self.sources.watch(self.review_changed)
 
     # --- connecting ---
 
@@ -112,6 +130,7 @@ class SlackBot:
         threading.Thread(target=self._supervise, daemon=True, name="slack").start()
         threading.Thread(target=self._post, daemon=True, name="slack-posts").start()
         threading.Thread(target=self._post_plans, daemon=True, name="slack-plans").start()
+        threading.Thread(target=self._post_reviews, daemon=True, name="slack-reviews").start()
 
     def _supervise(self) -> None:
         while True:
@@ -148,6 +167,13 @@ class SlackBot:
         self.web, self.socket, self.me = web, socket, str(me["user_id"])
         self.status = f"connected as @{me['user']} in {me['team']}" + ("" if self.users else f", but no one may use it yet ({USERS_ENV})")
         print(f"slack: {self.status}")
+        self.untold()
+
+    def untold(self) -> None:
+        """Queue what waits for Accept and was never said (Slack was off, or no one was listed)."""
+        for item in self.sources.waiting() if self.sources is not None else []:
+            if not item.get("notices"):
+                self.reviews.put(("waiting", str(item["source"]), str(item["job"]), item))
 
     def on_request(self, client: Any, request: Any) -> None:
         """A Socket Mode envelope: acknowledged at once (or Slack sends it again), then handled."""
@@ -155,7 +181,10 @@ class SlackBot:
 
         client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))
         if request.type == "interactive" and request.payload.get("type") == "block_actions":
-            self.clicked(request.payload)
+            if any(a.get("action_id") == "job-accept" for a in request.payload.get("actions") or []):
+                self.accept_clicked(request.payload)
+            else:
+                self.clicked(request.payload)
             return
         if request.type != "events_api":
             return
@@ -316,6 +345,58 @@ class SlackBot:
         except Exception as err:  # noqa: BLE001 -- Slack's trouble is said, not raised into the jobs
             print(f"slack: posting {name}'s plan {plan['run']}: {err}")
 
+    # --- jobs waiting for Accept ---
+
+    def review_changed(self, event: str, source: str, job: str, item: dict[str, Any]) -> None:
+        """JobSources' watcher: queued, and said from the reviews thread."""
+        self.reviews.put((event, source, job, item))
+
+    def _post_reviews(self) -> None:
+        while True:
+            self.show_review(*self.reviews.get())
+
+    def show_review(self, event: str, source: str, job: str, item: dict[str, Any]) -> None:
+        """Tell the listed users that a job waits for Accept, or bring the messages that said so up to date."""
+        if self.web is None:
+            return  # said once Slack connects (untold), if it still waits
+        try:
+            if event == "waiting":
+                done = review_message(source, job, item, "superseded")
+                for where in item.get("replaces") or []:
+                    self.web.chat_update(channel=where["channel"], ts=where["ts"], text=done[0], blocks=done[1])
+                if not self.users:
+                    return
+                text, blocks = review_message(source, job, item)
+                notices = []
+                for user in sorted(self.users):
+                    posted = self.web.chat_postMessage(channel=user, text=text, blocks=blocks, unfurl_links=False)
+                    notices.append({"channel": str(posted["channel"]), "ts": str(posted["ts"])})
+                if self.sources is not None:
+                    self.sources.note(source, job, str(item["commit"]), notices)
+            else:
+                text, blocks = review_message(source, job, item, None if event == "moved" else event)
+                for where in item.get("notices") or []:
+                    self.web.chat_update(channel=where["channel"], ts=where["ts"], text=text, blocks=blocks)
+        except Exception as err:  # noqa: BLE001 -- Slack's trouble is said, not raised into the review
+            print(f"slack: telling of {source}/{job} waiting for Accept: {err}")
+
+    def accept_clicked(self, payload: dict[str, Any]) -> None:
+        """A review message's Accept: the listed users' only, for the commit the message showed."""
+        user = str((payload.get("user") or {}).get("id") or "")
+        channel = str((payload.get("channel") or {}).get("id") or (payload.get("container") or {}).get("channel_id") or "")
+        action = next(a for a in payload.get("actions") or [] if a.get("action_id") == "job-accept")
+        if user not in self.users:
+            self.whisper(channel, user, f"Only the people this orchestrator lists can accept. Your Slack ID is "
+                                        f"`{user}`: add it to {USERS_ENV} to be one.")
+            return
+        try:
+            which = json.loads(action.get("value") or "{}")
+            if self.sources is None:
+                raise SourcesError("There are no repos of jobs in this orchestrator.")
+            self.sources.accept(str(which["source"]), str(which["job"]), str(which["commit"]), user=f"slack:{user}")
+        except (SourcesError, ValueError, KeyError) as err:
+            self.whisper(channel, user, f":warning: {escape(str(err))}")
+
     def clicked(self, payload: dict[str, Any]) -> None:
         """A button of a plan's message: the listed users' decide."""
         user = str((payload.get("user") or {}).get("id") or "")
@@ -415,6 +496,50 @@ def plan_message(name: str, plan: dict[str, Any]) -> tuple[str, list[dict[str, A
                                  "confirm": {"type": "plain_text", "text": "Approve"},
                                  "deny": {"type": "plain_text", "text": "Not yet"}}
         blocks.append({"type": "actions", "elements": [everything, button(f"Reject the {left} left", "reject", "*", "danger")]})
+    return text, blocks
+
+
+def review_message(source: str, job: str, item: dict[str, Any], state: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+    """A job waiting for Accept as a message: its text, and blocks with what changed, and while it waits
+    (state None) an Accept button if the whole change is shown."""
+    commit = str(item.get("commit") or "")[:12]
+    what = "is new to the repo" if item.get("new") else "changes its access"
+    text = f"{job} {what}, and waits for your Accept"
+    head = f":lock: *{escape(job)}* (repo of jobs *{escape(source)}*) {what} at `{commit}`."
+    lines, whole = [], True
+    for change in item.get("changes") or []:
+        values = []
+        for value in (change.get("before"), change.get("after")):
+            shown = "not set" if value is None else json.dumps(value, sort_keys=True)
+            if len(shown) > REVIEW_VALUE:
+                shown, whole = shown[:REVIEW_VALUE] + "…", False
+            values.append(f"`{escape(shown)}`" if value is not None else "_not set_")
+        lines.append(f"• *{escape(str(change.get('setting')))}*: {values[0]} → {values[1]}")
+    body = "\n".join(lines) or "_no settings_"
+    if len(body) > REVIEW_TEXT:
+        body, whole = body[:REVIEW_TEXT].rsplit("\n", 1)[0] + "\n…", False
+    blocks: list[dict[str, Any]] = [{"type": "section", "text": {"type": "mrkdwn", "text": head}},
+                                    {"type": "section", "text": {"type": "mrkdwn", "text": body}}]
+    if state is not None:
+        by = str(item.get("by") or "")
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": REVIEW_STATES[state].format(
+            commit=commit, by=f"<@{by[6:]}>" if by.startswith("slack:") else escape(by or "the page"))}})
+        return text, blocks
+    note = ("Until it is accepted it runs as it was last accepted" if not item.get("new") else
+            "It does not run until it is accepted")
+    if not whole:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text":
+                       f"{note}. This is not the whole change: look at it, and accept it, in the Jobs tab."}]})
+        return text, blocks
+    button = {"type": "button", "text": {"type": "plain_text", "text": "Accept"}, "style": "primary",
+              "action_id": "job-accept",
+              "value": json.dumps({"source": source, "job": job, "commit": item.get("commit")}),
+              "confirm": {"title": {"type": "plain_text", "text": f"Accept {job[:40]}?"},
+                          "text": {"type": "mrkdwn", "text": f"It runs with the access above, from `{commit}`."},
+                          "confirm": {"type": "plain_text", "text": "Accept"},
+                          "deny": {"type": "plain_text", "text": "Not yet"}}}
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"{note}: here, or in the Jobs tab."}]})
+    blocks.append({"type": "actions", "elements": [button]})
     return text, blocks
 
 
