@@ -63,7 +63,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import agents, credentials, git, git_policy, mcp, models, state, terminal
+from . import agents, credentials, git, git_policy, mcp, models, resources, state, terminal
 from .agent_sandbox import label_value
 from .containers import MODEL_CREDENTIALS
 from .context import HarnessContext
@@ -315,10 +315,11 @@ class ClaudeCodeEngine:
 
     def rules(self) -> str:
         cfg = self.ctx.cfg
+        limits = resources.note(self.target)
         return RULES.format(
             branch=self.ctx.branch, remote=cfg.remote, base=cfg.base_branch,
             doc=state.doc_relpath(cfg, self.ctx.slug), cap=cfg.doc_max_bytes, outcome=OUTCOME_PATH,
-        )
+        ) + (f"\n\n{limits}" if limits else "")
 
     def hook_settings(self) -> str:
         cfg = self.ctx.cfg

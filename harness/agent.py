@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, mcp
+from . import agents, mcp, resources
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -60,6 +60,12 @@ End every session in exactly one terminal state:
 - abandon — the task should not continue.
 
 Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
+
+def _limits(target: Any) -> str:
+    """The sandbox's memory limit, for the prompt (resources.py): a paragraph, or ""."""
+    line = resources.note(target)
+    return f"\n\n{line}" if line else ""
+
 
 # Added to the lead's prompt when it has a delegate tool.
 LEAD_PROMPT = """
@@ -332,6 +338,7 @@ def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: s
         retry_strategy=retry_strategy(cfg),
         sandbox=sandbox,
         system_prompt=DELEGATE_PROMPT.format(repo=target.describe()) + (READ_ONLY_PROMPT if read_only else "")
+        + _limits(target)
         + (f"\n\n{prompt}" if prompt else ""),
         tools=[*exec_tools, *mcp.clients(cfg)],
         plugins=[ContextOffloader(storage=offload_storage(target, state_dir),
@@ -440,7 +447,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
             remote=cfg.remote,
             base=cfg.base_branch,
             doc=doc_rel,
-        ) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
+        ) + _limits(target) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
         tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else [])],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
