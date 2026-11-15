@@ -82,7 +82,7 @@ def test_what_an_ended_burst_was_refused_is_read_from_its_events(tmp_path, harne
     with pytest.raises(TasksError, match="not an API token"):
         runner.allow("t", "static.rust-lang.org", "everywhere", everywhere_ok=False)
     runner.allow("t", "static.rust-lang.org", "everywhere")
-    assert "static.rust-lang.org" in containers.approved(runner.base)  # every task's and job's from now on
+    assert containers.approved(runner.base).count("static.rust-lang.org") == 1  # every task's and job's from now on
     with pytest.raises(TasksError, match="not a host"):
         runner.allow("t", "a b", "task")
 

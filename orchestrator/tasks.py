@@ -416,7 +416,8 @@ class TaskRunner:
                 events = gateway.events(found["claim"]).get("events") or []
                 approvals = gateway.approvals(found["claim"]).get("approvals") or []
             except GatewayError as err:
-                answer["error"] = str(err)
+                print(f"tasks: {slug}: the gateway's refusals: {err}", flush=True)  # the detail, for the log
+                answer["error"] = "The gateway could not be asked what it refused (the orchestrator's log says why)."
         elif found.get("events"):
             try:
                 with open(found["events"]) as handle:
