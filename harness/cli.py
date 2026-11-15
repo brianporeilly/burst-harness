@@ -795,6 +795,22 @@ def cmd_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recycle_warm(args: argparse.Namespace) -> int:
+    """Replace the idle sandboxes of the pools (pool, root_pool) that differ from their templates now."""
+    from . import warm_pool
+
+    cfg = HarnessConfig.load(None, _overrides(args))
+    pools = tuple(p for p in (cfg.pool, cfg.root_pool) if p)
+    if not pools:
+        raise SystemExit("Name the warm pools: --pool (and root_pool in the configuration).")
+    try:
+        done = warm_pool.recycle(cfg, pools)
+    except agent_sandbox.AgentSandboxError as err:
+        raise SystemExit(str(err)) from err
+    print("\n".join(done) or f"The idle sandboxes of {', '.join(pools)} are up to date.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # Progress should reach whatever is reading as it happens, even through a pipe.
     for stream in (sys.stdout, sys.stderr):
@@ -999,6 +1015,10 @@ def main(argv: list[str] | None = None) -> int:
 
     release = sub.add_parser("release",help="Remove a kept target (--claim, or --docker-container).")
     release.set_defaults(func=cmd_release)
+
+    recycle = sub.add_parser("recycle-warm", help="Replace the warm pools' idle sandboxes that are out of date "
+                             "with their template (--pool and root_pool, --namespace).")
+    recycle.set_defaults(func=cmd_recycle_warm)
 
     args = parser.parse_args(argv)
     if args.config:
