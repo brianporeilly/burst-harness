@@ -241,8 +241,8 @@ def main() -> None:
         parser.error(f"{HOOKS_PORT_ENV} is a port of its own, not --port's.")
     hooks = Hooks(base, tasks=tasks, sources=sources, port=hooks_port)
     print("Webhooks at /hooks/NAME" + (f", and on port {hooks_port} alone ({HOOKS_PORT_ENV})" if hooks_port else "")
-          + ": " + ", ".join(f"{name} ({'secret set' if row['secret_set'] else row['secret'] + ' not set'})"
-                             for name, row in ((r["name"], r) for r in hooks.listing()["forges"])))
+          + ": " + ", ".join(f"{row['name']} ({'signed' if row['secret_set'] else 'off until its secret is set'})"
+                             for row in hooks.listing()["forges"]))
     app = create_app(backend, jobs, tasks=tasks, tokens=tokens, settings=settings, profiles=profiles,
                      mcp_servers=mcp_servers, task_settings=task_settings, runners=runners, hooks=hooks, slack=slack,
                      hosts=tuple(args.host),

@@ -338,7 +338,7 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         try:
             return await run_in_threadpool(hooks.receive, forge_name, dict(request.headers), body)
         except HookError as err:
-            return JSONResponse({"error": str(err)}, status_code=err.status)
+            return JSONResponse({"error": err.reason}, status_code=err.status)
 
     @app.get("/api/settings/hooks")
     def list_hooks() -> dict[str, Any]:

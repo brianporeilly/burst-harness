@@ -46,6 +46,7 @@ class HookError(ValueError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+        self.reason = message  # what the forge is answered: a line of ours, never an exception's own text
 
 
 def secret_var(name: str) -> str:
