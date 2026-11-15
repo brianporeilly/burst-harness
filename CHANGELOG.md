@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.29.0 (2026-11-15)
+
+### Features
+
+- **runners**: Run on hosts of your own over SSH, as a plain host or a remote podman/docker
+  ([#18](https://github.com/brianporeilly/burst-harness/pull/18),
+  [`3e0990a`](https://github.com/brianporeilly/burst-harness/commit/3e0990aa5f0f30d7ed19960c41f913ff9571aaa1))
+
+
 ## v0.28.0 (2026-11-14)
 
 ### Features
