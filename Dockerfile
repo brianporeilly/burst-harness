@@ -18,6 +18,13 @@ RUN apt-get update \
  && apt-get update && apt-get install -y --no-install-recommends gh \
  && rm -rf /var/lib/apt/lists/*
 
+# Runners (harness/runner.py): ssh reaches them, and podman-remote or the docker CLI drives the engine on one
+# through its forwarded socket. Clients only: no engine runs in this image, so `podman` is the remote client.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssh-client podman-remote docker-cli \
+ && ln -s /usr/bin/podman-remote /usr/local/bin/podman \
+ && rm -rf /var/lib/apt/lists/*
+
 # kubectl drives the kubectl and agent-sandbox targets (claims, exec). Pinned to
 # the cluster's minor version and checksum-verified; in a pod it uses the
 # in-cluster ServiceAccount with no kubeconfig.

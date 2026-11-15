@@ -396,6 +396,11 @@ runners = [
 - **SSH** runs with BatchMode and a checked host key. The credential `<NAME>_SSH_KEY` (a private key) and
   `<NAME>_SSH_KNOWN_HOSTS` are used when set; otherwise your own SSH setup applies. Details in
   `harness/runner.py`. Sessions don't run on a runner yet.
+- **In the orchestrator**, runners are saved in Settings (Runners), with the configuration's listed beside
+  them, and the key and known_hosts go in as credentials there (several lines each). A task picks one in its
+  form, or gets the default runner, and keeps it for every burst; only that runner's key is granted to it.
+  A job names one in its job.toml (`runner = "NAME"`). A plain host can't take a question or a task asking
+  for a recorded network, since it has no gateway. The image has ssh, podman-remote and the docker CLI for this.
 
 ### agent-sandbox (`--target agent-sandbox`)
 

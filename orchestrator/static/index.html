@@ -153,6 +153,10 @@
         </label>
         <label>Also allow (hosts, for this task) <input type="text" name="allow" placeholder="docs.example.com, *.example.org"></label>
       </div>
+      <div id="task-runner-box" class="hidden">
+        <label>Runs on <select name="runner" id="task-runner"></select></label>
+        <p class="muted" id="task-runner-note"></p>
+      </div>
       <div class="grid2">
         <label>Base branch <input type="text" name="base_branch" placeholder="default"></label>
         <label>Name (the branch's) <input type="text" name="slug" pattern="[a-z0-9][a-z0-9-]{0,47}" placeholder="from the prompt"></label>
@@ -230,6 +234,30 @@
       </div>
       <label class="inline"><input type="checkbox" name="default" checked> On by default for new sessions and tasks</label>
       <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="mcp-form-error"></span></div>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>Runners</h2>
+    <p class="muted">Hosts of your own that tasks and jobs can run on, over SSH. A podman or docker runner runs each
+      one in a container on that host, with its gateway, as here; a plain host (ssh://) gets a directory per run,
+      with no gateway, so its network is open and the agent's credentials are written there for the run: give it a
+      machine of its own that you reset. New tasks run on the default runner unless they pick another; a job picks
+      one in its job.toml (<code>runner = "NAME"</code>). Those from the configuration (HARNESS_RUNNERS) can be
+      replaced by one of the same name.</p>
+    <div id="runners"><p class="muted">Loading...</p></div>
+    <form id="runner-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}" placeholder="vm1"></label>
+        <label>URL <input type="text" name="url" required maxlength="500" placeholder="podman+ssh://agent@box.example.com/run/user/1000/podman/podman.sock"></label>
+      </div>
+      <p class="muted">ssh://[user@]host[:port][/path], podman+ssh://[user@]host/socket-path, docker+ssh://[user@]host,
+        or podman+unix:///socket-path and docker+unix:///socket-path for an engine on the orchestrator's machine.</p>
+      <label class="inline"><input type="checkbox" name="default"> New tasks run here unless they pick another</label>
+      <label>SSH private key (kept as a credential, NAME_SSH_KEY; leave empty to keep the one set)
+        <textarea name="key" spellcheck="false" style="min-height:80px" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+      <label>Its host keys, as known_hosts lines (NAME_SSH_KNOWN_HOSTS; ssh-keyscan HOST gives them, to check)
+        <textarea name="known_hosts" spellcheck="false" style="min-height:60px" placeholder="box.example.com ssh-ed25519 AAAA..."></textarea></label>
+      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="runner-form-error"></span></div>
     </form>
   </section>
   <section class="panel">
@@ -906,6 +934,7 @@ async function renderTask() {
     settingsLine(t.settings),
     t.delegate_to && t.delegate_to.length ? el("p", { class: "muted" }, `Hands work to: ${t.delegate_to.join(", ")}.`) : null,
     t.mcp ? el("p", { class: "muted" }, "MCP servers: " + (t.mcp.map((entry) => entry.split("=")[0]).join(", ") || "none") + ".") : null,
+    t.runner ? el("p", { class: "muted" }, `Runs on runner ${t.runner}.`) : null,
     el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, t.prompt)),
     idle ? el("form", { onsubmit: (event) => { event.preventDefault();
       taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
@@ -960,6 +989,7 @@ document.getElementById("new-task").onclick = () => {
   selectedTask = null;
   taskDelegates();
   mcpPicker(document.getElementById("task-mcp"));
+  taskRunners();
   document.getElementById("task-detail").classList.add("hidden");
   document.getElementById("task-create").classList.remove("hidden");
   refreshTasks();
@@ -1128,6 +1158,7 @@ taskForm.onsubmit = async (event) => {
   delete data.mcp_other;
   const servers = mcpChoice(document.getElementById("task-mcp"));
   if (servers) data.mcp = servers;
+  if (document.getElementById("task-runner-box").classList.contains("hidden")) delete data.runner;
   const picker = document.getElementById("task-delegates");
   if (!picker.classList.contains("hidden"))
     data.delegate_to = [...picker.querySelectorAll("input:checked")].map((box) => box.value);
@@ -1135,6 +1166,7 @@ taskForm.onsubmit = async (event) => {
     const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     taskForm.reset();
     mcpPicker(document.getElementById("task-mcp"));
+    taskRunners();
     document.getElementById("task-probe-note").textContent = "";
     taskModelFields();
     selectTask(created.slug);
@@ -1261,6 +1293,82 @@ mcpForm.onsubmit = async (event) => {
       body: JSON.stringify({ url: mcpForm.url.value.trim(), default: mcpForm.default.checked }) });
     mcpForm.reset();
     refreshMcp();
+  } catch (err) { error.textContent = err.message; }
+};
+
+// --- runners: the task form's choice, and Settings ---
+
+async function taskRunners() {
+  const box = document.getElementById("task-runner-box"), select = document.getElementById("task-runner");
+  let found;
+  try { found = await api("/api/settings/runners"); } catch (err) { box.classList.add("hidden"); return; }
+  if (!found.runners.length) { box.classList.add("hidden"); return; }
+  select.replaceChildren(el("option", { value: "" }, "Where the orchestrator runs its sandboxes"),
+    ...found.runners.map((r) => el("option", { value: r.name }, `${r.name}: ${r.note}`)));
+  select.value = found.default;
+  document.getElementById("task-runner-note").textContent = "A plain host has no gateway: a task there has the "
+    + "network of the host, so it cannot be a question, use Permissive, or add hosts to allow.";
+  box.classList.remove("hidden");
+}
+
+const runnerForm = document.getElementById("runner-form");
+const runnerVar = (name) => name.toUpperCase().replace(/[^A-Z0-9]/g, "_");
+
+async function refreshRunners() {
+  const box = document.getElementById("runners");
+  let found;
+  try { found = await api("/api/settings/runners"); } catch (err) {
+    box.replaceChildren(el("p", { class: "muted" }, err.message)); return;
+  }
+  const key = JSON.stringify(found);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const save = async (name, body) => {
+    try { await api(`/api/settings/runners/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify(body) }); }
+    catch (err) { alert(`${name}: ${err.message}`); }
+    refreshRunners();
+  };
+  const set = (ok, name) => ok ? el("span", {}, el("code", {}, name), " ✓") : el("span", { class: "muted" }, el("code", {}, name), " not set");
+  box.replaceChildren(found.runners.length ? el("table", {},
+    el("tr", {}, el("th", {}, "Default"), el("th", {}, "Runner"), el("th", {}, "SSH"), el("th", {}, "Changed"), el("th", {}, "")),
+    ...found.runners.map((r) => el("tr", {},
+      el("td", {}, Object.assign(el("input", { type: "checkbox", title: "New tasks run here unless they pick another",
+        onchange: (event) => save(r.name, { default: event.target.checked }) }), { checked: found.default === r.name })),
+      el("td", {}, el("code", {}, r.name), el("div", { class: "muted" }, r.url), el("div", { class: "muted" }, r.note),
+        el("div", { class: "muted" }, r.source === "settings"
+          ? (r.configuration_too ? "saved here, over the configuration's" : "saved here") : "from the configuration")),
+      el("td", {}, r.over_ssh ? el("div", {}, el("div", {}, set(r.key_set, r.key)), el("div", {}, set(r.known_hosts_set, r.known_hosts)),
+        r.key_set && r.known_hosts_set ? null : el("div", { class: "muted" }, "Unset: the orchestrator's own SSH setup is used."))
+        : el("span", { class: "muted" }, "a socket here")),
+      el("td", {}, r.updated ? when(r.updated) + (r.updated_by ? ` by ${r.updated_by}` : "") : ""),
+      el("td", {}, el("div", { class: "row" },
+        el("button", { onclick: () => {
+          runnerForm.name.value = r.name; runnerForm.url.value = r.url; runnerForm.default.checked = found.default === r.name;
+          runnerForm.scrollIntoView({ behavior: "smooth" });
+        } }, r.source === "settings" ? "Edit" : "Replace"),
+        r.source === "settings" ? el("button", { class: "danger", onclick: async () => {
+          if (!confirm(`Remove ${r.name}? Tasks that run there can't continue until it is back.${r.configuration_too ? " The configuration's is used again." : ""}`)) return;
+          try { await api(`/api/settings/runners/${encodeURIComponent(r.name)}`, { method: "DELETE" }); }
+          catch (err) { alert(`Remove: ${err.message}`); }
+          refreshRunners();
+        } }, "Remove") : null)))))
+    : el("p", { class: "muted" }, "No runners yet: tasks run where the orchestrator runs its sandboxes."));
+}
+
+runnerForm.onsubmit = async (event) => {
+  event.preventDefault();
+  const error = document.getElementById("runner-form-error");
+  error.textContent = "";
+  const name = runnerForm.name.value.trim();
+  try {
+    await api(`/api/settings/runners/${encodeURIComponent(name)}`, { method: "PUT",
+      body: JSON.stringify({ url: runnerForm.url.value.trim(), default: runnerForm.default.checked }) });
+    for (const [field, suffix] of [["key", "_SSH_KEY"], ["known_hosts", "_SSH_KNOWN_HOSTS"]]) {
+      const value = runnerForm[field].value.trim();
+      if (value) await api(`/api/settings/credentials/${runnerVar(name)}${suffix}`, { method: "PUT", body: JSON.stringify({ value }) });
+    }
+    runnerForm.reset();
+    refreshRunners(); refreshCredentials();
   } catch (err) { error.textContent = err.message; }
 };
 
@@ -1482,7 +1590,7 @@ document.getElementById("token-form").onsubmit = async (event) => {
 };
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
-  settings: () => { refreshCredentials(); refreshMcp(); refreshSources(); refreshProfiles(); refreshTaskSettings(); refreshTokens(); } };
+  settings: () => { refreshCredentials(); refreshMcp(); refreshRunners(); refreshSources(); refreshProfiles(); refreshTaskSettings(); refreshTokens(); } };
 
 function showTab(name) {
   tab = name;
