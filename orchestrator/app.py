@@ -40,6 +40,7 @@ from .backend import Backend, SessionSpec, SpecError, probe
 from .jobs import JobRunner, JobsError
 from .launch import HANDOFF_PATH, LaunchError
 from .mcp_servers import McpServersError, McpServerStore
+from .runners import RunnersError, RunnerStore
 from .sources import SourcesError
 from .profiles import ProfilesError, ProfileStore
 from .task_settings import TaskSettings, TaskSettingsError
@@ -55,14 +56,15 @@ CHANGE_HEADER = "x-orchestrator"
 # What the harness raises for something the user can fix: shown to them, not a 500.
 USER_ERRORS = (LaunchError, SpecError, session.SessionError, egress.EgressError, containers.ContainerError, git.GitError, ExecError,
                JobsError, TasksError, TokenError, SettingsError, ProfilesError, McpServersError,
-               SourcesError, TaskSettingsError)
+               SourcesError, TaskSettingsError, RunnersError)
 LOOPBACK = ("127.0.0.1", "::1")
 
 
 def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRunner | None = None,
                tokens: TokenStore | None = None, settings: CredentialStore | None = None,
                profiles: ProfileStore | None = None, mcp_servers: McpServerStore | None = None,
-               task_settings: TaskSettings | None = None, slack: SlackBot | None = None,
+               task_settings: TaskSettings | None = None, runners: RunnerStore | None = None,
+               slack: SlackBot | None = None,
                hosts: tuple[str, ...] = (), user_header: str = "", local_browser: bool = False) -> FastAPI:
     app = FastAPI(title="burst orchestrator", docs_url=None, redoc_url=None, openapi_url=None)
     allowed = {*LOCAL_HOSTS, *(host.lower() for host in hosts)}
@@ -333,7 +335,8 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
                 *(var for name in (mcp.servers(base) if base else {}) for var in mcp.key_vars(name)),
                 *(var for name in (mcp_servers.servers() if mcp_servers else {}) for var in mcp.key_vars(name)),
                 *(jobs.secret_names() if jobs else []),
-                *(s.token for s in (jobs.sources.sources().values() if jobs and jobs.sources else []))]
+                *(s.token for s in (jobs.sources.sources().values() if jobs and jobs.sources else [])),
+                *(var for r in (runners.listing()["runners"] if runners else []) for var in (r["key"], r["known_hosts"]))]
 
     @app.get("/api/settings/credentials")
     def list_credentials() -> list[dict[str, Any]]:
@@ -415,6 +418,28 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     @app.delete("/api/settings/mcp/{name}")
     def remove_mcp(name: str) -> dict[str, str]:
         now = mcp_store().remove(name)
+        return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
+
+    # --- Settings: runners, hosts of your own that tasks and jobs run on (never with a token) ---
+
+    def runner_store() -> RunnerStore:
+        if runners is None:
+            raise RunnersError("Settings are not on in this orchestrator.")
+        return runners
+
+    @app.get("/api/settings/runners")
+    def list_runners() -> dict[str, Any]:
+        return runner_store().listing()
+
+    @app.put("/api/settings/runners/{name}")
+    async def set_runner(name: str, request: Request) -> dict[str, str]:
+        runner_store().set(name, await body(request), user=request.state.user)
+        default = runner_store().default() == name
+        return {"message": f"Saved {name}" + (": new tasks run there unless they pick another." if default else ".")}
+
+    @app.delete("/api/settings/runners/{name}")
+    def remove_runner(name: str) -> dict[str, str]:
+        now = runner_store().remove(name)
         return {"message": f"Removed {name}." + (" The configuration's is used again." if now != "gone" else "")}
 
     # --- Settings: git repos of jobs (sources.py; never with a token: the token is a credential) ---

@@ -44,6 +44,10 @@ SLACK = ("SLACK_WEBHOOK_URL", "SLACK_BOT_TOKEN")
 KNOWN = frozenset((*GIT, *MODEL, *GATEWAY, *SLACK, "AWS_ACCESS_KEY_ID"))
 LOOKS_SECRET = re.compile(r"(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASS|CREDENTIALS?|AUTH)(?:_|$)")
 PASS_ENV = "ORCHESTRATOR_PASS_ENV"
+# A runner's SSH key and known_hosts (harness/runner.py): granted with the runner, not passed to every run.
+RUNNER_SUFFIXES = ("_SSH_KEY", "_SSH_KNOWN_HOSTS")
+# Credentials that are files of several lines.
+MULTILINE_SUFFIXES = RUNNER_SUFFIXES
 
 _overlay: ContextVar[Mapping[str, str]] = ContextVar("credentials_overlay", default={})
 # For the whole process, every thread: the orchestrator's stored credentials.
@@ -92,7 +96,8 @@ def overlay(values: Mapping[str, str]) -> Iterator[None]:
 def is_secret(name: str) -> bool:
     """A known credential, or a name that looks like one and is not one of the harness's own
     settings (HARNESS_TOKEN_COMMAND is a command, not a token)."""
-    return name in KNOWN or (bool(LOOKS_SECRET.search(name.upper())) and name not in _settings())
+    return name in KNOWN or name.endswith(RUNNER_SUFFIXES) or (
+        bool(LOOKS_SECRET.search(name.upper())) and name not in _settings())
 
 
 @functools.cache
@@ -114,11 +119,12 @@ def passed_names() -> set[str]:
 
 def for_task(cfg: HarnessConfig) -> list[str]:
     """What a task's burst is granted: the git token (the driver pushes and opens the PR), the
-    model's keys (with those its providers' plugins declare), the cluster gateway's token, and the
-    keys of its MCP servers."""
+    model's keys (with those its providers' plugins declare), the cluster gateway's token, the
+    keys of its MCP servers, and its runner's SSH key and known_hosts."""
     from . import models  # asks this module for keys
 
-    return [*GIT, *forge_tokens(cfg), *MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg)]
+    return [*GIT, *forge_tokens(cfg), *MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg),
+            *runner_keys(cfg)]
 
 
 def forge_tokens(cfg: HarnessConfig) -> list[str]:
@@ -130,12 +136,25 @@ def forge_tokens(cfg: HarnessConfig) -> list[str]:
 
 def for_job(cfg: HarnessConfig, secrets: Iterable[str], outputs: Iterable[str]) -> list[str]:
     """What a job's run is granted: the model's keys, the gateway's token, its MCP servers' keys,
-    the secrets its job.toml names, and Slack's if it posts there. Not the git token: a job that
+    its runner's SSH key and known_hosts, the secrets its job.toml names, and Slack's if it posts there. Not the git token: a job that
     needs one names it."""
     from . import models
 
     slack = [*SLACK] if any(o == "slack" or o.startswith("slack:") for o in outputs) else []
-    return [*MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg), *secrets, *slack]
+    return [*MODEL, *models.credentials_for(cfg), *GATEWAY, *mcp_keys(cfg), *runner_keys(cfg), *secrets, *slack]
+
+
+def runner_keys(cfg: HarnessConfig) -> list[str]:
+    """The SSH key and known_hosts of the runner the run is on, if it is on one."""
+    if not cfg.runner:
+        return []
+    from .runner import RunnerError, find
+
+    try:
+        found = find(cfg, cfg.runner)
+    except RunnerError:
+        return []  # the run says why, when it starts
+    return [found.key_var, found.known_hosts_var]
 
 
 def mcp_keys(cfg: HarnessConfig) -> list[str]:

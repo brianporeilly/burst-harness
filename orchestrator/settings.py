@@ -51,6 +51,9 @@ USES = {
     "SLACK_WEBHOOK_URL": "Jobs that post to Slack through a webhook.",
     "JOBS_GIT_TOKEN": "Reads the git repos of jobs (Settings, Job repos): a token that can only read them.",
 }
+# A runner's credentials (runners.py), whatever its name.
+RUNNER_USES = {"_SSH_KEY": "A runner's SSH private key (Settings, Runners).",
+               "_SSH_KNOWN_HOSTS": "A runner's host keys, as known_hosts lines (Settings, Runners)."}
 
 
 class SettingsError(ValueError):
@@ -123,7 +126,8 @@ class CredentialStore:
         plugins = models.plugin_credentials()
         for name in dict.fromkeys((*SUGGESTED, *plugins, *names, *sorted(records))):
             record = records.get(name, {})
-            use = USES.get(name) or " ".join(f"provider {provider}." for provider in plugins.get(name, []))
+            use = USES.get(name) or " ".join(f"provider {provider}." for provider in plugins.get(name, [])) or next(
+                (text for suffix, text in RUNNER_USES.items() if name.endswith(suffix)), "")
             rows.append({"name": name, "source": credentials.source(name), "use": use,
                          "updated": record.get("updated"), "updated_by": record.get("updated_by", ""),
                          # Set here and in the environment: clearing it here goes back to the environment's.
@@ -134,10 +138,13 @@ class CredentialStore:
         """`named`: what this orchestrator's jobs and MCP servers name as credentials, kept here whatever they
         look like (a job's OAuth client id)."""
         check_name(name, named)
-        value = value.strip()
+        value = value.replace("\r\n", "\n").strip()
         if not value:
             raise SettingsError("Give a value. To go back to the environment's, clear it instead.")
-        if len(value) > MAX_VALUE or any(c in value for c in "\r\n\0"):
+        if name.endswith(credentials.MULTILINE_SUFFIXES):  # a file's lines: an SSH key, known_hosts
+            if len(value) > MAX_VALUE or any(c in value for c in "\r\0"):
+                raise SettingsError(f"A value is up to {MAX_VALUE:,} characters of text.")
+        elif len(value) > MAX_VALUE or any(c in value for c in "\r\n\0"):
             raise SettingsError(f"A value is one line, up to {MAX_VALUE:,} characters.")
         with self.lock:
             records = self._load()

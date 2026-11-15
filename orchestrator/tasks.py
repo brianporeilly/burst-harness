@@ -44,6 +44,11 @@ ended in a PR merged, the next round is started then, as if Continue had been pr
 A round that ends any other way (paused, waiting on a question, abandoned, failed) stops there, so the
 task runs until the work runs out or it needs someone.
 
+A task can run on a runner (runners.py, harness/runner.py), a host of your own, which it keeps for every burst:
+the one it picked, or Settings' default runner when it picked none. On a podman or docker runner it is a
+container there, with its gateway as here; on a plain host it has no gateway, so its network is open, and a
+question (which reads through a gateway) or a task asking for a recorded or wider network cannot go there.
+
 A burst that will call a llama.cpp server of ours takes it first (servers.py). While another run has it, or
 it is busy, the task stays queued with the reason in its record (`server_wait`), and is tried again when a
 server is given back, and every RETRY seconds (`start`), since what keeps a server busy may not be ours.
@@ -68,7 +73,7 @@ from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
-from harness import ask, credentials, egress, git, job, models
+from harness import ask, credentials, egress, git, job, models, runner
 from harness.config import HarnessConfig
 from harness.gateway_control import Gateway, GatewayError
 
@@ -77,6 +82,7 @@ from .jobs import OUTPUT, _iso, _tail, json_file
 from .launch import REPO, Launched, LaunchError, Subprocess, granted
 from .mcp_servers import McpServersError, McpServerStore
 from .profiles import ProfilesError, ProfileStore, check, names_given
+from .runners import RunnerStore, RunnersError
 from .task_settings import TaskSettings
 from .servers import ModelServers, models_for, servers_for
 
@@ -93,8 +99,11 @@ ALLOW_SCOPES = ("now", "task", "everywhere")
 JOB_RESULT = "HARNESS_JOB "  # what a question's burst ends with
 # A sandbox a burst kept, as the harness gives the flags that reattach to it. The output carries what
 # the model printed too, so only these shapes are taken from it.
-SANDBOX = re.compile(r"--target (?:podman|docker) --docker-container burst-[a-z0-9-]{1,60}"
-                     r"|--target agent-sandbox --claim [a-z0-9][a-z0-9-]{0,62}")
+SANDBOX = re.compile(r"(?:--runner [a-z][a-z0-9_-]{0,31} )?--target (?:podman|docker) --docker-container burst-[a-z0-9-]{1,60}"
+                     r"|--target agent-sandbox --claim [a-z0-9][a-z0-9-]{0,62}"
+                     r"|--runner [a-z][a-z0-9_-]{0,31} --runner-workdir /[A-Za-z0-9_@%+=:./-]{1,300}")
+# The directory a plain-host runner made for a run: its last part, which harness/runner.acquire names.
+RUN_DIR = re.compile(r"[a-z0-9-]{1,40}-[0-9a-f]{6}")
 # The burst ended where a kept sandbox is no longer needed: the work is pushed, or given up.
 FINISHED = ("pr", "pushed_no_pr", "paused", "abandoned")
 TASK_FILE = "task.json"
@@ -134,11 +143,12 @@ class TaskRunner:
     def __init__(self, base: HarnessConfig, *, limit: int = 1, claim_ttl: int = 4 * 3600,
                  launcher: Any = None, records: Path | None = None, profiles: ProfileStore | None = None,
                  servers: ModelServers | None = None, mcp_servers: McpServerStore | None = None,
-                 settings: TaskSettings | None = None) -> None:
+                 settings: TaskSettings | None = None, runners: RunnerStore | None = None) -> None:
         self.base, self.limit, self.claim_ttl = base, max(1, limit), claim_ttl
         self.profiles = profiles  # set in Settings (profiles.py); None: the configuration's alone
         self.mcp_servers = mcp_servers  # saved in Settings (mcp_servers.py); None: the configuration's alone
         self.settings = settings  # set in Settings (task_settings.py); None: the configuration's alone
+        self.runners = runners  # saved in Settings (runners.py); None: the configuration's alone
         self.launcher = launcher or Subprocess()  # launch.Subprocess or launch.Jobs
         # The records, the orchestrator's alone; the bursts' output, where the bursts write it.
         self.outputs = base.resolve_state_dir("tasks")
@@ -278,6 +288,8 @@ class TaskRunner:
         egress_mode = str(raw.get("egress") or "").strip()
         if egress_mode not in ("", *EGRESS_MODES):
             raise TasksError("egress is allowlist, or log: everything let through, and recorded.")
+        allow = _hosts(raw.get("allow"))
+        on = self._choose_runner(raw.get("runner"), question=url is None, network=bool(egress_mode or allow))
         record = {
             "slug": slug, "repo": url, "prompt": prompt, "engine": engine, "model": model,
             "provider": provider, "base_url": base_url, "context_window": context_window, "settings": settings,
@@ -287,7 +299,7 @@ class TaskRunner:
                      "base_url": chosen.get("base_url", self.base.base_url)},
             "delegate_to": delegate_to, "mcp": mcp_chosen,
             # Its network: the orchestrator's unless it chose log, and hosts added to the allowlist for it alone.
-            "egress": egress_mode or None, "allow": _hosts(raw.get("allow")),
+            "egress": egress_mode or None, "allow": allow, "runner": on or None,
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "auto_continue": bool(raw.get("auto_continue")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
@@ -300,6 +312,35 @@ class TaskRunner:
             self._write(record)
         self.dispatch()
         return _summary(self._read(slug))
+
+    def _runner(self, name: str) -> runner.Runner:
+        try:
+            return self.runners.find(name) if self.runners is not None else runner.find(self.base, name)
+        except (RunnersError, runner.RunnerError) as err:
+            raise TasksError(str(err)) from err
+
+    def _runner_entries(self) -> tuple[str, ...]:
+        return self.runners.entries() if self.runners is not None else self.base.runners
+
+    def _choose_runner(self, value: Any, *, question: bool, network: bool) -> str:
+        """Where a new task runs: a runner's name, or "" for the orchestrator's own target. None asks for
+        Settings' default runner, which a task that cannot go to it (a plain host) passes by."""
+        if value is None:
+            name = self.runners.default() if self.runners is not None else ""
+            if name and self._runner(name).kind == "ssh" and question:
+                return ""
+        else:
+            name = str(value).strip()
+        if not name:
+            return ""
+        if self._runner(name).kind == "ssh":
+            if question:
+                raise TasksError(f"Runner {name} is a plain host, and a question runs through a gateway that only "
+                                 "reads: ask it on a podman or docker runner, or where the orchestrator runs.")
+            if network:
+                raise TasksError(f"Runner {name} is a plain host, with no gateway to record its network or add "
+                                 "hosts to an allowlist: its network is its own. Pick another runner for that.")
+        return name
 
     def _delegates(self, raw: dict[str, Any]) -> list[str] | None:
         """Who the task's lead may hand work to: the names given, or Settings' default; kept with the task so
@@ -604,6 +645,16 @@ class TaskRunner:
             argv += ["--target", runtime] + (["--egress", "allowlist"] if self.base.egress == "open" else [])
         elif not record.get("repo") and self.base.egress == "open":
             argv += ["--egress", "allowlist"]  # a question runs as a job does: through a gateway
+        if record.get("runner"):  # the target is the runner's (harness/runner.resolve)
+            try:
+                kind = self._runner(record["runner"]).kind
+            except TasksError:
+                kind = ""  # removed from Settings since: the burst says so
+            argv += ["--runner", record["runner"]]
+            if kind == "ssh":
+                argv += ["--egress", "open"]  # a plain host has no gateway (the cluster's is for its sandboxes)
+            elif self.base.egress == "open":
+                argv += ["--egress", "allowlist"]  # a container: through its gateway, as on this machine
         if record.get("egress") == "log":
             argv += ["--egress", "log"]  # chosen for the task: after the above, so it wins
         if record.get("allow"):
@@ -627,6 +678,8 @@ class TaskRunner:
         """The orchestrator's settings with the task's model on top: what its burst runs with, for what
         it is granted (a provider plugin's credentials go to the tasks that use it)."""
         cfg = replace(self.base, **self._chosen(record))
+        if record.get("runner"):
+            cfg = replace(cfg, runners=self._runner_entries(), runner=record["runner"])  # its SSH key
         if self.profiles is not None:
             cfg = replace(cfg, agents=self.profiles.profiles())
         if record.get("delegate_to") is not None:
@@ -723,7 +776,7 @@ class TaskRunner:
                               said=result.get("said") if isinstance(result.get("said"), dict) else None)
                 record.pop("pid", None), record.pop("job", None)
                 kept = str(result.get("target") or "")
-                if result.get("kept") and SANDBOX.fullmatch(kept):
+                if result.get("kept") and self._keepable(kept):
                     record["sandbox"] = kept
                 elif record.get("sandbox") and state in FINISHED:
                     # Attached to an earlier burst's sandbox, which the harness leaves alone: release it here.
@@ -761,13 +814,33 @@ class TaskRunner:
                 self._tell("ended", {**record, "exit": code})
         self.dispatch()
 
+    def _keepable(self, kept: str) -> bool:
+        """Whether a burst's kept sandbox is one to attach to and release: one of SANDBOX's shapes, and on a
+        plain-host runner a directory the harness made there, under the runner's path (release removes it)."""
+        if not SANDBOX.fullmatch(kept):
+            return False
+        args = shlex.split(kept)
+        if "--runner-workdir" not in args:
+            return True
+        try:
+            found = self._runner(args[1])
+        except TasksError:
+            return False
+        parent, _, last = args[3].rstrip("/").rpartition("/")
+        if found.kind != "ssh" or ".." in parent.split("/") or not RUN_DIR.fullmatch(last):
+            return False
+        return parent == found.path if found.path.startswith("/") else parent.endswith("/" + found.path)
+
     def _release(self, slug: str, sandbox: str) -> None:
         """Remove a kept sandbox (`harness ... release`), noting it in the task's output."""
+        args = shlex.split(sandbox)
+        on = args[args.index("--runner") + 1] if "--runner" in args else ""
+        cfg = replace(self.base, runners=self._runner_entries(), runner=on) if on else self.base
         with open(self._output(slug), "ab") as output:
             output.write(f"\n=== releasing the kept sandbox ({sandbox}) ===\n".encode())
             output.flush()
             subprocess.run([sys.executable, "-m", "harness", *shlex.split(sandbox), "release"], cwd=REPO,
-                           env=credentials.for_run(credentials.for_task(self.base), {"PYTHONUNBUFFERED": "1"}),
+                           env=credentials.for_run(credentials.for_task(cfg), {"PYTHONUNBUFFERED": "1"}),
                            stdin=subprocess.DEVNULL, stdout=output,
                            stderr=subprocess.STDOUT, timeout=300, check=False)
 
@@ -835,7 +908,7 @@ def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
         "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
-        "allow")} | {
+        "allow", "runner")} | {
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}
 
 
