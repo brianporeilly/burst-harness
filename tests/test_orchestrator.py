@@ -404,7 +404,7 @@ def test_pause_and_resume_over_the_api(tmp_path, monkeypatch):
 
 
 def test_without_jobs_the_jobs_api_says_they_are_not_on(client):
-    assert client.get("/api/jobs").json() == {"directories": [], "sources": [], "jobs": []}
+    assert client.get("/api/jobs").json() == {"directories": [], "sources": [], "jobs": [], "waiting": []}
     assert "not on" in client.get("/api/jobs/x").json()["error"]
 
 

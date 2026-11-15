@@ -147,6 +147,9 @@ class JobRunner:
                                 "waiting": self.waiting.get(name, "")}
         if origin := self.sources.origin(path) if self.sources else None:
             item["source"] = {"name": origin[0], "commit": origin[1]}
+            if waiting := self.sources.review(origin[0])["pending"].get(name):
+                # A newer commit changes its access: it runs as accepted until someone accepts that (sources.py).
+                item["review"] = {k: waiting.get(k) for k in ("commit", "changes", "since")}
         if also := self.clashes.get(name):
             item["also_in"] = also  # jobs of the same name, left out: this one is used
         if spec is None:

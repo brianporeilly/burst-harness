@@ -172,6 +172,7 @@
 <main id="jobs-view" class="hidden">
   <section class="panel">
     <h2>Jobs</h2>
+    <div id="job-reviews"></div>
     <div id="jobs"><p class="muted">Loading...</p></div>
   </section>
   <section class="panel" id="job-detail">
@@ -644,10 +645,45 @@ const when = (iso) => {
   return `${Math.round(seconds / 86400)}d ago`;
 };
 
+// A change to a job's access from its repo: each setting, what it was and what it would be.
+function accessChanges(changes) {
+  const shown = (value) => value == null ? el("span", { class: "muted" }, "not set") : el("code", {}, JSON.stringify(value));
+  return el("table", {}, el("tr", {}, el("th", {}, "Setting"), el("th", {}, "Accepted"), el("th", {}, "This commit")),
+    ...changes.map((c) => el("tr", {}, el("td", {}, el("code", {}, c.setting)), el("td", {}, shown(c.before)), el("td", {}, shown(c.after)))));
+}
+
+function acceptButton(source, job, commit) {
+  const button = el("button", { class: "primary", onclick: async () => {
+    if (!confirm(`Accept ${job} at ${commit.slice(0, 12)}? It runs with this access from now on.`)) return;
+    button.disabled = true;
+    try { await api(`/api/settings/job-sources/${encodeURIComponent(source)}/accept`, { method: "POST",
+      body: JSON.stringify({ job, commit }) }); }
+    catch (err) { alert(`Accept: ${err.message}`); }
+    refreshJobs();
+  } }, "Accept");
+  return button;
+}
+
+function renderReviews(waiting) {
+  const box = document.getElementById("job-reviews");
+  const key = JSON.stringify(waiting);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.replaceChildren(...(waiting.length ? [el("h3", {}, "Waiting for your Accept"),
+    el("p", { class: "muted" }, "A commit to a job repo that changes a job's access (its secrets, write rules, network, "
+      + "outputs, apply command or settings) waits here. Until you accept it, the job runs as it was last accepted; a new "
+      + "job doesn't run at all. Its prompt and scripts go through without this."),
+    ...waiting.map((w) => el("details", { class: "panel" },
+      el("summary", {}, el("code", {}, w.job), ` from repo ${w.source} at `, el("code", { title: w.commit }, w.commit.slice(0, 12)),
+        w.new ? " (a new job)" : "", el("span", { class: "muted" }, ` since ${when(w.since)}`)),
+      accessChanges(w.changes), el("div", { class: "row" }, acceptButton(w.source, w.job, w.commit))))] : []));
+}
+
 async function refreshJobs() {
   let data;
   try { data = await api("/api/jobs"); } catch { return; }
   jobs = data.jobs;
+  renderReviews(data.waiting || []);
   const list = document.getElementById("jobs");
   if (!data.directories.length && !(data.sources || []).length) {
     list.replaceChildren(el("p", { class: "muted" }, "No jobs yet. Add a git repo of jobs in Settings (Job repos), or start the orchestrator with ",
@@ -666,6 +702,7 @@ async function refreshJobs() {
     ].filter(Boolean).join(" · ")),
     j.missing && j.missing.length ? el("div", { class: "chip warn" }, `needs ${j.missing.join(", ")}`) : null,
     j.source ? el("div", { class: "muted" }, `from repo ${j.source.name} at ${j.source.commit.slice(0, 7)}`) : null,
+    j.review ? el("div", { class: "chip warn" }, "a newer commit waits for your Accept") : null,
     j.waiting ? el("div", { class: "muted", title: j.waiting }, `Due, waiting: ${j.waiting}`) : null,
     j.plan ? el("div", { class: "chip warn" }, j.plan.state === "applying" ? "applying its plan"
       : j.plan.undecided ? `plan: ${j.plan.undecided} of ${j.plan.items} to decide` : "plan decided, not applied") : null)));
@@ -689,7 +726,7 @@ async function renderJob() {
   if (selectedJob !== j.name) return;
   if (!selectedRun && j.runs && j.runs.length) selectedRun = j.runs[0].id;
   // Redrawn only when something shown has changed, so an open section or a scrolled report stays put.
-  const key = JSON.stringify([j.name, j.running, j.missing, j.error, j.schedule, selectedRun,
+  const key = JSON.stringify([j.name, j.running, j.missing, j.error, j.schedule, selectedRun, j.source, j.review,
                               (j.runs || []).map((r) => [r.id, r.state]),
                               (j.plans || []).map((p) => [p.run, p.state, p.items.map((i) => i.decision)])]);
   if (box.dataset.key === key) { if (selectedRun) renderRun(j.name, selectedRun); return; }
@@ -719,6 +756,9 @@ async function renderJob() {
     j.schedule ? el("p", { class: "muted" }, `Schedule: cron ${j.trigger}, ${scheduleText(j.schedule)}.`) : null,
     j.source ? el("p", { class: "muted" }, "From repo ", el("code", {}, j.source.name), " at ",
       el("code", { title: j.source.commit }, j.source.commit.slice(0, 12)), ".") : null,
+    j.review ? el("div", {}, el("p", { class: "error" }, "Commit ", el("code", { title: j.review.commit }, j.review.commit.slice(0, 12)),
+      " changes this job's access, so it runs as accepted until you accept that:"), accessChanges(j.review.changes),
+      el("div", { class: "row" }, acceptButton(j.source.name, j.name, j.review.commit))) : null,
     j.also_in ? el("p", { class: "error" }, `Another job named ${j.name} is left out: ${j.also_in.join("; ")}. Rename one.`) : null,
     j.missing && j.missing.length ? el("p", { class: "error" },
       `The orchestrator's environment is missing ${j.missing.join(", ")}. Set it where the orchestrator is started.`) : null,
@@ -1401,7 +1441,8 @@ async function refreshSources() {
         s.synced ? el("div", { class: "muted" }, `synced ${when(s.synced)}`) : null,
         s.error ? el("div", { class: "error" }, s.error) : null),
       el("td", {}, s.jobs.length ? s.jobs.join(", ") : el("span", { class: "muted" }, "none"),
-        s.left_out.length ? el("div", { class: "error" }, `Left out, a job of the same name is found first: ${s.left_out.join(", ")}`) : null),
+        s.left_out.length ? el("div", { class: "error" }, `Left out, a job of the same name is found first: ${s.left_out.join(", ")}`) : null,
+        (s.waiting || []).length ? el("div", { class: "chip warn" }, `waiting for your Accept (Jobs tab): ${s.waiting.join(", ")}`) : null),
       el("td", {}, el("code", {}, s.token), s.token_set ? " ✓" : el("span", { class: "muted" }, " not set (a public repo needs none)")),
       el("td", {}, el("div", { class: "row" },
         el("button", { onclick: () => act(s.name, "/sync", "POST", "Sync") }, "Sync"),
