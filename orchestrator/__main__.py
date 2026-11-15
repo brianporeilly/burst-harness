@@ -31,6 +31,9 @@ Runs that call a llama.cpp server take turns on it, across jobs and tasks. With
 while the server's /health says it is busy with someone else's. A run that names
 its model (model_id) waits while the server serves another. See servers.py.
 
+On a cluster, the warm pools' idle sandboxes that are out of date with their template (an image bump) are
+replaced every ORCHESTRATOR_RECYCLE seconds (default 300, 0 for never). See recycle.py.
+
 Tasks (tasks.py): a repo and a prompt, worked on in a sandbox until there is a
 PR, with this orchestrator's credentials and target (podman or docker here,
 never this machine itself). --task-limit (ORCHESTRATOR_TASK_LIMIT, default 1)
@@ -81,6 +84,7 @@ from .launch import Jobs, LaunchError
 from .mcp_servers import McpServerStore
 from .runners import RunnerStore, RunnersError
 from .profiles import ProfileStore
+from .recycle import ENV as RECYCLE_ENV, INTERVAL as RECYCLE_INTERVAL, Recycler
 from .task_settings import TaskSettings
 from .settings import CredentialStore, SettingsError, load_key, orchestrator_dir
 from .slack import USERS_ENV, SlackBot, users_from
@@ -167,6 +171,14 @@ def main() -> None:
     jobs = JobRunner([Path(d) for d in directories], schedule=args.schedule, zone=zone, catch_up=catch_up,
                      start_paused=args.start_paused, launcher=launcher, servers=servers, sources=sources)
     backend = ClusterBackend(base) if base.target == "agent-sandbox" else PodmanBackend(base)
+    try:
+        recycle_every = int(os.environ.get(RECYCLE_ENV) or RECYCLE_INTERVAL)
+    except ValueError:
+        parser.error(f"{RECYCLE_ENV} is a number of seconds (0 for never).")
+    if backend.name == "agent-sandbox" and recycle_every > 0 and (base.pool or base.root_pool):
+        # After an image bump, the warm pools' idle sandboxes are replaced from their templates (recycle.py).
+        print(f"Warm pools kept on their templates: every {recycle_every}s ({RECYCLE_ENV})")
+        Recycler(base, recycle_every).start()
     where = f"sessions in {base.namespace} on the cluster" if backend.name == "agent-sandbox" else f"sessions on {backend.name}"
     if args.user_header:
         names = ", ".join(args.host) or "this machine"
