@@ -9,6 +9,7 @@ pytest.importorskip("fastapi")
 
 from harness import credentials
 from orchestrator.slack import SlackBot, plain, users_from
+from orchestrator.tasks import TasksError
 
 from .test_tasks import _answer, _runner, _settled, harness  # noqa: F401 (harness is a fixture)
 
@@ -172,3 +173,79 @@ def test_text_as_typed_and_users_as_listed():
     assert plain(f"<@{ME}>  <https://git.lan/me/proj.git|git.lan/me/proj>  a &amp; b &lt;x&gt;", ME) == \
         "https://git.lan/me/proj.git a & b <x>"
     assert users_from("U012ABC, u034def U012ABC") == ("U012ABC", "U034DEF")
+
+
+class DMWeb(FakeWeb):
+    """Posts to a member ID land in the bot's direct conversation with them, as Slack's do."""
+
+    def chat_postMessage(self, **message):
+        super().chat_postMessage(**message)
+        return {"channel": "D" + message["channel"] if message["channel"].startswith("U") else message["channel"],
+                "ts": f"{len(self.posts)}.0"}
+
+
+def _flush_notices(bot, until):
+    for _ in range(250):
+        while not bot.notices.empty():
+            bot.tell(*bot.notices.get())
+        while not bot.outbox.empty():
+            bot.say(*bot.outbox.get())
+        if until(bot.web.posts):
+            return
+        threading.Event().wait(0.02)
+    raise AssertionError(f"not posted: {bot.web.texts()}")
+
+
+def test_a_task_from_the_page_with_notify_is_told_in_a_direct_message_and_continued_from_its_thread(
+        tmp_path, harness):  # noqa: F811
+    bot = SlackBot(_runner(tmp_path, limit=3), (ALLOWED, "U0OTHER"))
+    bot.web, bot.me = DMWeb(), ME
+    made = bot.tasks.create({"repo": "me/proj", "prompt": "x", "slug": "told", "notify": True}, user="brian")
+    assert made["notify"] and not made["from_slack"] and not made["told"]
+    bot.tasks.create({"repo": "me/proj", "prompt": "x", "slug": "quiet"}, user="brian")
+
+    # Starting says nothing; its end is told to each listed user, alone in a direct message.
+    harness.started[0][1].finish(3, state="waiting", said={"asks": ["Which version?"]})
+    harness.started[1][1].finish(1)
+    _settled(bot.tasks, "told", "waiting")
+    _settled(bot.tasks, "quiet", "failed")
+    _flush_notices(bot, lambda posts: len(posts) >= 2)
+    assert [(p["channel"], p.get("thread_ts")) for p in bot.web.posts] == [(ALLOWED, None), ("U0OTHER", None)]
+    text = bot.web.posts[0]["text"]
+    assert text.startswith("*Task `told` on me/proj*, started by brian:") and "> Which version?" in text
+    assert "Reply here" in text
+    record = bot.tasks.task("told")
+    assert record["dm"] == [{"channel": "D" + ALLOWED, "thread": "1.0"}, {"channel": "DU0OTHER", "thread": "2.0"}]
+    assert bot.tasks.in_thread("D" + ALLOWED, "1.0") == "told"
+
+    # A reply in that thread continues it, and its bursts are told in the threads from then on.
+    bot.handle({"type": "message", "channel_type": "im", "user": ALLOWED, "channel": "D" + ALLOWED, "ts": "9.0",
+                "thread_ts": "1.0", "text": "Use v2."})
+    assert harness.argv()[-2:] == ["--message", "Use v2."]
+    harness.started[2][1].finish(0, state="pr", pr="https://github.com/me/proj/pull/9")
+    _settled(bot.tasks, "told", "pr")
+    _flush_notices(bot, lambda posts: sum("Opened a PR" in p["text"] for p in posts) == 2)
+    threaded = [(p["channel"], p["thread_ts"]) for p in bot.web.posts if "Opened a PR" in p["text"]]
+    assert threaded == [("D" + ALLOWED, "1.0"), ("DU0OTHER", "2.0")]
+    assert not any("quiet" in p["text"] for p in bot.web.posts)
+
+    # Turned off, it says nothing more; a task from Slack cannot be, being told in its own thread.
+    assert bot.tasks.notify("told", False)["notify"] is False
+    before = len(bot.web.posts)
+    bot.burst("ended", bot.tasks._read("told"))
+    assert bot.outbox.empty() and bot.notices.empty() and len(bot.web.posts) == before
+    bot.tasks.create({"repo": "me/proj", "prompt": "x", "slug": "slacky", "notify": True},
+                     slack={"channel": "C1", "thread": "7.0"})
+    assert bot.tasks.task("slacky")["notify"] is False
+    with pytest.raises(TasksError, match="started from Slack"):
+        bot.tasks.notify("slacky", True)
+
+
+def test_a_cancelled_task_or_one_with_no_one_listed_is_not_told(tmp_path, harness):  # noqa: F811
+    bot = SlackBot(_runner(tmp_path), ())
+    bot.web, bot.me = DMWeb(), ME
+    bot.burst("ended", {"slug": "a", "repo": None, "notify": True, "state": "cancelled"})
+    assert bot.notices.empty()
+    bot.burst("ended", {"slug": "a", "repo": None, "notify": True, "state": "failed", "exit": 1})
+    bot.tell(*bot.notices.get())  # no one listed: nothing posted
+    assert bot.web.posts == []

@@ -1070,6 +1070,14 @@ up: accepted (in Slack or the page, and by whom), changed again (a new message
 has it), or no longer waiting. What waited while Slack was off is told once it
 connects. It needs no more than the app already has.
 
+A task started in the Tasks tab or with the API can be told in Slack too:
+"Tell me in Slack" in the form (on by default while Slack is connected; `notify:
+true` in `POST /api/tasks`), or turned on or off on the task's page. When a
+burst of it ends (but for a cancel), each listed user gets a direct message
+saying how: a PR, a question for you, a pause, a failure with the end of its
+output. Its later bursts are told in that message's thread, and a reply there
+continues it, as with a task started from Slack.
+
 A task started from Slack is the same as one from the Tasks tab, with
 `created_by` set to `slack:<member ID>`.
 

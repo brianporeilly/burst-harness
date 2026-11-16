@@ -163,6 +163,7 @@
       </div>
       <label class="inline"><input type="checkbox" name="draft"> Open the PR as a draft</label>
       <label class="inline"><input type="checkbox" name="auto_continue"> Once its PR is merged, start the next round by itself</label>
+      <label class="inline" id="task-notify" hidden><input type="checkbox" name="notify"> Tell me in Slack when a burst ends (a PR, a question for you, a failure), and continue it from there</label>
       <p class="muted">With no repository, the task is a question (a summary, some research): it runs in a fresh
         sandbox whose network only reads, and ends in an answer rather than a PR. Continuing it asks a follow-up.</p>
       <div class="row"><button class="primary" type="submit">Start</button><span class="error" id="task-form-error"></span></div>
@@ -486,6 +487,10 @@ async function loadInfo() {
   choice.replaceChildren(choice.options[0], ...(info.task_providers || []).map((name) =>
     el("option", { value: name }, providerOption[name] || name)));
   document.getElementById("slack-status").textContent = info.slack ? `Slack: ${info.slack}.` : "";
+  const notify = document.getElementById("task-notify");
+  const slackOn = String(info.slack || "").startsWith("connected");
+  if (notify.hidden && slackOn) taskForm.notify.checked = true;  // on by default, once, where Slack is connected
+  notify.hidden = !slackOn;
   taskModelFields();
   mcpPicker(document.getElementById("session-mcp"));
   document.getElementById("defaults").textContent =
@@ -924,7 +929,7 @@ async function renderTask() {
   catch (err) { box.replaceChildren(el("p", { class: "muted" }, "Gone.")); delete box.dataset.key; return; }
   if (selectedTask !== t.slug) return;
   const output = box.querySelector("pre[data-output]");
-  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue]);
+  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue, t.notify, t.told]);
   if (box.dataset.key === key) {
     // Only the output moves while a burst runs; keep it scrolled to the end if it was.
     if (output && output.textContent !== (t.output || "")) {
@@ -973,6 +978,10 @@ async function renderTask() {
       taskAct(event.target.checked ? "Auto-continue on" : "Auto-continue off", () => api(`/api/tasks/${t.slug}/auto-continue`,
         { method: "POST", body: JSON.stringify({ on: event.target.checked }) })) }),
       " Once its PR is merged, start the next round by itself (it stops at a round that ends without a PR)") : null,
+    !t.from_slack ? el("label", { class: "inline" }, el("input", { type: "checkbox", checked: !!t.notify, onchange: (event) =>
+      taskAct(event.target.checked ? "Slack on" : "Slack off", () => api(`/api/tasks/${t.slug}/notify`,
+        { method: "POST", body: JSON.stringify({ on: event.target.checked }) })) }),
+      t.told ? " Tell me in Slack: its bursts are told in the thread it was first told in" : " Tell me in Slack when a burst ends") : null,
     t.state === "paused" ? el("p", { class: "muted" }, "Paused: the work is pushed, with where it stands and any questions "
       + "in the task document on the branch (and at the end of the output).") : null,
     t.state === "max_tokens" ? el("p", { class: "muted" }, "Stopped: the model's replies kept hitting the output limit "
@@ -1200,6 +1209,7 @@ taskForm.onsubmit = async (event) => {
   const data = Object.fromEntries(new FormData(taskForm));
   data.draft = taskForm.draft.checked;
   data.auto_continue = taskForm.auto_continue.checked;
+  data.notify = !document.getElementById("task-notify").hidden && taskForm.notify.checked;
   // Only Anthropic takes effort and thinking as settings; elsewhere they are in the JSON already.
   if (taskProvider !== "anthropic") { delete data.effort; delete data.thinking; }
   if (taskForm.engine.value === "claude-code") { delete data.max_tokens; delete data.model_params; }

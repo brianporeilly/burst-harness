@@ -30,7 +30,10 @@ gives up, or the task is removed, the orchestrator releases it.
 
 Whatever wants to hear about a task's bursts (the Slack bot, slack.py) is
 told with `watch`: each burst's start and end, with the task's record. A task
-started from Slack keeps where to answer in its record (`slack`).
+started from Slack keeps where to answer in its record (`slack`). One started elsewhere (the page, the API)
+with `notify` is told to the listed Slack users when a burst of it ends (but for a cancel): the bot keeps the
+direct messages it said that in (`dm`), and its later bursts are told in their threads, where a reply
+continues it, as in a task started from Slack.
 
 A task's PR is looked at on GitHub while the task is idle (when its page is read, at most every
 PR_FRESH seconds, and every PR_CHECK seconds in the background): once it is merged, the task is
@@ -228,9 +231,10 @@ class TaskRunner:
         return ""
 
     def in_thread(self, channel: str, thread: str) -> str | None:
-        """The task started from this Slack thread, if any."""
+        """The task started from this Slack thread, or told in it, if any."""
+        where = {"channel": channel, "thread": thread}
         for record in self._records():
-            if record.get("slack") == {"channel": channel, "thread": thread}:
+            if record.get("slack") == where or where in (record.get("dm") or []):
                 return str(record["slug"])
         return None
 
@@ -305,6 +309,8 @@ class TaskRunner:
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
             "sandbox": None, "said": None, "slack": slack,
+            # Told in Slack when a burst ends: a task from Slack is told in its own thread anyway.
+            "notify": bool(raw.get("notify")) and slack is None, "dm": [],
         }
         with self.lock:
             if (self._dir(slug) / TASK_FILE).exists():
@@ -482,6 +488,23 @@ class TaskRunner:
         if on and record["state"] == "merged":
             return self.resume(slug)
         return _summary(record)
+
+    def notify(self, slug: str, on: bool) -> dict[str, Any]:
+        """Turn telling the listed Slack users of the task's bursts ending on or off."""
+        with self.lock:
+            record = self._read(slug)
+            if record.get("slack"):
+                raise TasksError(f"{slug} was started from Slack: it is told in its thread there.")
+            record["notify"] = bool(on)
+            self._write(record)
+        return _summary(record)
+
+    def told_in(self, slug: str, threads: list[dict[str, str]]) -> None:
+        """Keep the Slack direct messages a task was told in, whose threads its later bursts are told in."""
+        with self.lock:
+            record = self._read(slug)
+            record["dm"] = [*(record.get("dm") or []), *threads]
+            self._write(record)
 
     def check_pr(self, slug: str, fresh: int, *, auto: bool = True) -> None:
         """Look at the task's PR on GitHub, unless it was looked at in the last `fresh` seconds, and note
@@ -914,7 +937,7 @@ def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
         "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
-        "allow", "runner")} | {
+        "allow", "runner", "notify")} | {"from_slack": bool(record.get("slack")), "told": bool(record.get("dm")),
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}
 
 

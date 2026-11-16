@@ -32,6 +32,10 @@ PR, a pause and its questions, a question, a failure and the end of its
 output), or a question's answer. The task is the same as one made in the Tasks tab or with the API,
 created by slack:<user ID>.
 
+A task started in the page or with the API, with "Tell me in Slack" (`notify`), is told to each listed user
+in a direct message when a burst of it ends, unless it was cancelled: how it ended, as above. Its later bursts
+are told in that message's thread, and a reply there continues it, as in a task started from Slack.
+
 A job in act mode that posts to a channel (`slack:CHANNEL` among its outputs) has its plans posted there too,
 with buttons to approve or reject each item, or all that are left (harness/plans.py). The listed users' clicks
 decide; the message shows the decisions, and how applying them went, as they happen. Once every item is decided
@@ -112,6 +116,7 @@ class SlackBot:
         self.me = ""
         self.status = "off: needs SLACK_APP_TOKEN and SLACK_BOT_TOKEN (Settings)"
         self.outbox: queue.Queue[tuple[str, str, str]] = queue.Queue()
+        self.notices: queue.Queue[tuple[str, str]] = queue.Queue()  # (task, what to say): a new direct message
         self.seen: OrderedDict[str, None] = OrderedDict()
         self.lock = threading.Lock()
         self.plans: queue.Queue[tuple[str, str, dict[str, Any]]] = queue.Queue()
@@ -129,6 +134,7 @@ class SlackBot:
     def start(self) -> None:
         threading.Thread(target=self._supervise, daemon=True, name="slack").start()
         threading.Thread(target=self._post, daemon=True, name="slack-posts").start()
+        threading.Thread(target=self._post_notices, daemon=True, name="slack-notices").start()
         threading.Thread(target=self._post_plans, daemon=True, name="slack-plans").start()
         threading.Thread(target=self._post_reviews, daemon=True, name="slack-reviews").start()
 
@@ -265,9 +271,45 @@ class SlackBot:
     def burst(self, event: str, record: dict[str, Any]) -> None:
         """TaskRunner's watcher: called with its lock held, so this only queues the message."""
         where = record.get("slack")
-        if not isinstance(where, dict) or not where.get("channel") or not where.get("thread"):
+        if isinstance(where, dict) and where.get("channel") and where.get("thread"):
+            self.outbox.put((where["channel"], where["thread"], self._about(event, record)))
             return
-        self.outbox.put((where["channel"], where["thread"], self._about(event, record)))
+        if not record.get("notify"):
+            return
+        if record.get("dm"):  # told before: in the threads it was told in
+            for told in record["dm"]:
+                self.outbox.put((told["channel"], told["thread"], self._about(event, record)))
+        elif event == "ended" and record.get("state") != "cancelled":
+            self.notices.put((str(record["slug"]), self._heading(record) + "\n" + self._about(event, record)))
+
+    def _heading(self, record: dict[str, Any]) -> str:
+        what = f"task `{record['slug']}` on {_repo(str(record['repo']))}" if record.get("repo") else \
+            f"question `{record['slug']}`"
+        by = str(record.get("created_by") or "")
+        return f"*{what[0].upper() + what[1:]}*" + (f", started by {escape(by)}" if by else "") + ":"
+
+    def _post_notices(self) -> None:
+        while True:
+            self.tell(*self.notices.get())
+
+    def tell(self, slug: str, text: str) -> None:
+        """A task's first word in Slack: a direct message to each listed user, whose threads it is told in from
+        then on."""
+        if self.web is None or not self.users or self.tasks is None:
+            print(f"slack: not connected, or no one listed, so {slug} was not told: {text[:200]}")
+            return
+        threads = []
+        for user in sorted(self.users):
+            try:
+                posted = self.web.chat_postMessage(channel=user, text=text, unfurl_links=False)
+                threads.append({"channel": str(posted["channel"]), "thread": str(posted["ts"])})
+            except Exception as err:  # noqa: BLE001 -- Slack's trouble is said, not raised into the task
+                print(f"slack: telling {user} of {slug}: {err}")
+        if threads:
+            try:
+                self.tasks.told_in(slug, threads)
+            except TasksError as err:  # removed meanwhile
+                print(f"slack: {slug}: {err}")
 
     def _about(self, event: str, record: dict[str, Any]) -> str:
         count = len(record.get("bursts") or [])
