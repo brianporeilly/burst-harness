@@ -460,6 +460,12 @@ def cluster(tmp_path, monkeypatch):
     return backend, gateway, base
 
 
+def test_a_cluster_backend_is_named_for_the_cluster_not_podman(cluster):
+    backend, _, _ = cluster
+    assert backend.name == "agent-sandbox"  # what turns on the warm pools' recycling, and the startup line
+    assert backend.info()["backend"] == "agent-sandbox"
+
+
 def test_a_cluster_sessions_refusals_come_from_the_shared_gateway(cluster):
     backend, gateway, _ = cluster
     assert backend.pending("demo") == [
