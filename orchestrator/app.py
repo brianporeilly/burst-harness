@@ -283,6 +283,11 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         raw = await body(request) if await request.body() else {}
         return await run_in_threadpool(task_runner().resume, slug, str(raw.get("message") or ""))
 
+    @app.post("/api/tasks/{slug}/notify")
+    async def notify_task(slug: str, request: Request) -> dict[str, Any]:
+        raw = await body(request)
+        return await run_in_threadpool(task_runner().notify, slug, raw.get("on") is True)
+
     @app.post("/api/tasks/{slug}/auto-continue")
     async def auto_continue_task(slug: str, request: Request) -> dict[str, Any]:
         raw = await body(request)
