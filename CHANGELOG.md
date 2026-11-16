@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.33.1 (2026-11-16)
+
+### Bug Fixes
+
+- **orchestrator**: A cluster backend is named agent-sandbox, so warm-pool recycling starts on the
+  cluster ([#28](https://github.com/brianporeilly/burst-harness/pull/28),
+  [`9e5c311`](https://github.com/brianporeilly/burst-harness/commit/9e5c3118cf908fe8879dbdba2370ee283ba3bd4e))
+
+
 ## v0.33.0 (2026-11-16)
 
 ### Features
