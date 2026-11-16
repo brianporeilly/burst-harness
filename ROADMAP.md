@@ -393,16 +393,42 @@ that only archives, marks read or labels, labels what it changed
    as a dry run with approvals, then with actions enabled. Every action gets a
    label (`bot/archived`, `bot/trashed`), and nothing is ever sent or drafted.
    On the cluster, this waits for phase 6's gateway.
+   Done (2026-11-09 to 11-11): `examples/jobs/daily-brief` (today's calendar
+   and the mail that may need you, read by a local model) and
+   `examples/jobs/mail-sorter` (act mode, above). Beside them,
+   `examples/jobs/price-watch`; `[job] memory = true` keeps notes between
+   runs, and `quiet` runs send nothing when there is nothing to say.
 5. Event triggers through the control plane: webhooks (a phone shortcut for
    capturing tasks), Slack commands and interactions (approvals,
    `/catchup`), and Forgejo label events (below).
+   Partly done. Slack interactions: a plan's buttons (2026-11-10) and Accept
+   for a job repo's change (2026-11-15). Webhooks (2026-11-15,
+   orchestrator/hooks.py): GitHub and Forgejo post to `/hooks/NAME`, signed
+   with `<NAME>_WEBHOOK_SECRET`; a merged PR is seen at once (and with
+   `auto_continue` starts the task's next round), and a push to a repo of
+   jobs syncs it. A delivery is only a hint: the orchestrator looks for
+   itself, and polling goes on beside it. On the cluster Forgejo reaches a
+   port that answers `/hooks/` alone (home-ops #1489); GitHub's needs a route
+   from outside, not added yet. Still to come: a webhook that starts a job or
+   a task, Slack commands, and label events.
 6. The work instance: the same harness, its own jobs repo, on podman.
+7. Jobs from git repos: done (2026-11-11). A repo of jobs, set in Settings or
+   `ORCHESTRATOR_JOB_REPOS`, is fetched every few minutes (or on a push's
+   webhook) and its jobs listed beside the `--jobs` directories, each run
+   copied from one commit. Since anyone who can push to the repo could
+   otherwise give a job any secret, write rule or network, a commit that
+   changes a job's access waits for a person's Accept (2026-11-14), and the
+   job runs as last accepted meanwhile; a change to only its prompt, scripts
+   or schedule goes straight through. The listed Slack users are told, with an
+   Accept button when the message can show the whole change (2026-11-15).
 
 **PR reviews on Forgejo** become a job like the rest. Adding a label (say
 `ai-review`) to a PR starts a review, in a sandbox that can only clone. The
 driver posts the review through Forgejo's API, which needs a small forge layer
-because PRs go through `gh` today. The trigger is a Forgejo webhook to the
-control plane, or a `pull_request_target` workflow on a Forgejo Runner (none
+because PRs go through `gh` today (the forge layer is in: tasks open PRs on
+Forgejo, 2026-11-12, and webhooks reach the orchestrator, 2026-11-15; the
+review job and the label trigger are not built). The trigger is a Forgejo
+webhook to the control plane, or a `pull_request_target` workflow on a Forgejo Runner (none
 is deployed yet). Labelling needs write access, so the label is the trust
 gate. No PRs from forks until phase 6's gateway is in place.
 
@@ -563,6 +589,48 @@ Next, in this order (2026-11-04):
    run as a Job needs no config file. After it, maybe the other
    way round (Claude Code as a profile a Strands lead
    delegates to), which would put Claude's token in the sandbox for the run.
+
+Since then (2026-11-12 to 11-16):
+
+9. Tasks that go on for days: done (2026-11-12 to 11-14). Rounds: once a
+   task's PR is merged, Continue starts a new round on a fresh branch, and
+   with `auto_continue` it starts by itself (seen at once with a webhook). A
+   refused push is `push_failed`, opens no PR and keeps the sandbox; a kept
+   sandbox's claim is renewed when a burst reattaches, and replaced when it is
+   gone.
+10. A task's own network: done (2026-11-12). Each task can be permissive, or
+    the allowlist with hosts of its own, and what the gateway refused it is
+    listed in the task, to allow for the task, for a burst, or for good. A
+    build cache (`/cache`) is shared by bursts. The sandbox image has Rust and
+    Bevy's tooling; Claude Code tasks run anything without asking, in their
+    sandbox, and can leave Claude's attribution out of commits.
+11. Runners: done (2026-11-14). Hosts of your own over SSH, as a plain host or
+    a remote podman or docker, set in Settings with their SSH key and
+    known_hosts, picked per task (or a default). A run on one is given only that
+    runner's key. Not yet: sessions on runners, and on the cluster the network
+    policy for port 22 to a runner's host (none is added yet).
+12. Resources: done (2026-11-14, 11-15). A run killed for memory says so, with
+    its limit; the agent is told its sandbox's memory and CPUs, read from the
+    cgroup, and to keep builds within them (fewer parallel jobs), rather than
+    a cap on them.
+13. Warm pools kept on their templates: built (2026-11-15). agent-sandbox does
+    not replace a pool's idle sandboxes when the template changes, so after an
+    image bump a claim got the old image. The orchestrator replaces those out
+    of date every 5 minutes (`ORCHESTRATOR_RECYCLE`), deleting only idle ones,
+    with preconditions so a claim is never deleted from under it. Live from
+    0.33.1 (a naming bug kept it off on the cluster in 0.31).
+
+Next (2026-11-16):
+
+- Slack for tasks started in the page or the API: a direct message to the
+  listed users when one opens a PR, needs an answer or fails, in a thread
+  that continues it like a task started from Slack.
+- Falling back from the local model to Claude when the llama-server is down.
+- Model settings from Slack.
+- Delegates working in parallel, and other delegation improvements.
+- Sessions on runners; refusals listed for local podman tasks.
+- Checked on the cluster: a Forgejo task end to end, and a second Bevy burst
+  using `/cache`.
 
 ## Open
 
