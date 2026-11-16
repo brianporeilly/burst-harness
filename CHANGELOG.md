@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.34.0 (2026-11-16)
+
+### Documentation
+
+- **roadmap**: What shipped since 2026-11-11, and what is next
+  ([#29](https://github.com/brianporeilly/burst-harness/pull/29),
+  [`4c2a3db`](https://github.com/brianporeilly/burst-harness/commit/4c2a3dbde553958927ad45c2b365c348d4dad5d8))
+
+### Features
+
+- **slack**: A task from the page or the API can be told in a direct message when a burst ends, and
+  continued from its thread ([#30](https://github.com/brianporeilly/burst-harness/pull/30),
+  [`0b5518f`](https://github.com/brianporeilly/burst-harness/commit/0b5518f9052a8d96522b8dc47c518b443765cabe))
+
+
 ## v0.33.1 (2026-11-16)
 
 ### Bug Fixes
