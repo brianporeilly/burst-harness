@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.33.0 (2026-11-16)
+
+### Features
+
+- **slack**: A job waiting for Accept is told to the listed users, with an Accept button
+  ([#27](https://github.com/brianporeilly/burst-harness/pull/27),
+  [`8b94e15`](https://github.com/brianporeilly/burst-harness/commit/8b94e154e34b77671050c3e2c9323a19df201b8a))
+
+
 ## v0.32.1 (2026-11-15)
 
 ### Bug Fixes
