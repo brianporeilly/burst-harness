@@ -452,6 +452,7 @@ class ClusterBackend(PodmanBackend):
 
     def __init__(self, base: HarnessConfig | None = None) -> None:
         super().__init__(base)
+        self.name = "agent-sandbox"  # PodmanBackend's sets the instance's to its binary, over the class's
         if self.base.target != "agent-sandbox":
             raise ValueError("ClusterBackend needs target = agent-sandbox in the configuration.")
 
