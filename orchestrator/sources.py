@@ -31,6 +31,11 @@ from SOURCE/jobs/JOB, a link to the job in the tree of the commit it was accepte
 job is held at it. What was accepted, and what waits, is in SOURCE/review.json. When the review first meets a
 source that was already synced (an orchestrator from before it), the jobs as they are then are taken as
 accepted, since they were trusted until then.
+
+Whatever wants to hear about the review (the Slack bot, which asks the listed users) watches it (`watch`):
+told when a job starts to wait ("waiting"), waits at a newer commit with the same access ("moved"), is
+accepted ("accepted"), or no longer waits because its access went back to what was accepted or it left the
+repo ("withdrawn"). Where it was said (`notices`, a Slack message's place) is kept with what waits.
 """
 
 from __future__ import annotations
@@ -51,6 +56,7 @@ import tomllib
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from collections.abc import Callable
 from typing import Any
 
 from harness import credentials
@@ -138,6 +144,7 @@ class JobSources:
         self.lock = threading.Lock()       # the store
         self.syncing = threading.Lock()    # one sync at a time
         self.status: dict[str, dict[str, Any]] = {}  # name -> {synced, error, checked}, since this start
+        self.watchers: list[Callable[[str, str, str, dict[str, Any]], None]] = []
         with self.syncing:  # sources synced before the review: their jobs as they are now, accepted
             for source in self.sources().values():
                 if (sha := self.commit(source.name)) and not (self.root / source.name / REVIEW_FILE).is_file():
@@ -265,6 +272,27 @@ class JobSources:
         part.write_text(json.dumps(data, indent=1) + "\n")
         part.replace(path)
 
+    def watch(self, watcher: Callable[[str, str, str, dict[str, Any]], None]) -> None:
+        """Call watcher(event, source, job, item) as the review changes (see the top of this file)."""
+        self.watchers.append(watcher)
+
+    def _tell(self, told: list[tuple[str, str, str, dict[str, Any]]]) -> None:
+        for event in told:
+            for watcher in self.watchers:
+                try:
+                    watcher(*event)
+                except Exception as err:  # noqa: BLE001 -- a watcher's trouble is not the review's
+                    print(f"sources: telling {event[1]}/{event[2]} {event[0]}: {err}", file=sys.stderr, flush=True)
+
+    def note(self, name: str, job_name: str, commit: str, notices: list[dict[str, str]]) -> None:
+        """Keep where a job's waiting was said, while it still waits at that commit."""
+        with self.syncing:
+            data = self.review(name)
+            item = data["pending"].get(job_name)
+            if item is not None and item.get("commit") == commit:
+                item["notices"] = notices
+                self._save_review(name, data)
+
     def _link(self, source: Source, job_name: str, folder: Path | None) -> None:
         """Point SOURCE/jobs/JOB at a job's folder in a tree, in one step; None removes it."""
         jobs = self.root / source.name / "jobs"
@@ -283,6 +311,7 @@ class JobSources:
         `syncing` held."""
         data = self.review(source.name)
         accepted, pending = data["accepted"], data["pending"]
+        told: list[tuple[str, str, str, dict[str, Any]]] = []
         found = self._tree_jobs(source, sha)
         (self.root / source.name / "jobs").mkdir(parents=True, exist_ok=True)
         for job_name, folder in found.items():
@@ -294,18 +323,28 @@ class JobSources:
                 accepted[job_name] = {"commit": sha, "fingerprint": mark, "access": access,
                                       "by": was.get("by", "") if was else "", "at": was.get("at") if was else _now(),
                                       **({"baseline": True} if baseline and not was else {})}
-                pending.pop(job_name, None)
+                if (gone := pending.pop(job_name, None)) is not None:
+                    told.append(("withdrawn", source.name, job_name, gone))
             else:
+                before = pending.get(job_name) or {}
+                same = before.get("fingerprint") == mark  # waiting as it was, at a newer commit
                 pending[job_name] = {"commit": sha, "fingerprint": mark, "access": access, "new": was is None,
                                      "changes": changes(was["access"] if was else {}, access),
-                                     "since": (pending.get(job_name) or {}).get("since") or _now()}
+                                     "since": before.get("since") or _now(),
+                                     **({"notices": before["notices"]} if same and before.get("notices") else {})}
+                if not same:
+                    told.append(("waiting", source.name, job_name, {**pending[job_name],
+                                                                     "replaces": before.get("notices") or []}))
+                elif before.get("commit") != sha:
+                    told.append(("moved", source.name, job_name, pending[job_name]))
         for job_name in [j for j in accepted if j not in found]:  # gone from the repo: gone from the jobs
             self._link(source, job_name, None)
             del accepted[job_name]
         for job_name in [j for j in pending if j not in found]:
-            del pending[job_name]
+            told.append(("withdrawn", source.name, job_name, pending.pop(job_name)))
         data["seen"] = sha
         self._save_review(source.name, data)
+        self._tell(told)
 
     def held(self, name: str) -> set[str]:
         """The commits a source's jobs are held at: their trees are kept."""
@@ -333,6 +372,7 @@ class JobSources:
                                           "access": waiting["access"], "by": user, "at": _now()}
             del data["pending"][job_name]
             self._save_review(name, data)
+        self._tell([("accepted", name, job_name, {**waiting, "by": user})])
         return data["accepted"][job_name]
 
     def waiting(self) -> list[dict[str, Any]]:
@@ -341,7 +381,8 @@ class JobSources:
         for name in self.sources():
             for job_name, item in sorted(self.review(name)["pending"].items()):
                 found.append({"source": name, "job": job_name,
-                              **{k: item.get(k) for k in ("commit", "new", "changes", "since")}})
+                              **{k: item.get(k) for k in ("commit", "new", "changes", "since")},
+                              "notices": item.get("notices") or []})
         return found
 
     def sync(self, name: str | None = None) -> dict[str, dict[str, Any]]:

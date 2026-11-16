@@ -784,7 +784,7 @@ ORCHESTRATOR_JOB_REPOS="https://github.com/you/jobs.git#main:jobs" python -m orc
   Changes to only the prompt, the scripts or those four settings go straight
   through. A job new to the repo waits for Accept too. When an orchestrator
   from before this first syncs a repo, its jobs as they are then count as
-  accepted.
+  accepted. With Slack on, the listed users are told too (below).
 
 `--jobs` directories still work as before, alongside repos, as on a cluster
 where jobs come from ConfigMaps.
@@ -1061,6 +1061,14 @@ and who made it, then how applying went. Once every item is decided with
 something approved, the apply run starts. The app needs Interactivity on (the
 manifest has it; an app made from an older one needs it turned on, with no
 request URL).
+
+A job from a repo of jobs that waits for Accept is told to each listed user in
+a direct message from the bot: each setting that changed, before and after,
+with an Accept button for that commit (asking first) when the message can show
+the whole change; a longer one is accepted in the Jobs tab. The message keeps
+up: accepted (in Slack or the page, and by whom), changed again (a new message
+has it), or no longer waiting. What waited while Slack was off is told once it
+connects. It needs no more than the app already has.
 
 A task started from Slack is the same as one from the Tasks tab, with
 `created_by` set to `slack:<member ID>`.
