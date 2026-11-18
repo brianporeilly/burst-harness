@@ -69,3 +69,29 @@ def test_what_counts_as_the_same_failure():
     for _ in range(9):
         off.note("shell", {"command": "false"}, shell(1, ""))
     assert off.reason == ""
+
+
+def test_retrying_between_new_work_is_not_a_loop_but_padding_it_is():
+    """local-llm-benchmark's false stops: a service down on purpose, retried now and then between other work."""
+    def ok(text="ok"):
+        return {"status": "success", "content": [{"text": text}]}
+
+    down = {"status": "error", "content": [{"text": "invite service unavailable: SMTP relay refused"}]}
+
+    watch = loops.Loops(HarnessConfig())
+    for n in range(9):  # 9 failures, each after a call that hadn't worked before
+        watch.note("shell", {"command": f"step {n}"}, ok())
+        assert watch.note("send_invite", {"to": "a@example.com"}, down) == n + 1  # the warning still counts all
+    assert watch.reason == ""
+
+    padded = loops.Loops(HarnessConfig())  # the same successful call between: nothing new worked
+    for _ in range(5):
+        padded.note("shell", {"command": "ls"}, ok())
+        padded.note("send_invite", {"to": "a@example.com"}, down)
+    assert padded.reason.startswith("the same send_invite call failed the same way 5 times with nothing new")
+
+    other = loops.Loops(HarnessConfig())  # another failure between doesn't reset it either
+    for n in range(5):
+        other.note("read", {"path": f"missing{n}"}, {"status": "error", "content": [{"text": "no such file"}]})
+        other.note("send_invite", {"to": "a@example.com"}, down)
+    assert other.reason
