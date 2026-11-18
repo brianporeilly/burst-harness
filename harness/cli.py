@@ -28,6 +28,7 @@ from . import (
     mcp,
     metrics,
     models,
+    repo_commands,
     runner,
     session,
     state,
@@ -401,7 +402,8 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
         "said": said or None,
         "context_files": ctx.context_files or None,
         "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - ctx.started,
-                                 fixups=ctx.fixups, handoffs=ctx.handoffs, checks=ctx.checks),
+                                 fixups=ctx.fixups, handoffs=ctx.handoffs, checks=ctx.checks,
+                                 setup=ctx.setup),
         "config": metrics.config_label(ctx.cfg),
     }))
 
@@ -446,6 +448,8 @@ def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | No
 def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
     """Run one headless burst with the configured engine. Returns the usage report."""
     agents.lead_for(ctx, None if resume else prompt)
+    if note := repo_commands.setup(ctx):
+        prompt = f"{prompt}\n\n{note}"
     if ctx.cfg.engine == "claude-code":
         engine = ClaudeCodeEngine(ctx)
         try:
@@ -527,6 +531,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
         else:
             print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+        repo_commands.setup(ctx)  # you are the one at the prompt: it says how setup went
         if ctx.cfg.engine == "claude-code":
             engine = ClaudeCodeEngine(ctx)
             try:

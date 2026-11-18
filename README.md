@@ -170,6 +170,14 @@ the command in the repo before anything is committed or pushed:
   it's told to pause for review instead. A model that finishes again anyway is
   paused by the harness, with "Make `COMMAND` pass" as the next step.
 
+**Setup before the model.** `setup_command` names a command the harness runs in
+the repo before each burst's model starts, such as installing dependencies
+(`uv sync`, `npm ci`). It can go in the repo's `.harness.toml`. Its result and
+the last 4,000 characters of its output go into the burst's first prompt, so
+the model doesn't spend turns finding out. A failure doesn't end the burst:
+the model is told and decides what to do. `setup_timeout` (default 1,800
+seconds) stops it, and `metrics.setup` records its exit code and time.
+
 `check_timeout` (default 900 seconds) stops a check that hangs, and a check
 that times out counts as failed. `HARNESS_RESULT`'s `metrics.checks` counts the
 runs and the failures. The command runs where the agent's own shell does, so
