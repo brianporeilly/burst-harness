@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.43.1 (2026-11-18)
+
+### Bug Fixes
+
+- **harness**: A loop is stopped only when nothing new worked between its repeats
+  ([#41](https://github.com/brianporeilly/burst-harness/pull/41),
+  [`54b3865`](https://github.com/brianporeilly/burst-harness/commit/54b386517446da5f7beb2bb560f69b423854874e))
+
+
 ## v0.43.0 (2026-11-18)
 
 ### Features
