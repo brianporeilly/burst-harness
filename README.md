@@ -165,8 +165,13 @@ failing test match.
 
 - **At `loop_warn` (default 3)**, the model is told in that tool result to
   change its approach.
-- **At `loop_stop` (default 5)**, the agent is stopped once its current tools
-  have run. A lead's burst then pauses for review, with the loop as the next
+- **At `loop_stop` (default 5) with nothing new working in between**, the
+  agent is stopped once its current tools have run. "Something new worked"
+  means a call succeeded that hadn't succeeded before (another tool, or other
+  input), and it sets the count toward the stop back to 0. So a model that
+  retries a service that's down now and then, between other work, isn't
+  stopped. One that pads its retries with the same successful call (`ls`)
+  still is. A lead's burst then pauses for review, with the loop as the next
   step and in `HARNESS_RESULT`'s `said.loop`. A delegate's report says it was
   stopped, and its lead carries on. A job stops.
 

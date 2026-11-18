@@ -3,12 +3,18 @@
 A model that is stuck (small local ones, most often) tends to repeat itself: the same command, the same error,
 a few edits apart. Each failed tool call is remembered by what it was (the tool and its input) and how it failed
 (its result, with durations and timestamps taken out, so two runs of one failing test match). The calls need not
-be one after another.
+be one after another for the warning; for the stop they must be with nothing new working in between.
 
   loop_warn   (3)  the time it happens: the model is told, in that tool result, to change its approach
-  loop_stop   (5)  the time it happens: the agent is stopped once its tools have run. A lead's burst pauses
-                   for review, everything committed, with the loop as the next step (HARNESS_RESULT's
-                   `said.loop`); a delegate's report says so, and its lead goes on; a job stops
+  loop_stop   (5)  the time it happens since anything new worked: the agent is stopped once its tools have
+                   run. A lead's burst pauses for review, everything committed, with the loop as the next step
+                   (HARNESS_RESULT's `said.loop`); a delegate's report says so, and its lead goes on; a job stops
+
+"Anything new worked": a call that succeeded and had not succeeded before (another tool, or other input). It
+sets every count toward the stop back to 0, not the warning's. A model retrying a service that is down now and
+then, between other work, is not stuck; one alternating a failing call with the same successful one (`ls`)
+is. Replayed over local-llm-benchmark's runs, counting every repeat stopped 9 of 298 that went on to finish
+well, nearly all retrying a service the task had down on purpose.
 
 0 turns either off. A call counts as failed when its tool raised or returned an error, or when a shell's exit
 code is not 0. A call that succeeds is never counted, however often it is repeated.
@@ -51,25 +57,35 @@ def failed(result: Any, exception: Exception | None = None) -> bool:
     return bool(found) and int(found.group(1) or found.group(2)) != 0
 
 
+def _key(*parts: Any) -> str:
+    return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
+
+
 class Loops:
     def __init__(self, cfg: Any, *, delegate: bool = False) -> None:
         self.warn, self.stop = cfg.loop_warn, cfg.loop_stop
         self.delegate = delegate
-        self.seen: dict[str, int] = {}
+        self.seen: dict[str, int] = {}  # each failure, how often: for the warning
+        self.streak: dict[str, int] = {}  # each failure, how often since anything new worked: for the stop
+        self.worked: set[str] = set()  # the calls that have succeeded
         self.reason = ""
 
     def note(self, name: str, tool_input: Any, result: Any, exception: Exception | None = None) -> int:
         """Count a call, if it failed: how many times it has failed this way (0 for one that did not fail)."""
         if not failed(result, exception):
+            call = _key(name, tool_input)
+            if call not in self.worked:  # something new worked: the model is getting somewhere
+                self.worked.add(call)
+                self.streak.clear()
             return 0
         how = str(exception) if exception is not None else _text(result)
-        key = hashlib.sha256(json.dumps([name, tool_input, NOISE.sub("#", how)], sort_keys=True,
-                                        default=str).encode()).hexdigest()
+        key = _key(name, tool_input, NOISE.sub("#", how))
         self.seen[key] = count = self.seen.get(key, 0) + 1
-        if self.stop and count >= self.stop and not self.reason:
+        self.streak[key] = streak = self.streak.get(key, 0) + 1
+        if self.stop and streak >= self.stop and not self.reason:
             command = json.dumps(tool_input, default=str)
-            self.reason = (f"the same {name} call failed the same way {count} times "
-                           f"({command[:150] + '...' if len(command) > 150 else command})")
+            self.reason = (f"the same {name} call failed the same way {streak} times with nothing new working "
+                           f"in between ({command[:150] + '...' if len(command) > 150 else command})")
         return count
 
     def watch(self, agent: Any) -> None:
