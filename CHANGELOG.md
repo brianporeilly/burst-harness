@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.41.0 (2026-11-18)
+
+### Features
+
+- **harness**: Setup before the model: setup_command runs before each burst, its output in the first
+  prompt ([#38](https://github.com/brianporeilly/burst-harness/pull/38),
+  [`d6d360e`](https://github.com/brianporeilly/burst-harness/commit/d6d360e108c594d599c8fbffc396bd89655eff4b))
+
+
 ## v0.40.0 (2026-11-18)
 
 ### Features
