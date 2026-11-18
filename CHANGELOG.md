@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.43.2 (2026-11-18)
+
+### Bug Fixes
+
+- **harness**: Tell the agent its builds are cached, and not to point them elsewhere
+  ([#42](https://github.com/brianporeilly/burst-harness/pull/42),
+  [`ac791c5`](https://github.com/brianporeilly/burst-harness/commit/ac791c568c504ccfa367d2d4b50289188a8d0971))
+
+
 ## v0.43.1 (2026-11-18)
 
 ### Bug Fixes
