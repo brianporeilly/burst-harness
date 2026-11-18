@@ -17,6 +17,7 @@ from typing import Any
 from . import (
     agent_sandbox,
     agents,
+    budget,
     ask,
     cluster_session,
     containers,
@@ -118,6 +119,8 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
     result = call(agent, prompt)
     fixups = 0
     while True:
+        if budget.pause(ctx):
+            return result
         if result.stop_reason == "interrupt":
             if not interactive:
                 asks = [str(getattr(itr, "reason", None) or "(no detail)") for itr in result.interrupts]

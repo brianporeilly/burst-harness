@@ -53,3 +53,5 @@ class HarnessContext:
     lead_metrics: dict[str, object] | None = None
     fixups: int = 0
     handoffs: int = 0
+    # The burst's limits (budget.py), made when first asked for.
+    budget: object = None
