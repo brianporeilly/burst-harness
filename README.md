@@ -87,6 +87,25 @@ scrape from the log:
 
 Each entry in `delegated` has a delegate's own `metrics`. A number an engine
 doesn't report is null. Claude Code, for example, gives no tool time.
+
+With Claude Code as the lead, `metrics` also includes what Claude Code reports
+about its own usage, read from its stream:
+
+- `model_usage`: tokens, web searches, cost and context window, broken down
+  per model. This includes the models it calls on its own.
+- `peak_prompt_tokens`, taken from each call's usage, and `context_window`.
+- `plan`: on a subscription, each limit window (`five_hour`, `seven_day`, …)
+  with its utilization in percent at the burst's `start` and `end`, plus its
+  `status` and when it `resets`. It also says whether overage is in use. On an
+  API key, `plan` is null.
+- `terminal_reason`, `api_errors` and `subagents` (how many subagents it
+  spawned).
+
+Claude Code's cost is at API list prices. On a subscription that's what the
+same tokens would cost on the API, not what you spend, but it's still a fixed
+yardstick. Plan utilization is what measures your limits, so the same kind of
+work can be compared over time on both. The Tasks tab shows each burst's plan
+change, such as `plan 5h 51→53%, 7d 73→74%`.
 `metrics.schema` goes up only when a field changes meaning or is removed;
 adding a field doesn't change it.
 
