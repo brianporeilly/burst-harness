@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.42.0 (2026-11-18)
+
+### Features
+
+- **harness**: A review before the PR: review_with's profile reads the change, its findings go back
+  once ([#39](https://github.com/brianporeilly/burst-harness/pull/39),
+  [`f80eaeb`](https://github.com/brianporeilly/burst-harness/commit/f80eaebed7e71d87eb20ca748820e5b4ae91294b))
+
+
 ## v0.41.0 (2026-11-18)
 
 ### Features
