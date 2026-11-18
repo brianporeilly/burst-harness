@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.40.0 (2026-11-18)
+
+### Features
+
+- **harness**: Check before a PR: check_command must pass before finish_with_pr pushes
+  ([#37](https://github.com/brianporeilly/burst-harness/pull/37),
+  [`b3e5bdc`](https://github.com/brianporeilly/burst-harness/commit/b3e5bdc259e4f01dc99e126d6bce132f797b50bf))
+
+
 ## v0.39.0 (2026-11-18)
 
 ### Features
