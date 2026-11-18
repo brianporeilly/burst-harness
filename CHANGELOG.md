@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.35.0 (2026-11-18)
+
+### Documentation
+
+- **roadmap**: Phase 10, reliable runs and measuring harness changes
+  ([#33](https://github.com/brianporeilly/burst-harness/pull/33),
+  [`a424a3e`](https://github.com/brianporeilly/burst-harness/commit/a424a3eda43a520b0a82b6be28f5177a7ab7ee84))
+
+### Features
+
+- **agent**: The Strands agent is given the repo's AGENTS.md (or CLAUDE.md)
+  ([#32](https://github.com/brianporeilly/burst-harness/pull/32),
+  [`53d9313`](https://github.com/brianporeilly/burst-harness/commit/53d9313f96d600862839c0b753f2021f754b9dfa))
+
+
 ## v0.34.0 (2026-11-16)
 
 ### Documentation
