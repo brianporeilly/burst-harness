@@ -264,10 +264,14 @@ def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch
     assert not {"HARNESS_PROVIDER", "HARNESS_MODEL_ID", "HARNESS_CONTEXT_WINDOW_LIMIT", "HARNESS_ROUTER"} & set(env)
     # The burst was routed to a profile (harness/agents.py): the task shows what worked on it.
     harness.started[-1][1].finish(0, state="paused", model="anthropic claude-haiku-5-5", base_url="", agent="quick",
-                                  delegated={"coder": {"calls": 2, "input": 10, "output": 5}})
+                                  delegated={"coder": {"calls": 2, "input": 10, "output": 5}},
+                                  metrics={"schema": 1, "seconds": 61.5, "model_calls": 7, "cost_usd": 0.03},
+                                  config={"layers": ["strict"], "hash": "0123456789abcdef"})
     routed = _settled(runner, "same", "paused")
     assert routed["uses"] == {"provider": "anthropic", "model": "claude-haiku-5-5", "base_url": "", "agent": "quick"}
     assert routed["bursts"][-1]["delegated"]["coder"]["calls"] == 2
+    # Its numbers and the variant it ran as, kept with the burst for the page (and whatever compares runs).
+    assert routed["bursts"][-1]["metrics"]["model_calls"] == 7 and routed["bursts"][-1]["config"]["layers"] == ["strict"]
     # Anthropic: none of llama.cpp's URL, label or window goes with it.
     made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "claude", "provider": "anthropic"})
     env = harness.started[-1][1].env

@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, mcp, repo_rules, resources
+from . import agents, mcp, metrics, repo_rules, resources
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -126,15 +126,20 @@ class ChunkedWindow(SlidingWindowConversationManager):
     """
 
     def reduce_context(self, agent: Agent, e: Exception | None = None, **kwargs: Any) -> None:
-        if e is not None or self.window_size == 0:
-            return super().reduce_context(agent, e, **kwargs)
-        full = self.window_size
-        self.window_size = max(min(full, len(agent.messages)) // 2, 2)
+        before = len(agent.messages)
         try:
-            super().reduce_context(agent, **kwargs)
+            if e is not None or self.window_size == 0:
+                return super().reduce_context(agent, e, **kwargs)
+            full = self.window_size
+            self.window_size = max(min(full, len(agent.messages)) // 2, 2)
+            try:
+                super().reduce_context(agent, **kwargs)
+            finally:
+                self.window_size = full
+            return None
         finally:
-            self.window_size = full
-        return None
+            if (dropped := before - len(agent.messages)) > 0:
+                metrics.count(agent, "window_drops", dropped)
 
 
 # How many replies in a row may be cut off at the output limit before the run gives up.
@@ -225,6 +230,7 @@ def call(agent: Agent, prompt: Any = None) -> Any:
 def _call(agent: Agent, prompt: Any) -> Any:
     if isinstance(agent, Agent) and agent not in _restarting:
         agent.hooks.add_callback(AfterToolsEvent, _restart_now_and_then)
+        metrics.watch(agent)
         _restarting.add(agent)
     last = agent.messages[-1] if agent.messages else None
     if isinstance(prompt, str) and last is not None and last.get("role") == "user":
@@ -241,6 +247,7 @@ def _call(agent: Agent, prompt: Any) -> Any:
                 continue
             return result
         except MaxTokensReachedException:
+            metrics.count(agent, "cut_off")
             if agent.messages and agent.messages[-1].get("role") == "assistant":
                 agent.messages.pop()
             cut = 1 if len(agent.messages) > mark else cut + 1  # finished replies since the last cut start it again
@@ -307,7 +314,8 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
                 logger.warning("Delegate %s failed: %s: %s", agent, type(err).__name__, err)
                 text = f"{agent} failed: {type(err).__name__}: {err}"
             finally:
-                _add_usage(usage, agent, helper_cfg, agents.usage_of(helper) if helper else {})
+                _add_usage(usage, agent, helper_cfg, agents.usage_of(helper) if helper else {},
+                           metrics.of_agent(helper, model_name(helper_cfg), helper_cfg.provider) if helper else None)
             if before is not None and (changed := _changed(before, _files(target))):
                 shown = ", ".join(changed[:CHANGED_SHOWN]) + (" and more" if len(changed) > CHANGED_SHOWN else "")
                 warning = (f"\n[harness] {agent} is read-only but changed: {shown}. Nothing was undone: "
@@ -388,11 +396,14 @@ def _changed(before: dict[str, str], after: dict[str, str] | None) -> list[str]:
     return sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
 
 
-def _add_usage(usage: dict[str, dict[str, Any]], name: str, cfg: HarnessConfig, used: dict[str, int]) -> None:
+def _add_usage(usage: dict[str, dict[str, Any]], name: str, cfg: HarnessConfig, used: dict[str, int],
+               numbers: dict[str, Any] | None = None) -> None:
     entry = usage.setdefault(name, {"provider": cfg.provider, "model_id": model_name(cfg), "calls": 0})
     entry["calls"] += 1
     for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens"):
         entry[key] = entry.get(key, 0) + (used.get(key) or 0)
+    if numbers is not None:  # metrics.py's, for HARNESS_RESULT
+        entry["metrics"] = metrics.add(entry.get("metrics"), numbers)
 
 
 def conversation_manager(cfg: HarnessConfig) -> ChunkedWindow:

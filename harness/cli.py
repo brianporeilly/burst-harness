@@ -24,6 +24,7 @@ from . import (
     git,
     job,
     mcp,
+    metrics,
     models,
     runner,
     session,
@@ -62,19 +63,8 @@ NEXT_STEP = "Continue from its Next step."
 # A branch named with --branch: what git takes, and nothing an option could be read from.
 BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 
-# Approximate per-million-token input/output prices, for the burst report only.
-_PRICES = {
-    "claude-opus-5": (5.0, 25.0),
-    "claude-opus-5-5": (4.0, 20.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-fable-5-1": (10.0, 50.0),
-}
-
-
-# Providers whose input count leaves cache reads out. The OpenAI-style ones
-# (llama.cpp, OpenAI, Gemini) count the cached prefix in the prompt's tokens.
-CACHE_OUTSIDE_INPUT = frozenset(("anthropic", "bedrock"))
+# Prices and which providers count cache reads outside their input: metrics.py's.
+CACHE_OUTSIDE_INPUT = metrics.CACHE_OUTSIDE_INPUT
 
 
 def _report(agent: Any, model_id: str, provider: str = "anthropic",
@@ -106,9 +96,7 @@ def _usage(usage: dict[str, Any], model_id: str, provider: str, *, lead: bool = 
             "  no cache hits — expected on a first burst. On a resume it usually means "
             "the model or effort changed since the previous burst."
         )
-    if price := _PRICES.get(model_id):
-        # Cache reads bill at ~0.1x input, writes at ~1.25x.
-        cost = (inp * price[0] + cache_read * price[0] * 0.1 + cache_write * price[0] * 1.25 + out * price[1]) / 1e6
+    if model_id in metrics.PRICES and (cost := metrics.cost(usage, model_id, provider)) is not None:
         lines.append(f"  approx ${cost:.3f}")
     return "\n".join(lines)
 
@@ -136,10 +124,12 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
                 for ask in asks:
                     print(f"\n[agent needs input] {ask}")
                 ctx.said = {"asks": asks}
+                ctx.handoffs += len(asks)
                 print("\nRe-run with `chat` to answer, or `resume --message '...'`.")
                 ctx.waiting = True
                 return result
             responses = []
+            ctx.handoffs += len(result.interrupts)
             for itr in result.interrupts:
                 print(f"\n[agent asks] {getattr(itr, 'reason', '(no detail)')}")
                 responses.append({"interruptResponse": {"interruptId": itr.id, "response": input("answer> ")}})
@@ -157,6 +147,7 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
             )
             return result
         fixups += 1
+        ctx.fixups += 1
         result = call(agent, NO_STRANDED_WORK.format(status=git.dirty_summary(ctx.target)))
 
 
@@ -399,9 +390,15 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
         "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
         "model": f"{ctx.cfg.provider} {models.model_name(ctx.cfg)}", "base_url": ctx.cfg.base_url, "agent": ctx.agent or None,
         "delegated": {name: {"calls": used["calls"], "input": used.get("inputTokens", 0),
-                             "output": used.get("outputTokens", 0)} for name, used in ctx.delegated.items()} or None,
+                             "output": used.get("outputTokens", 0),
+                             **({"metrics": {"schema": metrics.METRICS_SCHEMA, **used["metrics"]}}
+                                if used.get("metrics") else {})}
+                      for name, used in ctx.delegated.items()} or None,
         "said": said or None,
         "context_files": ctx.context_files or None,
+        "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - ctx.started,
+                                 fixups=ctx.fixups, handoffs=ctx.handoffs),
+        "config": metrics.config_label(ctx.cfg),
     }))
 
 
@@ -461,7 +458,10 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
             if restored
             else "No snapshot; resuming from the task document."
         )
-    _run(agent, ctx, prompt, interactive=False)
+    try:
+        _run(agent, ctx, prompt, interactive=False)
+    finally:
+        ctx.lead_metrics = metrics.of_agent(agent, models.model_name(ctx.cfg), ctx.cfg.provider)
     return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
 
@@ -547,6 +547,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             if line in {"/quit", "/exit"}:
                 break
             _run(agent, ctx, line, interactive=True)
+        ctx.lead_metrics = metrics.of_agent(agent, models.model_name(ctx.cfg), ctx.cfg.provider)
         return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
     return _session(args, body)

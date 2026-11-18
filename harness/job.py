@@ -105,7 +105,7 @@ from urllib.parse import urlencode, urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers, credentials, cron, mcp, memory, models, plans, resources
+from . import agent_sandbox, containers, credentials, cron, mcp, memory, metrics, models, plans, resources
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -706,10 +706,13 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         for attempt in range(cfg.max_fixup_attempts):
             if "report" in finished:
                 break
+            ctx.fixups += 1
             call(agent, NO_FINISH)
     except OutputLimit as err:
         print("\n" + _report(agent, models.model_name(cfg), cfg.provider, ctx.delegated))
         return None, f"max_tokens: {err}"
+    finally:
+        ctx.lead_metrics = metrics.of_agent(agent, models.model_name(cfg), cfg.provider)
     print("\n" + _report(agent, models.model_name(cfg), cfg.provider, ctx.delegated))
     if "report" in finished:
         return finished["report"], ""
@@ -953,7 +956,10 @@ def run(spec: JobSpec, cfg: HarnessConfig, *,
         "seconds": round(time.time() - started), "delivery_errors": failures or None,
         "reason": None if report is not None else reason,
         **({"model": f"{ctx.cfg.provider} {models.model_name(ctx.cfg)}", "agent": ctx.agent or None,
-            "delegated": {name: used["calls"] for name, used in ctx.delegated.items()} or None} if ctx else {}),
+            "delegated": {name: used["calls"] for name, used in ctx.delegated.items()} or None,
+            "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - started,
+                                     fixups=ctx.fixups, handoffs=0),
+            "config": metrics.config_label(ctx.cfg)} if ctx else {}),
         **({"memory": remembered} if remembered else {}),
         **({"plan": record["plan"]} if "plan" in record else {}),
     }
