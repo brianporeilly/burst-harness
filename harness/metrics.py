@@ -158,16 +158,19 @@ def burst(lead: dict[str, Any] | None, delegated: dict[str, dict[str, Any]], *, 
     """`metrics` for a run: the lead's numbers (None when the engine recorded none), its wall time and loop
     counts, and the cost of the lead and its delegates together."""
     lead = lead or {}
+    standard = ("model_seconds", "tool_seconds", "model_calls", "tool_calls", "tool_errors", "tokens",
+                "peak_prompt_tokens", *COUNTERS)
     parts = [lead.get("cost_usd") if lead else None,
              *((used.get("metrics") or {}).get("cost_usd") for used in delegated.values())]
     return {
         "schema": METRICS_SCHEMA,
         "seconds": round(seconds, 1),
-        **{key: lead.get(key) for key in ("model_seconds", "tool_seconds", "model_calls", "tool_calls",
-                                          "tool_errors", "tokens", "peak_prompt_tokens", *COUNTERS)},
+        **{key: lead.get(key) for key in standard},
         "cost_usd": None if any(part is None for part in parts) else round(sum(parts), 4),
         "fixups": fixups,
         "handoffs": handoffs,
+        # What only an engine reports (Claude Code's: per model, the plan; claude_usage.py), as it reports it.
+        **{key: value for key, value in lead.items() if key not in standard and key != "cost_usd"},
     }
 
 

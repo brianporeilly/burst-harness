@@ -65,6 +65,7 @@ from typing import Any
 
 from . import agents, credentials, git, git_policy, mcp, models, resources, state, terminal
 from .agent_sandbox import label_value
+from .claude_usage import ClaudeUsage
 from .containers import MODEL_CREDENTIALS
 from .context import HarnessContext
 from .exec_target import LocalTarget, SubprocessTarget
@@ -186,6 +187,7 @@ class ClaudeCodeEngine:
         self.api_ms = 0
         self.tool_calls = 0
         self.tool_errors = 0
+        self.seen = ClaudeUsage()  # the rest of what it says of its usage: per model, the plan, the largest prompt
 
     # --- setup -----------------------------------------------------------
 
@@ -425,6 +427,8 @@ class ClaudeCodeEngine:
             return
         kind = event.get("type")
         if kind == "assistant":
+            if isinstance((event.get("message") or {}).get("usage"), dict):
+                self.seen.message(event["message"]["usage"])
             for block in (event.get("message") or {}).get("content") or []:
                 if block.get("type") == "text" and block.get("text", "").strip():
                     print(block["text"].strip())
@@ -436,8 +440,12 @@ class ClaudeCodeEngine:
             self.tool_errors += sum(1 for block in content if isinstance(block, dict)
                                     and block.get("type") == "tool_result" and block.get("is_error")) \
                 if isinstance(content, list) else 0
+        elif kind == "rate_limit_event":
+            if isinstance(event.get("rate_limit_info"), dict):
+                self.seen.rate_limit(event["rate_limit_info"])
         elif kind == "result":
             self.result = event
+            self.seen.result(event)
             self.cost += event.get("total_cost_usd") or 0.0
             self.turns += event.get("num_turns") or 0
             self.api_ms += event.get("duration_api_ms") or 0
@@ -549,7 +557,8 @@ class ClaudeCodeEngine:
 
     def metrics(self) -> dict[str, Any] | None:
         """The lead's numbers for metrics.burst, as Claude Code reported them: its turns as model calls, the
-        time its API calls took, and its own cost. What it does not report (tool time, the largest prompt, cut-off
+        time its API calls took, and its own cost (at API list prices), with what claude_usage.py reads besides:
+        per model, the plan's utilization, the largest prompt. What it does not report (tool time, cut-off
         replies, window drops, retries) is None. None when it recorded nothing at all."""
         if self.result is None:
             return None
@@ -559,8 +568,8 @@ class ClaudeCodeEngine:
                 "tokens": {"input": usage.get("input_tokens", 0), "output": usage.get("output_tokens", 0),
                            "cache_read": usage.get("cache_read_input_tokens", 0),
                            "cache_write": usage.get("cache_creation_input_tokens", 0)},
-                "peak_prompt_tokens": None, "cut_off": None, "window_drops": None, "model_retries": None,
-                "lost_server": None, "cost_usd": round(self.cost, 4)}
+                "cut_off": None, "window_drops": None, "model_retries": None,
+                "lost_server": None, "cost_usd": round(self.cost, 4), **self.seen.numbers()}
 
 
 def _brief(value: Any, limit: int = 120) -> str:

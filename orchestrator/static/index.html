@@ -931,7 +931,12 @@ function spentLine(bursts) {
   const time = seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
   const priced = known.length === bursts.length && known.every((b) => b.metrics.cost_usd != null);
   const calls = known.some((b) => b.metrics.model_calls != null) ? ` · ${sum("model_calls")} model calls` : "";
-  return time + calls + (priced ? ` · ~$${sum("cost_usd").toFixed(2)}` : "");
+  // A subscription's plan, for one burst on Claude Code: each window's utilization at its start and end.
+  const plan = bursts.length === 1 && known[0].metrics.plan ? Object.entries(known[0].metrics.plan)
+    .filter(([name, w]) => name !== "overage" && w && w.end != null)
+    .map(([name, w]) => `${{ five_hour: "5h", seven_day: "7d" }[name] || name} ${w.start != null && w.start !== w.end ? `${w.start}→` : ""}${w.end}%`)
+    .join(", ") : "";
+  return time + calls + (priced ? ` · ~$${sum("cost_usd").toFixed(2)}` : "") + (plan ? ` · plan ${plan}` : "");
 }
 
 async function renderTask() {
