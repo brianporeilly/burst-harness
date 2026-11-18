@@ -344,6 +344,9 @@ class HarnessConfig:
     # the model's to deal with, not the end of the burst. Stopped after setup_timeout seconds. Empty: none.
     setup_command: str = ""
     setup_timeout: int = 1800
+    # A profile ([agents.NAME]) that reviews the change, read-only, before a PR opens (review.py). Its findings go
+    # back to the lead once; the PR's body carries the review. Not a repo's to set: it says where requests go.
+    review_with: str = ""
 
     @classmethod
     def load(

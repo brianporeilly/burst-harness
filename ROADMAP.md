@@ -693,10 +693,11 @@ each run and judges nothing, so there is one set of numbers.
    sandbox needs it again). Its output (dependencies installed, tests failing
    before any change) goes into the first prompt of a task or round, so the
    model doesn't spend turns finding out.
-7. A review before the PR. `review_with = "NAME"` runs that read-only profile
-   on the branch's diff and the task document before `finish_with_pr`
-   completes. Its findings go back to the lead once, then into the PR's body.
-   A local model reviewing costs nothing.
+7. A review before the PR: built (2026-11-18). `review_with = "NAME"` runs
+   that profile, read-only, on the branch's diff (new files included) and the
+   task document once the check passes. Its findings go back to the lead once,
+   then into the PR's body; NO FINDINGS lets the first finish through. Either
+   engine can lead. A local model reviewing costs nothing.
 8. A run's transcript as data. One JSON per burst holds the messages, the
    tool calls with how long each took, and the metrics, for comparing two
    runs of the same task. The benchmark renders `transcript.json` today. A

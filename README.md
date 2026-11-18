@@ -170,6 +170,26 @@ the command in the repo before anything is committed or pushed:
   it's told to pause for review instead. A model that finishes again anyway is
   paused by the harness, with "Make `COMMAND` pass" as the next step.
 
+**A review before the PR.** `review_with = "NAME"` names a profile
+(`[agents.NAME]`) that reviews the change before a PR opens. When the lead
+finishes and any `check_command` passes, the profile runs read-only on the
+task document and the branch's diff, new files included. It can read the
+repo and run its tests.
+
+- **If it reports findings**, no PR opens. The findings go back to the lead,
+  which addresses the ones it agrees with and explains the rest in the PR
+  body. The next finish opens the PR, with the review in its body. A burst
+  is reviewed only once.
+- **If it replies NO FINDINGS**, the first finish goes through.
+- **If the reviewer fails** (its model can't be reached, or the budget runs
+  out), nothing is held up, and the PR body says so.
+
+The review counts toward the burst's budget and appears in `delegated`.
+`metrics.review` records who reviewed and what came of it. It works with
+either engine as the lead. It's set in your config or the orchestrator's, not
+the repo's, because it decides where requests go. A local model costs nothing
+to review with.
+
 **Setup before the model.** `setup_command` names a command the harness runs in
 the repo before each burst's model starts, such as installing dependencies
 (`uv sync`, `npm ci`). It can go in the repo's `.harness.toml`. Its result and

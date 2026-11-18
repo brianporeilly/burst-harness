@@ -18,6 +18,7 @@
   fixups, handoffs     re-prompts for work left uncommitted (or a job's missing report); questions to the user
   checks               check_command before a PR: {run, failed}, or None when none ran
   setup                setup_command before the model: {exit, seconds}, or None when none ran
+  review               review_with before the PR: {by, outcome}, or None when none ran
 
 What is not known for an engine (Claude Code reports no timings) is null, never a guess. Nothing here is a
 setting's value or a secret: `config` (cli._result_line) names the --config layers and a hash of the settings.
@@ -157,7 +158,7 @@ def add(total: dict[str, Any] | None, more: dict[str, Any]) -> dict[str, Any]:
 
 def burst(lead: dict[str, Any] | None, delegated: dict[str, dict[str, Any]], *, seconds: float, fixups: int,
           handoffs: int, checks: dict[str, int] | None = None,
-          setup: dict[str, Any] | None = None) -> dict[str, Any]:
+          setup: dict[str, Any] | None = None, review: dict[str, Any] | None = None) -> dict[str, Any]:
     """`metrics` for a run: the lead's numbers (None when the engine recorded none), its wall time and loop
     counts, and the cost of the lead and its delegates together."""
     lead = lead or {}
@@ -174,6 +175,8 @@ def burst(lead: dict[str, Any] | None, delegated: dict[str, dict[str, Any]], *, 
         "handoffs": handoffs,
         "checks": checks or None,  # check_command: how often it ran before a PR, and failed
         "setup": setup or None,  # setup_command: its exit code and seconds
+        # review_with before the PR: who reviewed, and what came of it (findings, no findings, failed)
+        "review": {"by": review["by"], "outcome": review["outcome"]} if review else None,
         # What only an engine reports (Claude Code's: per model, the plan; claude_usage.py), as it reports it.
         **{key: value for key, value in lead.items() if key not in standard and key != "cost_usd"},
     }
@@ -197,5 +200,6 @@ SHAPING = frozenset({
     "offload_max_result_tokens", "offload_preview_tokens",
     "window_size", "pin_first", "proactive_compression", "cache_ttl", "max_fixup_attempts", "require_clean_tree",
     "check_command", "check_timeout", "setup_command", "setup_timeout",
+    "review_with",
     "loop_warn", "loop_stop",
 })

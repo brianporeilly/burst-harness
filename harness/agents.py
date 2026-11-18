@@ -110,7 +110,8 @@ def check(cfg: HarnessConfig) -> None:
             raise AgentsError(f"[agents.{name}] read_only must be true or false.")
         as_profile(cfg, name)  # each setting the right type
     uses = [("agent", (cfg.agent,) if cfg.agent else ()), ("delegate_to", cfg.delegate_to),
-            ("router", (cfg.router,) if cfg.router else ()), ("route_to", cfg.route_to)]
+            ("router", (cfg.router,) if cfg.router else ()), ("route_to", cfg.route_to),
+            ("review_with", (cfg.review_with,) if cfg.review_with else ())]
     uses += [(f"[agents.{name}] delegate_to", tuple(profile.get("delegate_to") or ()))
              for name, profile in cfg.agents.items()]
     for setting, names in uses:
@@ -129,6 +130,7 @@ def in_use(cfg: HarnessConfig) -> list[str]:
     used += cfg.delegate_to if not cfg.agent or not cfg.agents[cfg.agent].get("delegate_to") else ()
     for name in leads:
         used += tuple(cfg.agents[name].get("delegate_to") or ())
+    used += (cfg.review_with,) if cfg.review_with else ()
     return list(dict.fromkeys(used))
 
 
@@ -138,7 +140,7 @@ def callable_profiles(cfg: HarnessConfig) -> list[str]:
     if cfg.engine == "strands":
         return in_use(cfg)
     lead = cfg.agents[cfg.agent].get("delegate_to") if cfg.agent else None
-    return list(lead or cfg.delegate_to)
+    return list(dict.fromkeys([*(lead or cfg.delegate_to), *((cfg.review_with,) if cfg.review_with else ())]))
 
 
 def check_providers(cfg: HarnessConfig) -> None:
