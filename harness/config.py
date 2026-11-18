@@ -308,6 +308,10 @@ class HarnessConfig:
     # against the repo root instead.
     state_dir: str = "~/.burst-harness"
     skills_dir: str = ".harness/skills"
+    # The repo's own instructions for agents, added to the agent's prompt (repo_rules.py): the first of these
+    # files the repo has, at its root. Empty: none read.
+    repo_instructions: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md")
+    repo_instructions_max_bytes: int = 16384
 
     # --- context / tokens ---
     offload_max_result_tokens: int = 2500
@@ -420,7 +424,7 @@ REPO_SETTABLE = frozenset({
     "model_id", "max_tokens", "effort", "thinking", "context_window_limit",
     "base_branch", "branch_prefix", "protected_branches", "remote", "pr_draft",
     "git_user_name", "git_user_email", "auto_push",
-    "docs_dir", "doc_max_bytes", "skills_dir",
+    "docs_dir", "doc_max_bytes", "skills_dir", "repo_instructions", "repo_instructions_max_bytes",
     "offload_max_result_tokens", "offload_preview_tokens", "window_size", "pin_first",
     "proactive_compression", "cache_ttl",
     "max_fixup_attempts", "require_clean_tree",

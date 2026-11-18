@@ -44,3 +44,5 @@ class HarnessContext:
     # next step and questions, an abandon's reason, the questions it stopped on.
     said: dict[str, object] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # The repo's instruction files the agent was given (repo_rules.py), for HARNESS_RESULT's `context_files`.
+    context_files: list[dict[str, object]] = field(default_factory=list)
