@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.39.0 (2026-11-18)
+
+### Features
+
+- **harness**: Notice a loop: the same call failing the same way is warned, then stopped
+  ([#36](https://github.com/brianporeilly/burst-harness/pull/36),
+  [`9ce68d4`](https://github.com/brianporeilly/burst-harness/commit/9ce68d4fb01c2ca0a64dd72ec562bcb4019594b9))
+
+
 ## v0.38.0 (2026-11-18)
 
 ### Features
