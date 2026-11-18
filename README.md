@@ -158,6 +158,23 @@ when a shell exited non-zero. A call that succeeds is never counted, however
 often it's repeated. Setting either value to 0 turns it off. This applies to
 the Strands engine; Claude Code runs its own loop.
 
+**A check before a PR.** `check_command` names a command that must pass
+before a PR is opened, such as the repo's tests (`uv run pytest -q`). It can
+go in the repo's `.harness.toml`. The lead is told about it up front so it
+can run it first. On either engine, when the model finishes, the harness runs
+the command in the repo before anything is committed or pushed:
+
+- **If it passes**, the PR is opened as usual.
+- **If it fails**, no PR is opened. The model gets the end of the output (up to
+  4,000 characters) to fix. After `max_fixup_attempts` (default 3) failures,
+  it's told to pause for review instead. A model that finishes again anyway is
+  paused by the harness, with "Make `COMMAND` pass" as the next step.
+
+`check_timeout` (default 900 seconds) stops a check that hangs, and a check
+that times out counts as failed. `HARNESS_RESULT`'s `metrics.checks` counts the
+runs and the failures. The command runs where the agent's own shell does, so
+it can do nothing the agent couldn't.
+
 Useful flags: `--draft-pr`, `--no-push`, `--model`, `--effort`, `--base-branch`,
 `--offload-max-tokens`.
 

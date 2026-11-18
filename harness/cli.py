@@ -401,7 +401,7 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
         "said": said or None,
         "context_files": ctx.context_files or None,
         "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - ctx.started,
-                                 fixups=ctx.fixups, handoffs=ctx.handoffs),
+                                 fixups=ctx.fixups, handoffs=ctx.handoffs, checks=ctx.checks),
         "config": metrics.config_label(ctx.cfg),
     }))
 

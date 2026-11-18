@@ -53,6 +53,8 @@ class HarnessContext:
     lead_metrics: dict[str, object] | None = None
     fixups: int = 0
     handoffs: int = 0
+    # check_command before a PR (terminal.check): how often it ran, and failed.
+    checks: dict[str, int] = field(default_factory=dict)
     # The burst's limits (budget.py), made when first asked for.
     budget: object = None
     # The lead's loop watch (loops.py), made when first asked for.

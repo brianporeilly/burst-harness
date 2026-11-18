@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, budget, loops, mcp, metrics, repo_rules, resources
+from . import agents, budget, loops, mcp, metrics, repo_rules, resources, terminal
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -460,7 +460,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         plugins.append(AgentSkills(str(target.path(cfg.skills_dir))))
 
     doc_rel = f"{cfg.docs_dir}/{ctx.slug}.md"
-    rules = repo_rules.prompt(target, cfg, ctx.context_files)
+    rules = repo_rules.prompt(target, cfg, ctx.context_files) + terminal.check_note(cfg)
     limits = budget.of(ctx)
     delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir), limits)
     agent = Agent(
