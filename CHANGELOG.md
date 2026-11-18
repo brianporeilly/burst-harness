@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.36.0 (2026-11-18)
+
+### Features
+
+- **metrics**: A burst's numbers in HARNESS_RESULT and HARNESS_JOB, and the variant it ran as
+  ([#31](https://github.com/brianporeilly/burst-harness/pull/31),
+  [`5c8b998`](https://github.com/brianporeilly/burst-harness/commit/5c8b9985f6eea3077af2403bc9ffa24b8298e6e3))
+
+
 ## v0.35.0 (2026-11-18)
 
 ### Documentation
