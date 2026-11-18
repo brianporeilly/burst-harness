@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.37.0 (2026-11-18)
+
+### Features
+
+- **harness**: Budgets per burst: model calls, dollars and minutes, paused for review when reached
+  ([#34](https://github.com/brianporeilly/burst-harness/pull/34),
+  [`d9dc385`](https://github.com/brianporeilly/burst-harness/commit/d9dc38568942203c42bcfcf869b2efbedf4d1342))
+
+
 ## v0.36.0 (2026-11-18)
 
 ### Features
