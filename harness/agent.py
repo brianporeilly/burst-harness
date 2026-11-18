@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, budget, loops, mcp, metrics, repo_rules, resources, terminal
+from . import agents, budget, loops, mcp, metrics, repo_rules, resources, terminal, transcript
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -270,9 +270,9 @@ def _call(agent: Agent, prompt: Any) -> Any:
 
 
 def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]], state_dir: str,
-                  limits: budget.Budget | None = None) -> Any:
+                  limits: budget.Budget | None = None, record: transcript.Transcript | None = None) -> Any:
     """The lead's delegate tool, for cfg.delegate_to's profiles; None when there are none."""
-    delegate = delegate_function(target, cfg, usage, state_dir, limits)
+    delegate = delegate_function(target, cfg, usage, state_dir, limits, record)
     return tool(delegate, name="delegate", description=delegate_description(cfg)) if delegate else None
 
 
@@ -282,14 +282,16 @@ def delegate_description(cfg: HarnessConfig) -> str:
 
 
 def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]],
-                      state_dir: str, limits: budget.Budget | None = None) -> Callable[[str, str], str] | None:
+                      state_dir: str, limits: budget.Budget | None = None,
+                      record: transcript.Transcript | None = None) -> Callable[[str, str], str] | None:
     """What a delegate call does, for cfg.delegate_to's profiles: delegate(to, task) -> the report.
     None when there are none. A Strands lead has it as a tool; a Claude Code lead over MCP (claude_lead.py).
 
     Each call runs a fresh agent with that profile's model, the same sandbox and
     tools, and the git guardrails, and returns its final reply. Calls run one at
     a time, as they share one checkout. What each uses is added to `usage`. With `limits`, the burst's budget
-    (budget.py), a delegate is stopped once one is reached.
+    (budget.py), a delegate is stopped once one is reached. With `record`, the burst's transcript, each is
+    recorded in it.
     """
     names = cfg.delegate_to
     if not names:
@@ -317,6 +319,8 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
                     limits.watch(helper, helper_cfg)
                 looping = loops.Loops(helper_cfg, delegate=True)
                 looping.watch(helper)
+                if record is not None:
+                    record.watch(helper, agent, task)
                 text = str(call(helper, task)).strip() or "(it gave no report)"
                 if limits is not None and limits.reason:
                     text += f"\n[harness] {agent} was stopped at the burst's budget ({limits.reason})."
@@ -462,7 +466,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
     doc_rel = f"{cfg.docs_dir}/{ctx.slug}.md"
     rules = repo_rules.prompt(target, cfg, ctx.context_files) + terminal.check_note(cfg)
     limits = budget.of(ctx)
-    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir), limits)
+    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir), limits, transcript.of(ctx))
     agent = Agent(
         model=model,
         retry_strategy=retry_strategy(cfg),
@@ -484,4 +488,5 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
     )
     limits.watch(agent, cfg, lead=True)
     loops.of(ctx).watch(agent)
+    transcript.of(ctx).watch(agent)
     return agent, session

@@ -63,7 +63,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import agents, budget, credentials, git, git_policy, mcp, models, resources, state, terminal
+from . import agents, budget, credentials, git, git_policy, mcp, models, resources, state, terminal, transcript
 from .agent_sandbox import label_value
 from .claude_usage import ClaudeUsage
 from .containers import MODEL_CREDENTIALS
@@ -221,7 +221,8 @@ class ClaudeCodeEngine:
                                       "rename yours.")
             state_dir = self.state_dir()
             state_dir.mkdir(parents=True, exist_ok=True)
-            self.delegate = delegate_function(self.target, cfg, self.ctx.delegated, str(state_dir))
+            self.delegate = delegate_function(self.target, cfg, self.ctx.delegated, str(state_dir),
+                                              record=transcript.of(self.ctx))
             print(f"Claude Code may delegate to: {', '.join(agents.describe(cfg, n) for n in cfg.delegate_to)}.")
         if not self.remote:
             # Local: Claude runs as you, with your own ~/.claude config and
@@ -404,6 +405,7 @@ class ClaudeCodeEngine:
 
     def _run(self, prompt: str, *, resume: bool) -> bool:
         """One `claude -p` invocation (a session through the SDK, when delegating). False if claude itself failed."""
+        transcript.of(self.ctx).claude({}, prompt=prompt)
         args = ["--output-format", "stream-json", "--verbose", *(["--continue"] if resume else []),
                 *budget.of(self.ctx).claude_args(self.turns, self.cost)]
         if self.delegate is not None:
@@ -427,6 +429,7 @@ class ClaudeCodeEngine:
             print(line)
             return
         kind = event.get("type")
+        transcript.of(self.ctx).claude(event)
         if kind == "assistant":
             if isinstance((event.get("message") or {}).get("usage"), dict):
                 self.seen.message(event["message"]["usage"])

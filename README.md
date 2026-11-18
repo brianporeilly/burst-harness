@@ -118,6 +118,23 @@ credentials.
 The orchestrator keeps both with each burst. The Tasks tab shows each burst's
 time, model calls and cost, plus the total across a task's bursts.
 
+**Transcripts.** Each burst also writes its whole run as one JSON file, in
+the driver's state directory beside the session snapshots
+(`STATE_DIR/KEY/transcripts/TIME-SLUG.json`). `HARNESS_RESULT`'s `transcript`
+gives its path. It holds:
+
+- every message of the lead and of each delegate (and a `review_with`
+  review), with the system prompt and each delegate's brief;
+- every tool call and model call, with when it started and how long it took;
+- the burst's `metrics` and `config`.
+
+The session snapshot only keeps what the context window kept, never a
+delegate's conversation, and Claude Code has none. The transcript is recorded
+as the burst runs, so it has everything, on either engine. Each message keeps
+its engine's own shape, named by `format`: `strands` for the snapshot's
+content blocks, `claude-code` for the Anthropic API's. The newest
+`transcripts_kept` (default 20) are kept for each task, and 0 turns them off.
+
 **Budgets.** These limits apply to one burst, and 0 means no limit:
 
 - `max_model_calls`: model calls, the delegates' included.

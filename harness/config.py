@@ -334,6 +334,9 @@ class HarnessConfig:
     loop_stop: int = 5
     max_fixup_attempts: int = 3
     require_clean_tree: bool = True
+    # Each burst's transcript (transcript.py) is written to the driver's state directory; the newest this many
+    # are kept for each task. 0: none written.
+    transcripts_kept: int = 20
     # A command finish_with_pr runs in the repo before anything is pushed (its tests, say: `uv run pytest -q`).
     # Failing, the PR is refused with its output for the model to fix; after max_fixup_attempts failures it is
     # told to pause_for_review instead. Stopped after check_timeout seconds. Empty: no check.
