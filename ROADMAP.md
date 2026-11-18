@@ -620,17 +620,95 @@ Since then (2026-11-12 to 11-16):
     with preconditions so a claim is never deleted from under it. Live from
     0.33.1 (a naming bug kept it off on the cluster in 0.31).
 
-Next (2026-11-16):
+14. Slack for tasks started in the page or the API: done (2026-11-16, 0.34.0).
+    Ticking "Tell me in Slack" means that when a burst ends, the listed users
+    get a direct message whose thread continues the task, as a reply would on
+    a task started from Slack.
 
-- Slack for tasks started in the page or the API: a direct message to the
-  listed users when one opens a PR, needs an answer or fails, in a thread
-  that continues it like a task started from Slack.
+Next (2026-11-18):
+
+- Phase 10's first steps: run metrics, and the repo's `AGENTS.md` for the
+  Strands agent (#31, #32); then budgets per burst.
 - Falling back from the local model to Claude when the llama-server is down.
 - Model settings from Slack.
 - Delegates working in parallel, and other delegation improvements.
 - Sessions on runners; refusals listed for local podman tasks.
 - Checked on the cluster: a Forgejo task end to end, and a second Bevy burst
   using `/cache`.
+
+### 10. Reliable runs, and knowing a change helped
+
+Added 2026-11-18, from a look at harness-engineering material:
+learn-harness-engineering, 12-Factor Agents, agents.md, Spec Kit, Deep Agents,
+mini-swe-agent, and Harbor. Most of what they recommend is here already: a
+committed task document, bursts that pause and resume, asking the user through
+a tool, delegates with contexts of their own, offloaded tool output, and
+approvals at the gateway. What they add is checking the work before it is
+called done, limits on a run, and measuring whether a change to the harness
+helped. The rule for that measurement: keep the model fixed and change one
+thing at a time.
+
+Measuring belongs to `local-llm-benchmark`. It already runs its tasks through
+the harness, and owns tasks, grading, scoring, the matrix of model × profile ×
+harness commit, repeats, and reports. The harness reports accurate facts about
+each run and judges nothing, so there is one set of numbers.
+
+**Steps:**
+
+1. Run metrics: built (2026-11-18, #31). `HARNESS_RESULT` and `HARNESS_JOB`
+   carry `metrics`:
+   - wall time, time waiting on the model, and time running tools;
+   - model calls, tool calls and errors;
+   - the lead's tokens, and the largest prompt;
+   - cut-off replies, window drops and retries;
+   - an approximate cost;
+   - fix-ups and questions to the user.
+
+   Delegates get the same `metrics`. `config` names the `--config` layers and
+   hashes the settings that shape the agent's work, so A:B runs can't be
+   compared under the wrong label. The fields follow what the benchmark
+   already records, so it can stop parsing the log. The Tasks tab shows each
+   burst's time, calls and cost, and a total for the task.
+2. The repo's instructions for agents: built (2026-11-18, #32). The Strands
+   agent and its delegates are given the repo's `AGENTS.md` (or `CLAUDE.md`)
+   below the harness's own rules. It can be turned off, and what was read is
+   listed in `context_files`. Once both are merged, its settings join the
+   `config` hash.
+3. Budgets per burst. `max_model_calls`, `max_cost_usd` and
+   `max_burst_minutes` are checked before each model call. Reaching one
+   pauses for review, with the limit reached as the next step, so the work is
+   never stranded. This stops a runaway burst spending credits overnight, and
+   a stuck local burst holding the one llama.cpp slot.
+4. Noticing a loop. The same tool call failing the same way three times tells
+   the model to change its approach; five times pauses for review. Small
+   local models are the ones that loop.
+5. Checked before a PR. A repo-settable `check_command` (its tests, say) runs
+   in `finish_with_pr` before anything is pushed. A failure goes back to the
+   model to fix, up to `max_fixup_attempts`, then it is told to pause instead.
+   Maybe acceptance criteria in the task document, filled from the prompt.
+6. A setup step before the model. A repo-settable `setup_command` runs after
+   the branch is made. Its output (dependencies installed, tests failing
+   before any change) goes into the first prompt of a task or round, so the
+   model doesn't spend turns finding out.
+7. A review before the PR. `review_with = "NAME"` runs that read-only profile
+   on the branch's diff and the task document before `finish_with_pr`
+   completes. Its findings go back to the lead once, then into the PR's body.
+   A local model reviewing costs nothing.
+8. A run's transcript as data. One JSON per burst holds the messages, the
+   tool calls with how long each took, and the metrics, for comparing two
+   runs of the same task. The benchmark renders `transcript.json` today. A
+   format Harbor reads is worth a look.
+9. Comparing harness changes. What stays here: a smoke test that a tiny task
+   still finishes with its metrics filled in, using the fake llama server,
+   and maybe a replay against a recorded run. Everything that scores or ranks
+   is the benchmark's. It runs a variant per `--config` layer against a
+   baseline with the model fixed, and reports the before and after for a PR
+   that changes how the harness behaves. A job (a weekly run of a few tasks on
+   the local model, its table posted to Slack) could do it unattended.
+
+Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
+approving each tool call (the gateway and the sandbox are the boundary), a
+bash-only loop, and benchmarks at SWE-bench's scale.
 
 ## Open
 
