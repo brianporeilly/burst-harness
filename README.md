@@ -140,6 +140,24 @@ The budgets are driver settings: they go in the config file or in
 `HARNESS_MAX_COST_USD` and the like, never in the repo's `.harness.toml`. An
 orchestrator's bursts inherit them from its environment.
 
+**Loops.** A stuck model tends to repeat itself: the same command and the
+same error, sometimes a few edits apart. The harness remembers each failed
+tool call by what it was (the tool and its input) and how it failed (its
+result). Durations and timestamps are ignored, so two runs of the same
+failing test match.
+
+- **At `loop_warn` (default 3)**, the model is told in that tool result to
+  change its approach.
+- **At `loop_stop` (default 5)**, the agent is stopped once its current tools
+  have run. A lead's burst then pauses for review, with the loop as the next
+  step and in `HARNESS_RESULT`'s `said.loop`. A delegate's report says it was
+  stopped, and its lead carries on. A job stops.
+
+A call counts as failed when the tool raised an error or returned one, or
+when a shell exited non-zero. A call that succeeds is never counted, however
+often it's repeated. Setting either value to 0 turns it off. This applies to
+the Strands engine; Claude Code runs its own loop.
+
 Useful flags: `--draft-pr`, `--no-push`, `--model`, `--effort`, `--base-branch`,
 `--offload-max-tokens`.
 

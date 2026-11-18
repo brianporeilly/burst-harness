@@ -328,6 +328,10 @@ class HarnessConfig:
     max_model_calls: int = 0
     max_cost_usd: float = 0.0
     max_burst_minutes: int = 0
+    # The same tool call failing the same way (loops.py): told to change approach at loop_warn times, stopped
+    # (a burst paused for review) at loop_stop. 0 turns either off.
+    loop_warn: int = 3
+    loop_stop: int = 5
     max_fixup_attempts: int = 3
     require_clean_tree: bool = True
 
