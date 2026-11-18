@@ -674,18 +674,20 @@ each run and judges nothing, so there is one set of numbers.
    below the harness's own rules. It can be turned off, and what was read is
    listed in `context_files`. Once both are merged, its settings join the
    `config` hash.
-3. Budgets per burst. `max_model_calls`, `max_cost_usd` and
+3. Budgets per burst: built (2026-11-18, #34). `max_model_calls`, `max_cost_usd` and
    `max_burst_minutes` are checked before each model call. Reaching one
    pauses for review, with the limit reached as the next step, so the work is
    never stranded. This stops a runaway burst spending credits overnight, and
    a stuck local burst holding the one llama.cpp slot.
-4. Noticing a loop. The same tool call failing the same way three times tells
+4. Noticing a loop: built (2026-11-18, #36). The same tool call failing the same way three times tells
    the model to change its approach; five times pauses for review. Small
    local models are the ones that loop.
-5. Checked before a PR. A repo-settable `check_command` (its tests, say) runs
-   in `finish_with_pr` before anything is pushed. A failure goes back to the
-   model to fix, up to `max_fixup_attempts`, then it is told to pause instead.
-   Maybe acceptance criteria in the task document, filled from the prompt.
+5. Checked before a PR: built (2026-11-18). A repo-settable `check_command`
+   (its tests, say) runs in `finish_with_pr` before anything is pushed, on
+   both engines. A failure goes back to the model with the end of its output,
+   up to `max_fixup_attempts`; then it is told to pause, and finishing anyway
+   pauses it. `metrics.checks` counts runs and failures. Acceptance criteria
+   in the task document, filled from the prompt, are left for later.
 6. A setup step before the model. A repo-settable `setup_command` runs after
    the branch is made. Its output (dependencies installed, tests failing
    before any change) goes into the first prompt of a task or round, so the

@@ -326,7 +326,7 @@ class ClaudeCodeEngine:
         return RULES.format(
             branch=self.ctx.branch, remote=cfg.remote, base=cfg.base_branch,
             doc=state.doc_relpath(cfg, self.ctx.slug), cap=cfg.doc_max_bytes, outcome=OUTCOME_PATH,
-        ) + (f"\n\n{limits}" if limits else "")
+        ) + (f"\n\n{limits}" if limits else "") + terminal.check_note(cfg)
 
     def hook_settings(self) -> str:
         cfg = self.ctx.cfg
