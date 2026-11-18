@@ -119,3 +119,11 @@ def test_claude_codes_numbers_are_what_it_reported(tmp_path):
     assert (numbers["model_calls"], numbers["tool_calls"], numbers["tool_errors"]) == (3, 2, 1)
     assert numbers["tokens"] == {"input": 7, "output": 8, "cache_read": 100, "cache_write": 20}
     assert numbers["model_seconds"] == 4.5 and numbers["cost_usd"] == 0.12 and numbers["tool_seconds"] is None
+
+
+def test_the_variant_hash_follows_the_settings_that_shape_the_work_only():
+    from dataclasses import replace
+
+    base = HarnessConfig()
+    assert metrics.config_label(replace(base, repo_instructions=()))["hash"] != metrics.config_label(base)["hash"]
+    assert metrics.config_label(replace(base, pod="another-pod"))["hash"] == metrics.config_label(base)["hash"]

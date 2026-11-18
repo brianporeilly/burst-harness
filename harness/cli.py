@@ -395,6 +395,7 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
                                 if used.get("metrics") else {})}
                       for name, used in ctx.delegated.items()} or None,
         "said": said or None,
+        "context_files": ctx.context_files or None,
         "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - ctx.started,
                                  fixups=ctx.fixups, handoffs=ctx.handoffs),
         "config": metrics.config_label(ctx.cfg),
