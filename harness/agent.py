@@ -62,9 +62,9 @@ End every session in exactly one terminal state:
 Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
 
 def _limits(target: Any) -> str:
-    """The sandbox's memory limit, for the prompt (resources.py): a paragraph, or ""."""
-    line = resources.note(target)
-    return f"\n\n{line}" if line else ""
+    """The sandbox's memory limit and its build cache, for the prompt (resources.py): paragraphs, or ""."""
+    lines = [line for line in (resources.note(target), resources.cache_note(target)) if line]
+    return "".join(f"\n\n{line}" for line in lines)
 
 
 # Added to the lead's prompt when it has a delegate tool.

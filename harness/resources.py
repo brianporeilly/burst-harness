@@ -50,6 +50,24 @@ def note(target: Any) -> str:
     return _seen[where]
 
 
+CACHE_NOTE = """Builds here keep their output between bursts: {settings} {are} set for you, on a volume \
+that outlives this sandbox. Don't set {them} to anything else, in a command or in the task document: a build \
+anywhere else starts from nothing in every burst, and a large one takes many minutes each time."""
+
+# The settings build_cache sets (cli._build_cache), in the order they are named.
+CACHED = ("CARGO_HOME", "CARGO_TARGET_DIR")
+
+
+def cache_note(target: Any) -> str:
+    """The line for the agent's instructions when its builds are cached (build_cache), or ""."""
+    env = dict(getattr(target, "env", ()) or ())
+    found = [f"{name}={env[name]}" for name in CACHED if env.get(name)]
+    if not found:
+        return ""
+    return CACHE_NOTE.format(settings=" and ".join(found), are="are" if len(found) > 1 else "is",
+                             them="them" if len(found) > 1 else "it")
+
+
 def limits(probe: str) -> tuple[str, str]:
     """From PROBE's output: the memory limit ("8Gi"), "" for none of its own; and its CPUs ("6 CPUs"), or ""."""
     parts = (probe.split("|") + [""] * 6)[:6]
