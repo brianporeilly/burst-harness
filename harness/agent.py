@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, mcp, resources
+from . import agents, mcp, repo_rules, resources
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -338,7 +338,7 @@ def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: s
         retry_strategy=retry_strategy(cfg),
         sandbox=sandbox,
         system_prompt=DELEGATE_PROMPT.format(repo=target.describe()) + (READ_ONLY_PROMPT if read_only else "")
-        + _limits(target)
+        + _limits(target) + repo_rules.prompt(target, cfg)
         + (f"\n\n{prompt}" if prompt else ""),
         tools=[*exec_tools, *mcp.clients(cfg)],
         plugins=[ContextOffloader(storage=offload_storage(target, state_dir),
@@ -433,6 +433,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         plugins.append(AgentSkills(str(target.path(cfg.skills_dir))))
 
     doc_rel = f"{cfg.docs_dir}/{ctx.slug}.md"
+    rules = repo_rules.prompt(target, cfg, ctx.context_files)
     delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir))
     agent = Agent(
         model=model,
@@ -447,7 +448,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
             remote=cfg.remote,
             base=cfg.base_branch,
             doc=doc_rel,
-        ) + _limits(target) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
+        ) + _limits(target) + rules + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
         tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else [])],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],

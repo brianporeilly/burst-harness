@@ -401,6 +401,7 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
         "delegated": {name: {"calls": used["calls"], "input": used.get("inputTokens", 0),
                              "output": used.get("outputTokens", 0)} for name, used in ctx.delegated.items()} or None,
         "said": said or None,
+        "context_files": ctx.context_files or None,
     }))
 
 

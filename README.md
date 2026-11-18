@@ -120,6 +120,28 @@ Resuming with the same state directory restores the conversation. A fresh clone
 anywhere works from the committed document alone — which is what makes a sandbox
 disposable between bursts.
 
+**The repo's instructions for agents.** On the Strands engine, the agent's
+prompt includes the repo's `AGENTS.md`, or its `CLAUDE.md` if there is no
+`AGENTS.md`. Delegates get it too. This is where repos usually keep their test
+command, conventions and commit rules, and it saves the agent from learning
+them by failing CI. (Claude Code reads its `CLAUDE.md` itself.)
+
+- **When it's read:** at the root, on the task's branch, as each burst starts.
+- **Size:** cut at `repo_instructions_max_bytes`, 16 KiB by default.
+- **Priority:** the prompt presents it as the repo's conventions, beneath the
+  harness's own rules. It changes neither the terminal states nor the task
+  document.
+- **Which files:** `repo_instructions` lists the candidates, and only the first
+  one found is read. Nested ones, a directory's own `AGENTS.md`, aren't read,
+  but the agent is told they may exist.
+- **Turning it off:** set `repo_instructions = []`, or
+  `HARNESS_REPO_INSTRUCTIONS=""`.
+- **Safety:** a path outside the repo, including a link out of a local
+  checkout, is never read.
+- **In the result:** what was read is listed in `HARNESS_RESULT`'s
+  `context_files` (path, bytes, sha256, cut), so a run that had it can be
+  told apart from one that didn't.
+
 ## Configuration
 
 Defaults → `~/.config/burst-harness/config.toml` → `.harness.toml` in the repo →
