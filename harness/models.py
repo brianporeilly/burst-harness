@@ -486,6 +486,7 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
             super().__init__(max_attempts=max(8, cfg.model_retries + 1))
             self._timeouts = 0
             self._started = 0.0
+            self._agent: Any = None
 
         def register_hooks(self, registry: Any, **kwargs: Any) -> None:
             super().register_hooks(registry, **kwargs)
@@ -493,6 +494,14 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
 
         def _before_model_call(self, event: Any) -> None:
             self._started = time.monotonic()
+            self._agent = event.agent
+
+        def _retried(self, why: str = "") -> None:
+            from . import metrics
+
+            metrics.count(self._agent, "model_retries")
+            if why == "lost the server":
+                metrics.count(self._agent, "lost_server")
 
         def _reset_retry_state(self) -> None:
             super()._reset_retry_state()
@@ -512,6 +521,7 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
                     logger.warning("Model call %s after %.0fs (%s); retry %d of %d in %ds.", why, took, what,
                                    self._current_attempt + 1, self._max_attempts - 1,
                                    self._calculate_delay(self._current_attempt))
+                    self._retried(why)
                 return True
             if _timed_out(exception):
                 if self._timeouts < cfg.model_retries:
@@ -519,6 +529,7 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
                     logger.warning("Model call timed out (%s): nothing received for model_timeout=%ds, %.0fs "
                                    "into the call; retry %d of %d.", what, cfg.model_timeout, took,
                                    self._timeouts, cfg.model_retries)
+                    self._retried()
                     return True
                 logger.warning("Model call timed out (%s): nothing received for model_timeout=%ds, %.0fs into the "
                                "call; no retries left (model_retries=%d).", what, cfg.model_timeout, took,

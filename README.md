@@ -64,6 +64,41 @@ document, with `--message` as what to do next, rather than starting over. Exit s
 a headless run stopped on a question for the user, `1` otherwise. The last line of
 output is `HARNESS_RESULT {json}` with the slug, branch, state, PR URL, and claim.
 
+**Run metrics.** `HARNESS_RESULT` (and a job's `HARNESS_JOB`) carries the
+burst's numbers in `metrics`, for whatever launched it to read rather than
+scrape from the log:
+
+- `seconds`: the wall time.
+- `model_seconds` and `tool_seconds`: time waiting on the model, and time
+  running tools.
+- `model_calls`, `tool_calls` and `tool_errors`.
+- `tokens`: the lead's own `input`, `output`, `cache_read` and `cache_write`.
+  `input` is counted the way the provider counts it, so llama.cpp's includes
+  the cached part.
+- `peak_prompt_tokens`: the largest single prompt, which shows how close the
+  run got to the context limit.
+- `cut_off`: replies that hit the output limit.
+- `window_drops`: messages the sliding window dropped.
+- `model_retries` and `lost_server`: model calls that were retried.
+- `cost_usd`: approximate. It is 0 for a local llama.cpp model, and null if
+  the price of any model used, the lead's or a delegate's, isn't known.
+- `fixups`: re-prompts for work left uncommitted.
+- `handoffs`: questions to the user.
+
+Each entry in `delegated` has a delegate's own `metrics`. A number an engine
+doesn't report is null. Claude Code, for example, gives no tool time.
+`metrics.schema` goes up only when a field changes meaning or is removed;
+adding a field doesn't change it.
+
+`config` says which variant of the harness ran: `layers` gives the
+`--config` files by name, and `hash` is a hash of the settings that shape the
+agent's work. Two runs under the same layer names but with different settings
+therefore have different hashes. The hash leaves out the target, the repo and
+credentials.
+
+The orchestrator keeps both with each burst. The Tasks tab shows each burst's
+time, model calls and cost, plus the total across a task's bursts.
+
 Useful flags: `--draft-pr`, `--no-push`, `--model`, `--effort`, `--base-branch`,
 `--offload-max-tokens`.
 

@@ -181,6 +181,11 @@ class ClaudeCodeEngine:
         self.result: dict[str, Any] | None = None
         self.cost = 0.0
         self.turns = 0
+        # For HARNESS_RESULT's metrics (metrics.py), summed over the burst's `claude` runs.
+        self.usage: dict[str, int] = {}
+        self.api_ms = 0
+        self.tool_calls = 0
+        self.tool_errors = 0
 
     # --- setup -----------------------------------------------------------
 
@@ -424,11 +429,21 @@ class ClaudeCodeEngine:
                 if block.get("type") == "text" and block.get("text", "").strip():
                     print(block["text"].strip())
                 elif block.get("type") == "tool_use":
+                    self.tool_calls += 1
                     print(f"  -> {block.get('name')}: {_brief(block.get('input'))}")
+        elif kind == "user":
+            content = (event.get("message") or {}).get("content")
+            self.tool_errors += sum(1 for block in content if isinstance(block, dict)
+                                    and block.get("type") == "tool_result" and block.get("is_error")) \
+                if isinstance(content, list) else 0
         elif kind == "result":
             self.result = event
             self.cost += event.get("total_cost_usd") or 0.0
             self.turns += event.get("num_turns") or 0
+            self.api_ms += event.get("duration_api_ms") or 0
+            for key, value in (event.get("usage") or {}).items():
+                if isinstance(value, int):
+                    self.usage[key] = self.usage.get(key, 0) + value
             if event.get("is_error"):
                 print(f"! Claude Code: {event.get('subtype')}: {event.get('result') or ''}".rstrip(), file=sys.stderr)
 
@@ -520,6 +535,7 @@ class ClaudeCodeEngine:
     def report(self) -> str:
         from .cli import _delegated
 
+        self.ctx.lead_metrics = self.metrics()
         if self.result is None:
             return "  no Claude Code result recorded" + _delegated(self.ctx.delegated)
         usage = self.result.get("usage") or {}
@@ -529,6 +545,22 @@ class ClaudeCodeEngine:
             f"cache read {usage.get('cache_read_input_tokens', 0):,}  "
             f"cost ${self.cost:.3f} (as reported by Claude Code)"
         ) + _delegated(self.ctx.delegated)
+
+
+    def metrics(self) -> dict[str, Any] | None:
+        """The lead's numbers for metrics.burst, as Claude Code reported them: its turns as model calls, the
+        time its API calls took, and its own cost. What it does not report (tool time, the largest prompt, cut-off
+        replies, window drops, retries) is None. None when it recorded nothing at all."""
+        if self.result is None:
+            return None
+        usage = self.usage
+        return {"model_seconds": round(self.api_ms / 1000, 1), "tool_seconds": None, "model_calls": self.turns,
+                "tool_calls": self.tool_calls, "tool_errors": self.tool_errors,
+                "tokens": {"input": usage.get("input_tokens", 0), "output": usage.get("output_tokens", 0),
+                           "cache_read": usage.get("cache_read_input_tokens", 0),
+                           "cache_write": usage.get("cache_creation_input_tokens", 0)},
+                "peak_prompt_tokens": None, "cut_off": None, "window_drops": None, "model_retries": None,
+                "lost_server": None, "cost_usd": round(self.cost, 4)}
 
 
 def _brief(value: Any, limit: int = 120) -> str:

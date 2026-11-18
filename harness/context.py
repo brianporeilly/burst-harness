@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from . import git
@@ -44,3 +45,9 @@ class HarnessContext:
     # next step and questions, an abandon's reason, the questions it stopped on.
     said: dict[str, object] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    # For HARNESS_RESULT's `metrics` (metrics.py): when the run started, the lead's numbers as its engine
+    # recorded them (None: none recorded), re-prompts for work left uncommitted, and questions to the user.
+    started: float = field(default_factory=time.time)
+    lead_metrics: dict[str, object] | None = None
+    fixups: int = 0
+    handoffs: int = 0

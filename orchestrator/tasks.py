@@ -794,6 +794,7 @@ class TaskRunner:
             if record is not None:
                 state = "cancelled" if record.get("cancelling") else _state(code, result)
                 record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"),
+                                            metrics=result.get("metrics"), config=result.get("config"),
                                             egress=_sandbox_line(self._output(slug), record["bursts"][-1]))
                 if result.get("agent"):  # routed to a profile (harness/agents.py): that is what works on it
                     provider, _, model = str(result.get("model") or "").partition(" ")
@@ -832,7 +833,8 @@ class TaskRunner:
                 answer = report.read_text() if burst.get("run") and report.is_file() else None
                 state = "cancelled" if record.get("cancelling") else "answered" if answer is not None else "failed"
                 burst.update(ended=_now(), exit=code, state=state, answer=answer, reason=result.get("reason"),
-                             delegated=result.get("delegated"))
+                             delegated=result.get("delegated"), metrics=result.get("metrics"),
+                             config=result.get("config"))
                 if result.get("agent"):
                     provider, _, model = str(result.get("model") or "").partition(" ")
                     record["uses"] = {**record.get("uses", {}), "provider": provider, "model": model,
