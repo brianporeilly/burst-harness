@@ -339,6 +339,11 @@ class HarnessConfig:
     # told to pause_for_review instead. Stopped after check_timeout seconds. Empty: no check.
     check_command: str = ""
     check_timeout: int = 900
+    # A command the harness runs in the repo before each burst's model starts (installing its dependencies,
+    # say: `uv sync`). Its result and the end of its output go into the burst's first prompt; a failure is
+    # the model's to deal with, not the end of the burst. Stopped after setup_timeout seconds. Empty: none.
+    setup_command: str = ""
+    setup_timeout: int = 1800
 
     @classmethod
     def load(
@@ -442,4 +447,5 @@ REPO_SETTABLE = frozenset({
     "offload_max_result_tokens", "offload_preview_tokens", "window_size", "pin_first",
     "proactive_compression", "cache_ttl",
     "max_fixup_attempts", "require_clean_tree", "check_command", "check_timeout",
+    "setup_command", "setup_timeout",
 })

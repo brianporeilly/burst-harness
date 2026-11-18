@@ -688,8 +688,9 @@ each run and judges nothing, so there is one set of numbers.
    up to `max_fixup_attempts`; then it is told to pause, and finishing anyway
    pauses it. `metrics.checks` counts runs and failures. Acceptance criteria
    in the task document, filled from the prompt, are left for later.
-6. A setup step before the model. A repo-settable `setup_command` runs after
-   the branch is made. Its output (dependencies installed, tests failing
+6. A setup step before the model: built (2026-11-18). A repo-settable
+   `setup_command` runs after the branch is made, before every burst (a new
+   sandbox needs it again). Its output (dependencies installed, tests failing
    before any change) goes into the first prompt of a task or round, so the
    model doesn't spend turns finding out.
 7. A review before the PR. `review_with = "NAME"` runs that read-only profile

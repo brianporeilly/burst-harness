@@ -7,13 +7,11 @@ the harness, not the model, commits, pushes, and opens the PR.
 
 from __future__ import annotations
 
-import shlex
-
-from . import git, state
+from . import git, repo_commands, state
 from .context import HarnessContext
 
 # How much of a failed check's output goes back to the model: its end, where test runners sum up.
-CHECK_OUTPUT_CHARS = 4000
+CHECK_OUTPUT_CHARS = repo_commands.OUTPUT_CHARS
 
 
 def check_note(cfg) -> str:
@@ -33,18 +31,12 @@ def check(ctx: HarnessContext) -> None:
     command = cfg.check_command.strip()
     if not command:
         return
-    timed = (f"timeout -k 10 {int(cfg.check_timeout)} sh -c {shlex.quote(command)}"
-             if cfg.check_timeout > 0 and not ctx.target.missing_commands(("timeout",)) else command)
-    result = ctx.target.run_shell(timed, check=False)
+    ran = repo_commands.run(ctx.target, command, cfg.check_timeout)
     ctx.checks["run"] = ctx.checks.get("run", 0) + 1
-    if result.returncode == 0:
+    if ran.code == 0:
         return
     failed = ctx.checks["failed"] = ctx.checks.get("failed", 0) + 1
-    output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
-    if len(output) > CHECK_OUTPUT_CHARS:
-        output = "[...]\n" + output[-CHECK_OUTPUT_CHARS:]
-    why = (f"timed out after {cfg.check_timeout}s" if timed != command and result.returncode in (124, 137)
-           else f"exited {result.returncode}")
+    output, why = ran.output, ran.why(cfg.check_timeout)
     then = ("Fix what it reports, then finish again." if failed < cfg.max_fixup_attempts else
             f"It has failed {failed} times: don't finish again. Pause for review instead, saying what is still "
             "failing and what you tried.")
