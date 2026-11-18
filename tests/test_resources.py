@@ -64,3 +64,37 @@ def test_a_jobs_rules_and_the_strands_prompt_carry_it(tmp_path, monkeypatch):
     rules = job._rules(sandbox, job.load(tmp_path / "digest"), has_scripts=False, file=True)
     assert rules.rstrip().endswith("run one heavy build at a time.") and "at most 4Gi of memory and 2 CPUs" in rules
     assert agent._limits(sandbox).startswith("\n\nResources: this sandbox may use at most 4Gi")
+
+
+def test_the_agent_is_told_its_builds_are_cached_and_not_to_move_them(monkeypatch):
+    """A burst once wrote CARGO_TARGET_DIR=/home/agent/target into its task document: every later burst built
+    Bevy from nothing, on the pod's disk, while the cache volume sat empty."""
+    from harness import agent
+
+    monkeypatch.setattr(resources, "_seen", {})
+    sandbox = Sandbox(f"{8 * GI}|600000 100000|||{64 * GI}|16")
+    sandbox.env = (("CARGO_HOME", "/cache/cargo"), ("CARGO_TARGET_DIR", "/cache/target/k"), ("OTHER", "x"))
+    line = resources.cache_note(sandbox)
+    assert "CARGO_HOME=/cache/cargo and CARGO_TARGET_DIR=/cache/target/k are set for you" in line
+    assert "Don't set them to anything else, in a command or in the task document" in line
+    prompt = agent._limits(sandbox)
+    assert "8Gi of memory" in prompt and line in prompt  # with the sandbox's limits, both engines' prompts
+
+    sandbox.env = ()
+    assert resources.cache_note(sandbox) == "" and resources.cache_note(LocalTarget(repo="/tmp")) == ""
+
+
+def test_claude_codes_rules_carry_it_too(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from harness.claude_code import ClaudeCodeEngine
+    from harness.config import HarnessConfig
+    from harness.context import HarnessContext
+
+    ctx = HarnessContext(target=LocalTarget(repo=str(tmp_path)), cfg=HarnessConfig(), slug="t", branch="b",
+                         state_key="k")
+    engine = ClaudeCodeEngine(ctx)
+    engine.target = SimpleNamespace(env=(("CARGO_TARGET_DIR", "/cache/target/k"),))
+    monkeypatch.setattr(resources, "note", lambda target: "")
+    assert "CARGO_TARGET_DIR=/cache/target/k is set for you" in engine.rules()
+    assert "Don't set it to anything else" in engine.rules()

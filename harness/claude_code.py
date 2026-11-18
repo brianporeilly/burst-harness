@@ -323,7 +323,7 @@ class ClaudeCodeEngine:
 
     def rules(self) -> str:
         cfg = self.ctx.cfg
-        limits = resources.note(self.target)
+        limits = "\n\n".join(line for line in (resources.note(self.target), resources.cache_note(self.target)) if line)
         return RULES.format(
             branch=self.ctx.branch, remote=cfg.remote, base=cfg.base_branch,
             doc=state.doc_relpath(cfg, self.ctx.slug), cap=cfg.doc_max_bytes, outcome=OUTCOME_PATH,
