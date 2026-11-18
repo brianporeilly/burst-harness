@@ -32,6 +32,7 @@ from . import (
     runner,
     session,
     state,
+    transcript,
 )
 from .agent import OutputLimit, build_agent, call
 from .claude_code import ClaudeCodeEngine
@@ -390,7 +391,7 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
     reattaches a later run to this one's sandbox, which is still there if `kept`. `said` is what the
     agent said its end was about (ctx.said), each text cut to SAID_LIMIT."""
     said = {key: [_cut(v) for v in value] if isinstance(value, list) else _cut(value) for key, value in ctx.said.items()}
-    print("HARNESS_RESULT " + json.dumps({
+    result = {
         "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
         "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
         "model": f"{ctx.cfg.provider} {models.model_name(ctx.cfg)}", "base_url": ctx.cfg.base_url, "agent": ctx.agent or None,
@@ -405,7 +406,13 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
                                  fixups=ctx.fixups, handoffs=ctx.handoffs, checks=ctx.checks,
                                  setup=ctx.setup, review=ctx.review),
         "config": metrics.config_label(ctx.cfg),
-    }))
+    }
+    try:
+        path = transcript.of(ctx).write(ctx, state_name, result)
+    except Exception as err:  # noqa: BLE001 -- a record of the burst; the burst's end is what it is either way
+        print(f"! Could not write the transcript: {type(err).__name__}: {err}", file=sys.stderr)
+        path = None
+    print("HARNESS_RESULT " + json.dumps({**result, "transcript": str(path) if path else None}))
 
 
 def _cut(value: object) -> str:

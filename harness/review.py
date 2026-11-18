@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from . import budget, git, state
+from . import budget, git, state, transcript
 
 # How much of the diff goes into the reviewer's brief; it can run git diff itself for the rest.
 DIFF_CHARS = 30000
@@ -100,6 +100,6 @@ def run(ctx: Any, name: str) -> str:
                   agents={**ctx.cfg.agents, name: {**ctx.cfg.agents[name], "read_only": True}})
     state_dir = cfg.resolve_state_dir(ctx.state_key)
     state_dir.mkdir(parents=True, exist_ok=True)
-    review = delegate_function(ctx.target, cfg, ctx.delegated, str(state_dir), budget.of(ctx))
+    review = delegate_function(ctx.target, cfg, ctx.delegated, str(state_dir), budget.of(ctx), transcript.of(ctx))
     print(f"\nReviewing the change with {name} before the PR.", flush=True)
     return review(name, _brief(ctx))

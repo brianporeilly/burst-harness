@@ -698,10 +698,12 @@ each run and judges nothing, so there is one set of numbers.
    task document once the check passes. Its findings go back to the lead once,
    then into the PR's body; NO FINDINGS lets the first finish through. Either
    engine can lead. A local model reviewing costs nothing.
-8. A run's transcript as data. One JSON per burst holds the messages, the
-   tool calls with how long each took, and the metrics, for comparing two
-   runs of the same task. The benchmark renders `transcript.json` today. A
-   format Harbor reads is worth a look.
+8. A run's transcript as data: built (2026-11-18). One JSON per burst holds
+   every message of the lead and its delegates, the tool and model calls with
+   when each started and how long it took, and the metrics. It is recorded as
+   the burst runs, so it has what the window dropped, and Claude Code's runs
+   too; the benchmark's `transcript.json` was the session snapshot, which has
+   neither. A format Harbor reads is still worth a look.
 9. Comparing harness changes. What stays here: a smoke test that a tiny task
    still finishes with its metrics filled in, using the fake llama server,
    and maybe a replay against a recorded run. Everything that scores or ranks
