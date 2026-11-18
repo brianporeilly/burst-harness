@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, mcp, metrics, repo_rules, resources
+from . import agents, budget, mcp, metrics, repo_rules, resources
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -169,7 +169,8 @@ def _restart_now_and_then(event: AfterToolsEvent) -> None:
     state["harness_tool_cycles"] = cycles = state.get("harness_tool_cycles", 0) + 1
     request = state.setdefault("request_state", {})
     # A tool's stop (a terminal state, finish_report), or a SIGINT's, has cancelled it already: left as it is.
-    if cycles % RESTART_EVERY == 0 and not request.get(STOPPED) and not event.agent.cancel_signal.is_set():
+    if cycles % RESTART_EVERY == 0 and not request.get(STOPPED) and not request.get(budget.STOPPED) \
+            and not event.agent.cancel_signal.is_set():
         request[RESTART] = True
         event.agent.cancel(after_current_tools=True)
 
@@ -242,7 +243,9 @@ def _call(agent: Agent, prompt: Any) -> Any:
     while True:
         try:
             result = agent(prompt)
-            if (result.state or {}).pop(RESTART, False) and result.stop_reason in ("cancelled", "tool_use"):
+            state = result.state or {}
+            if state.pop(RESTART, False) and not state.get(budget.STOPPED) \
+                    and result.stop_reason in ("cancelled", "tool_use"):
                 prompt = None  # the tool results are the last message: the model answers them
                 continue
             return result
@@ -265,9 +268,10 @@ def _call(agent: Agent, prompt: Any) -> Any:
             mark = len(agent.messages) + (prompt is not None)  # the history as the retry starts
 
 
-def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]], state_dir: str) -> Any:
+def delegate_tool(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]], state_dir: str,
+                  limits: budget.Budget | None = None) -> Any:
     """The lead's delegate tool, for cfg.delegate_to's profiles; None when there are none."""
-    delegate = delegate_function(target, cfg, usage, state_dir)
+    delegate = delegate_function(target, cfg, usage, state_dir, limits)
     return tool(delegate, name="delegate", description=delegate_description(cfg)) if delegate else None
 
 
@@ -277,13 +281,14 @@ def delegate_description(cfg: HarnessConfig) -> str:
 
 
 def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]],
-                      state_dir: str) -> Callable[[str, str], str] | None:
+                      state_dir: str, limits: budget.Budget | None = None) -> Callable[[str, str], str] | None:
     """What a delegate call does, for cfg.delegate_to's profiles: delegate(to, task) -> the report.
     None when there are none. A Strands lead has it as a tool; a Claude Code lead over MCP (claude_lead.py).
 
     Each call runs a fresh agent with that profile's model, the same sandbox and
     tools, and the git guardrails, and returns its final reply. Calls run one at
-    a time, as they share one checkout. What each uses is added to `usage`.
+    a time, as they share one checkout. What each uses is added to `usage`. With `limits`, the burst's budget
+    (budget.py), a delegate is stopped once one is reached.
     """
     names = cfg.delegate_to
     if not names:
@@ -307,7 +312,11 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
             before = _files(target) if read_only else None
             try:
                 helper = _helper(target, helper_cfg, state_dir, prompt=prompt, read_only=read_only)
+                if limits is not None:
+                    limits.watch(helper, helper_cfg)
                 text = str(call(helper, task)).strip() or "(it gave no report)"
+                if limits is not None and limits.reason:
+                    text += f"\n[harness] {agent} was stopped at the burst's budget ({limits.reason})."
             except OutputLimit as err:
                 text = f"{agent} stopped: {err}. Nothing it changed was committed."
             except Exception as err:  # noqa: BLE001 -- the lead hears of it and carries on
@@ -316,6 +325,8 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
             finally:
                 _add_usage(usage, agent, helper_cfg, agents.usage_of(helper) if helper else {},
                            metrics.of_agent(helper, model_name(helper_cfg), helper_cfg.provider) if helper else None)
+                if limits is not None and helper is not None:
+                    limits.done(helper)
             if before is not None and (changed := _changed(before, _files(target))):
                 shown = ", ".join(changed[:CHANGED_SHOWN]) + (" and more" if len(changed) > CHANGED_SHOWN else "")
                 warning = (f"\n[harness] {agent} is read-only but changed: {shown}. Nothing was undone: "
@@ -445,7 +456,8 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
 
     doc_rel = f"{cfg.docs_dir}/{ctx.slug}.md"
     rules = repo_rules.prompt(target, cfg, ctx.context_files)
-    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir))
+    limits = budget.of(ctx)
+    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir), limits)
     agent = Agent(
         model=model,
         retry_strategy=retry_strategy(cfg),
@@ -465,4 +477,5 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         interventions=[GitGuardrails(target, cfg)],
         conversation_manager=conversation_manager(cfg),
     )
+    limits.watch(agent, cfg, lead=True)
     return agent, session

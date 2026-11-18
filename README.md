@@ -99,6 +99,28 @@ credentials.
 The orchestrator keeps both with each burst. The Tasks tab shows each burst's
 time, model calls and cost, plus the total across a task's bursts.
 
+**Budgets.** These limits apply to one burst, and 0 means no limit:
+
+- `max_model_calls`: model calls, the delegates' included.
+- `max_cost_usd`: approximate dollars, the delegates' included. A model whose
+  price isn't known counts nothing toward it, and llama.cpp costs nothing.
+- `max_burst_minutes`: wall time.
+
+When a burst reaches one, it **pauses for review**: everything is committed
+and pushed, and the limit it reached becomes the task document's next step
+and appears in `HARNESS_RESULT`'s `said.budget`. Continuing starts the next
+burst's budget from zero. A job stops instead, with the limit as its reason.
+
+On the Strands engine, the limits are checked after each round of tool calls,
+for the lead and for a delegate while it runs. A model call already in
+progress isn't cut short, so a burst can go over a limit by one call. Claude
+Code gets the remaining calls and dollars as its own `--max-turns` and
+`--max-budget-usd`, and has no limit on minutes.
+
+The budgets are driver settings: they go in the config file or in
+`HARNESS_MAX_COST_USD` and the like, never in the repo's `.harness.toml`. An
+orchestrator's bursts inherit them from its environment.
+
 Useful flags: `--draft-pr`, `--no-push`, `--model`, `--effort`, `--base-branch`,
 `--offload-max-tokens`.
 

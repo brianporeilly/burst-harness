@@ -323,6 +323,11 @@ class HarnessConfig:
     cache_ttl: str = "1h"
 
     # --- loop ---
+    # Limits on one burst (budget.py), 0 for none: its model calls and approximate dollars, its delegates'
+    # included, and its minutes. One reached pauses the burst for review.
+    max_model_calls: int = 0
+    max_cost_usd: float = 0.0
+    max_burst_minutes: int = 0
     max_fixup_attempts: int = 3
     require_clean_tree: bool = True
 

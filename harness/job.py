@@ -105,7 +105,7 @@ from urllib.parse import urlencode, urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, containers, credentials, cron, mcp, memory, metrics, models, plans, resources
+from . import agent_sandbox, budget, containers, credentials, cron, mcp, memory, metrics, models, plans, resources
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -685,7 +685,8 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     state_dir = cfg.resolve_state_dir(f"{spec.root}/{spec.name}")
     state_dir.mkdir(parents=True, exist_ok=True)
     sandbox = target.sandbox()
-    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir))
+    limits = budget.of(ctx)
+    delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir), limits)
     agent = Agent(
         model=build_model(cfg),
         retry_strategy=retry_strategy(cfg),
@@ -701,10 +702,11 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
                                   preview_tokens=cfg.offload_preview_tokens)],
         conversation_manager=conversation_manager(cfg),
     )
+    limits.watch(agent, cfg, lead=True)
     try:
         call(agent, spec.prompt)
         for attempt in range(cfg.max_fixup_attempts):
-            if "report" in finished:
+            if "report" in finished or limits.reason:
                 break
             ctx.fixups += 1
             call(agent, NO_FINISH)
@@ -716,6 +718,8 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
     print("\n" + _report(agent, models.model_name(cfg), cfg.provider, ctx.delegated))
     if "report" in finished:
         return finished["report"], ""
+    if limits.reason:
+        return None, f"stopped at the run's budget ({limits.reason})"
     # A model that wrote the file instead of calling the tool still gets its report out.
     if text := _written_report(target):
         return text, ""

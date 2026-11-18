@@ -63,7 +63,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import agents, credentials, git, git_policy, mcp, models, resources, state, terminal
+from . import agents, budget, credentials, git, git_policy, mcp, models, resources, state, terminal
 from .agent_sandbox import label_value
 from .containers import MODEL_CREDENTIALS
 from .context import HarnessContext
@@ -384,7 +384,7 @@ class ClaudeCodeEngine:
         A failed `claude` invocation (not logged in, bad flag, API down) ends the
         run: asking again would fail the same way.
         """
-        if not self._run(prompt, resume=False):
+        if not self._run(prompt, resume=False) or budget.pause(self.ctx):
             return
         for attempt in range(self.ctx.cfg.max_fixup_attempts + 1):
             outcome, error = self._read_outcome()
@@ -395,14 +395,15 @@ class ClaudeCodeEngine:
             if attempt == self.ctx.cfg.max_fixup_attempts:
                 break
             follow_up = BAD_OUTCOME.format(outcome=OUTCOME_PATH, error=error) if error else NO_OUTCOME.format(outcome=OUTCOME_PATH)
-            if not self._run(follow_up, resume=True):
+            if not self._run(follow_up, resume=True) or budget.pause(self.ctx):
                 return
         if git.is_dirty(self.target):
             print(f"\n! No usable outcome. Uncommitted work left as-is:\n{git.dirty_summary(self.target)}", file=sys.stderr)
 
     def _run(self, prompt: str, *, resume: bool) -> bool:
         """One `claude -p` invocation (a session through the SDK, when delegating). False if claude itself failed."""
-        args = ["--output-format", "stream-json", "--verbose", *(["--continue"] if resume else [])]
+        args = ["--output-format", "stream-json", "--verbose", *(["--continue"] if resume else []),
+                *budget.of(self.ctx).claude_args(self.turns, self.cost)]
         if self.delegate is not None:
             from . import claude_lead
             from .agent import delegate_description
@@ -412,7 +413,7 @@ class ClaudeCodeEngine:
             code = claude_lead.run(argv, prompt, self._on_line, self.delegate, delegate_description(self.ctx.cfg))
         else:
             code = self.target.stream_shell(self.command("-p", prompt, *args), self._on_line)
-        if code != 0:
+        if code != 0 and not budget.of(self.ctx).reason:
             print(f"! claude exited with status {code}; not retrying.", file=sys.stderr)
             return False
         return True
@@ -444,6 +445,9 @@ class ClaudeCodeEngine:
             for key, value in (event.get("usage") or {}).items():
                 if isinstance(value, int):
                     self.usage[key] = self.usage.get(key, 0) + value
+            if why := _budget_stop(str(event.get("subtype") or ""), self.ctx.cfg, self.turns, self.cost):
+                limits = budget.of(self.ctx)
+                limits.reason = limits.reason or why
             if event.get("is_error"):
                 print(f"! Claude Code: {event.get('subtype')}: {event.get('result') or ''}".rstrip(), file=sys.stderr)
 
@@ -561,6 +565,15 @@ class ClaudeCodeEngine:
                            "cache_write": usage.get("cache_creation_input_tokens", 0)},
                 "peak_prompt_tokens": None, "cut_off": None, "window_drops": None, "model_retries": None,
                 "lost_server": None, "cost_usd": round(self.cost, 4)}
+
+
+def _budget_stop(subtype: str, cfg: Any, turns: int, cost: float) -> str:
+    """Claude Code stopped at the limit the burst's budget gave it (budget.claude_args): which, or ""."""
+    if subtype == "error_max_turns" and cfg.max_model_calls:
+        return f"max_model_calls: {turns} turns, the limit is {cfg.max_model_calls}"
+    if subtype.startswith("error_max_budget") and cfg.max_cost_usd:
+        return f"max_cost_usd: ${cost:.2f} as Claude Code reports it, the limit is ${cfg.max_cost_usd:.2f}"
+    return ""
 
 
 def _brief(value: Any, limit: int = 120) -> str:
