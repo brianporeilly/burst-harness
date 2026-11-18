@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.43.0 (2026-11-18)
+
+### Features
+
+- **metrics**: A transcript per burst: every message, tool and model call timed, beside the
+  snapshots ([#40](https://github.com/brianporeilly/burst-harness/pull/40),
+  [`b653c5c`](https://github.com/brianporeilly/burst-harness/commit/b653c5c437fe5f23f915ab5ffe37aeadd7123340))
+
+
 ## v0.42.0 (2026-11-18)
 
 ### Features
