@@ -57,6 +57,8 @@ class HarnessContext:
     checks: dict[str, int] = field(default_factory=dict)
     # setup_command before the model (repo_commands.setup): its exit code and seconds.
     setup: dict[str, object] = field(default_factory=dict)
+    # review_with's review before the PR (review.py): who, its findings, and the outcome. Once a burst.
+    review: dict[str, str] | None = None
     # The burst's limits (budget.py), made when first asked for.
     budget: object = None
     # The lead's loop watch (loops.py), made when first asked for.

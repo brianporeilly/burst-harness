@@ -7,7 +7,7 @@ the harness, not the model, commits, pushes, and opens the PR.
 
 from __future__ import annotations
 
-from . import git, repo_commands, state
+from . import git, repo_commands, review, state
 from .context import HarnessContext
 
 # How much of a failed check's output goes back to the model: its end, where test runners sum up.
@@ -64,8 +64,8 @@ def _wrap_up(ctx: HarnessContext, message: str) -> list[str]:
 
 
 def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None = None) -> str:
-    """Check, commit, push, and open a PR. Raises ValueError if the task doc is over its cap, CheckFailed (one)
-    if check_command fails."""
+    """Check, review, commit, push, and open a PR. Raises ValueError if the task doc is over its cap,
+    CheckFailed (one) if check_command fails, ReviewGiven (one) with review_with's findings the first time."""
     cfg = ctx.cfg
     try:
         check(ctx)
@@ -75,6 +75,7 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         # Told to pause and finishing again anyway: the harness pauses it.
         return pause(ctx, summary=f"Stopped trying to open a PR: the repo's check failed {ctx.checks['failed']} "
                                   "times.", next_step=f"Make `{cfg.check_command.strip()}` pass.") + f"\n{failed}"
+    body = review.before_pr(ctx, body)  # review_with: its findings go back once (ReviewGiven), then into the body
     update_doc(ctx, next_step=next_step or "Awaiting PR review.")
     steps = _wrap_up(ctx, title)
     if ctx.push_error:
