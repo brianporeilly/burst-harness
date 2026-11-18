@@ -55,3 +55,5 @@ class HarnessContext:
     handoffs: int = 0
     # The burst's limits (budget.py), made when first asked for.
     budget: object = None
+    # The lead's loop watch (loops.py), made when first asked for.
+    loops: object = None

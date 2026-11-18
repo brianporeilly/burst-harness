@@ -24,6 +24,7 @@ from . import (
     egress,
     git,
     job,
+    loops,
     mcp,
     metrics,
     models,
@@ -119,7 +120,7 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
     result = call(agent, prompt)
     fixups = 0
     while True:
-        if budget.pause(ctx):
+        if budget.pause(ctx) or loops.pause(ctx):
             return result
         if result.stop_reason == "interrupt":
             if not interactive:

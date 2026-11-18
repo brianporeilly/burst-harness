@@ -191,4 +191,5 @@ SHAPING = frozenset({
     "docs_dir", "doc_max_bytes", "skills_dir", "repo_instructions", "repo_instructions_max_bytes",
     "offload_max_result_tokens", "offload_preview_tokens",
     "window_size", "pin_first", "proactive_compression", "cache_ttl", "max_fixup_attempts", "require_clean_tree",
+    "loop_warn", "loop_stop",
 })

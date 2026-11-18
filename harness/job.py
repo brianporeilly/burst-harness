@@ -105,7 +105,7 @@ from urllib.parse import urlencode, urlsplit
 
 from strands.types.tools import ToolContext
 
-from . import agent_sandbox, budget, containers, credentials, cron, mcp, memory, metrics, models, plans, resources
+from . import agent_sandbox, budget, loops, containers, credentials, cron, mcp, memory, metrics, models, plans, resources
 from .claude_code import REMOTE_DIR as REMOTE_ENV_DIR
 from .claude_code import ClaudeCodeEngine
 from .config import HarnessConfig
@@ -703,10 +703,12 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         conversation_manager=conversation_manager(cfg),
     )
     limits.watch(agent, cfg, lead=True)
+    looping = loops.of(ctx)
+    looping.watch(agent)
     try:
         call(agent, spec.prompt)
         for attempt in range(cfg.max_fixup_attempts):
-            if "report" in finished or limits.reason:
+            if "report" in finished or limits.reason or looping.reason:
                 break
             ctx.fixups += 1
             call(agent, NO_FINISH)
@@ -720,6 +722,8 @@ def _strands(ctx: HarnessContext, spec: JobSpec, *, has_scripts: bool) -> tuple[
         return finished["report"], ""
     if limits.reason:
         return None, f"stopped at the run's budget ({limits.reason})"
+    if looping.reason:
+        return None, f"stopped in a loop: {looping.reason}"
     # A model that wrote the file instead of calling the tool still gets its report out.
     if text := _written_report(target):
         return text, ""

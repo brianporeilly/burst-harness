@@ -26,7 +26,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, budget, mcp, metrics, repo_rules, resources
+from . import agents, budget, loops, mcp, metrics, repo_rules, resources
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -170,6 +170,7 @@ def _restart_now_and_then(event: AfterToolsEvent) -> None:
     request = state.setdefault("request_state", {})
     # A tool's stop (a terminal state, finish_report), or a SIGINT's, has cancelled it already: left as it is.
     if cycles % RESTART_EVERY == 0 and not request.get(STOPPED) and not request.get(budget.STOPPED) \
+            and not request.get(loops.STOPPED) \
             and not event.agent.cancel_signal.is_set():
         request[RESTART] = True
         event.agent.cancel(after_current_tools=True)
@@ -244,7 +245,7 @@ def _call(agent: Agent, prompt: Any) -> Any:
         try:
             result = agent(prompt)
             state = result.state or {}
-            if state.pop(RESTART, False) and not state.get(budget.STOPPED) \
+            if state.pop(RESTART, False) and not state.get(budget.STOPPED) and not state.get(loops.STOPPED) \
                     and result.stop_reason in ("cancelled", "tool_use"):
                 prompt = None  # the tool results are the last message: the model answers them
                 continue
@@ -314,9 +315,13 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
                 helper = _helper(target, helper_cfg, state_dir, prompt=prompt, read_only=read_only)
                 if limits is not None:
                     limits.watch(helper, helper_cfg)
+                looping = loops.Loops(helper_cfg, delegate=True)
+                looping.watch(helper)
                 text = str(call(helper, task)).strip() or "(it gave no report)"
                 if limits is not None and limits.reason:
                     text += f"\n[harness] {agent} was stopped at the burst's budget ({limits.reason})."
+                elif looping.reason:
+                    text += f"\n[harness] {agent} was stopped in a loop: {looping.reason}."
             except OutputLimit as err:
                 text = f"{agent} stopped: {err}. Nothing it changed was committed."
             except Exception as err:  # noqa: BLE001 -- the lead hears of it and carries on
@@ -478,4 +483,5 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         conversation_manager=conversation_manager(cfg),
     )
     limits.watch(agent, cfg, lead=True)
+    loops.of(ctx).watch(agent)
     return agent, session
