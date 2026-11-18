@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.38.0 (2026-11-18)
+
+### Features
+
+- **metrics**: Claude Code's own usage: per model, the plan's utilization, the largest prompt
+  ([#35](https://github.com/brianporeilly/burst-harness/pull/35),
+  [`b96e29c`](https://github.com/brianporeilly/burst-harness/commit/b96e29ce55dbb48b9fa8a7778fc1fa6d22eed270))
+
+
 ## v0.37.0 (2026-11-18)
 
 ### Features
