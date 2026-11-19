@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.43.3 (2026-11-19)
+
+### Bug Fixes
+
+- **harness**: Nothing stranded by a long check, review or sandbox deadline; Claude Code ended once
+  done ([#43](https://github.com/brianporeilly/burst-harness/pull/43),
+  [`da22c66`](https://github.com/brianporeilly/burst-harness/commit/da22c6681e0cb39f5f4c60d5815f3669b70d66ba))
+
+
 ## v0.43.2 (2026-11-18)
 
 ### Bug Fixes
