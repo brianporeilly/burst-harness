@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.45.1 (2026-11-19)
+
+### Bug Fixes
+
+- **models**: A llama.cpp client for each event loop, so a kept-alive connection can't crash the
+  next call ([#47](https://github.com/brianporeilly/burst-harness/pull/47),
+  [`4033cc4`](https://github.com/brianporeilly/burst-harness/commit/4033cc4c7fbebd9bca571ffa40a02417bb42accb))
+
+
 ## v0.45.0 (2026-11-19)
 
 ### Features
