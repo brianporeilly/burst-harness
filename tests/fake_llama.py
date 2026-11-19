@@ -41,10 +41,14 @@ def _fill(value: Any, last_tool: str) -> Any:
 
 
 def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
-                 side: str | dict[str, Any] = "Side reply") -> type[BaseHTTPRequestHandler]:
+                 side: str | dict[str, Any] = "Side reply", keep_alive: bool = False) -> type[BaseHTTPRequestHandler]:
     skipped = [0]  # cut-off steps already served, which the turn count does not see
 
     class Handler(BaseHTTPRequestHandler):
+        # keep_alive: HTTP/1.1, each reply sized, the connection left open for the next request, as llama-server
+        # does. Otherwise HTTP/1.0, closed after each reply.
+        protocol_version = "HTTP/1.1" if keep_alive else "HTTP/1.0"
+
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(body)
@@ -61,12 +65,10 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
                 step = side if isinstance(side, dict) else {"text": side}
             if "cut" in step and body.get("tools"):
                 skipped[0] += 1
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.end_headers()
+            out: list[bytes] = []
 
             def send(event: dict[str, Any]) -> None:
-                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+                out.append(f"data: {json.dumps(event)}\n\n".encode())
 
             if "tool" in step:
                 send({"choices": [{"delta": {"tool_calls": [{
@@ -81,7 +83,14 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
                 send({"choices": [{"delta": {"content": _fill(step.get("text", ""), last_tool)}}]})
                 send({"choices": [{"delta": {}, "finish_reason": "stop"}]})
             send({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
-            self.wfile.write(b"data: [DONE]\n\n")
+            out.append(b"data: [DONE]\n\n")
+            reply = b"".join(out)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            if keep_alive:
+                self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
 
         def log_message(self, *args: Any) -> None:
             pass
@@ -90,10 +99,10 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
 
 
 def serve(script: list[dict[str, Any]], port: int = 0, host: str = "127.0.0.1",
-          side: str | dict[str, Any] = "Side reply") -> tuple[ThreadingHTTPServer, list]:
+          side: str | dict[str, Any] = "Side reply", keep_alive: bool = False) -> tuple[ThreadingHTTPServer, list]:
     """Start it in a thread. Returns the server and the list each request body is appended to."""
     requests: list[dict[str, Any]] = []
-    server = ThreadingHTTPServer((host, port), make_handler(script, requests, side))
+    server = ThreadingHTTPServer((host, port), make_handler(script, requests, side, keep_alive))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, requests
 
