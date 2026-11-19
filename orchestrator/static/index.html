@@ -220,6 +220,15 @@
     <p class="muted" id="claude-attribution-source"></p>
     <div class="row"><button id="claude-attribution-reset">Use the configuration's</button>
       <span class="error" id="claude-attribution-error"></span></div>
+    <label>A review before each PR, by <select id="review-with"></select></label>
+    <p class="muted">A profile reads the change, read-only, once the repo's check passes; its findings go back to
+      the task's agent once, then into the PR's body.</p>
+    <label>When the local model's server can't be reached, a burst runs on <select id="fallback-to"></select></label>
+    <label id="fallback-model-row">Claude Code's model <input id="fallback-model" placeholder="its own default"></label>
+    <p class="muted" id="review-fallback-source"></p>
+    <div class="row"><button id="review-fallback-save">Save</button>
+      <button id="review-fallback-reset">Use the configuration's</button>
+      <span class="error" id="review-fallback-error"></span></div>
   </section>
   <section class="panel">
     <h2>MCP servers</h2>
@@ -1612,7 +1621,54 @@ async function refreshTaskSettings() {
     ? `Set here${found.updated ? `, ${when(found.updated)}${found.updated_by ? ` by ${found.updated_by}` : ""}` : ""}.`
     : "The configuration's (claude_attribution).";
   document.getElementById("claude-attribution-reset").disabled = found.claude_attribution_source !== "settings";
+  showReviewFallback(found);
 }
+
+// The review and the fallback: "" is off, CONFIGURATION the configuration's (null to the API).
+const CONFIGURATION = "__configuration__";
+function settingOptions(select, chosen, source, configured, options) {
+  const off = (value) => value === "" ? "off" : value === "claude-code" ? "Claude Code" : value;
+  select.replaceChildren(
+    el("option", { value: CONFIGURATION }, `the configuration's (${off(configured)})`),
+    ...options.map(([value, label]) => el("option", { value }, label)));
+  select.value = source === "settings" ? chosen : CONFIGURATION;
+}
+function showReviewFallback(found) {
+  const profiles = found.profiles.map((name) => [name, name]);
+  settingOptions(document.getElementById("review-with"), found.review_with, found.review_with_source,
+    found.configuration.review_with, [["", "nobody: no review"], ...profiles]);
+  settingOptions(document.getElementById("fallback-to"), found.fallback_to, found.fallback_to_source,
+    found.configuration.fallback_to, [["", "nothing: the burst fails"], ["claude-code", "Claude Code"], ...profiles]);
+  document.getElementById("fallback-model").value = found.fallback_model_source === "settings" ? found.fallback_model : "";
+  fallbackModelRow();
+  const set = ["review_with", "fallback_to", "fallback_model"].filter((key) => found[`${key}_source`] === "settings");
+  document.getElementById("review-fallback-source").textContent = set.length
+    ? `Set here: ${set.join(", ")}${found.updated ? `, ${when(found.updated)}${found.updated_by ? ` by ${found.updated_by}` : ""}` : ""}.`
+    : "The configuration's (review_with, fallback_to).";
+  document.getElementById("review-fallback-reset").disabled = !set.length;
+}
+function fallbackModelRow() {
+  const to = document.getElementById("fallback-to").value;
+  document.getElementById("fallback-model-row").classList.toggle("hidden", to !== "claude-code");
+}
+document.getElementById("fallback-to").onchange = fallbackModelRow;
+
+async function saveReviewFallback(changes) {
+  const error = document.getElementById("review-fallback-error");
+  error.textContent = "";
+  try { await api("/api/settings/tasks", { method: "PUT", body: JSON.stringify(changes) }); }
+  catch (err) { error.textContent = err.message; }
+  refreshTaskSettings();
+}
+document.getElementById("review-fallback-save").onclick = () => {
+  const value = (id) => { const v = document.getElementById(id).value; return v === CONFIGURATION ? null : v; };
+  const to = value("fallback-to");
+  const model = document.getElementById("fallback-model").value.trim();
+  saveReviewFallback({ review_with: value("review-with"), fallback_to: to,
+    fallback_model: to === "claude-code" && model ? model : null });
+};
+document.getElementById("review-fallback-reset").onclick = () =>
+  saveReviewFallback({ review_with: null, fallback_to: null, fallback_model: null });
 
 async function saveAttribution(value) {
   const error = document.getElementById("claude-attribution-error");

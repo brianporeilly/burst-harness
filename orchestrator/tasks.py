@@ -715,6 +715,8 @@ class TaskRunner:
             cfg = replace(cfg, delegate_to=tuple(record["delegate_to"]))
         if record.get("mcp") is not None:
             cfg = replace(cfg, mcp=tuple(record["mcp"]))
+        if self.settings is not None:  # a review or a fallback set in Settings: the profiles it calls take turns too
+            cfg = replace(cfg, **self.settings.values())
         return cfg
 
     def _chosen(self, record: dict[str, Any]) -> dict[str, Any]:
