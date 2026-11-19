@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.44.0 (2026-11-19)
+
+### Bug Fixes
+
+- **gateway**: Certificates with key identifiers, which strict verification requires
+  ([#44](https://github.com/brianporeilly/burst-harness/pull/44),
+  [`b9ad9fe`](https://github.com/brianporeilly/burst-harness/commit/b9ad9fef4fe337d7ab16c7b3862e38fc0420811a))
+
+### Features
+
+- **harness**: Fall back to Claude Code, or a profile, when the local model's server is down
+  ([#45](https://github.com/brianporeilly/burst-harness/pull/45),
+  [`a94cbc4`](https://github.com/brianporeilly/burst-harness/commit/a94cbc4bd7f410aed9702e5f7c5cb2683599731f))
+
+
 ## v0.43.3 (2026-11-19)
 
 ### Bug Fixes
