@@ -976,7 +976,8 @@ async function renderTask() {
     el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
     el("td", { class: "muted" }, (rounds.length > 1 && b.branch ? `round ${rounds.findIndex((r) => r.branch === b.branch) + 1}: ` : "")
       + (b.message || (b.by_merge ? "next round, started when the PR was merged" : i ? (asking ? "asked again" : "carry on") : "the prompt"))),
-    el("td", { class: "muted" }, spentLine([b]))));
+    el("td", { class: "muted" }, spentLine([b]) + (b.fallback
+      ? `${spentLine([b]) ? " · " : ""}on ${b.fallback.to}: ${b.fallback.from} couldn't be reached` : ""))));
   // A question's conversation: what each burst asked, and its answer.
   const answers = asking ? t.bursts.filter((b) => b.ended).map((b, i) => el("div", {},
     el("p", { class: "muted" }, b.message ? `Follow-up: ${b.message}` : i ? "Asked again:" : "The prompt:"),

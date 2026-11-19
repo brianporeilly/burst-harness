@@ -281,6 +281,25 @@ def llamacpp_url(cfg: HarnessConfig) -> str:
 
 
 
+def reachable(url: str, *, tries: int = 2, timeout: float = 5.0, wait: float = 3.0) -> bool:
+    """Whether a model server answers at all: any HTTP reply to /health counts (a 503 while it loads a model
+    is a server that is there). Tried `tries` times, so a blip is not taken for a server that is down."""
+    import time
+    import urllib.error
+    import urllib.request
+
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=timeout):
+                return True
+        except urllib.error.HTTPError:
+            return True
+        except (OSError, ValueError):
+            if attempt + 1 < tries:
+                time.sleep(wait)
+    return False
+
+
 def _llamacpp(cfg: HarnessConfig) -> "Model":
     """A self-hosted llama.cpp server."""
     LlamaCppModel = _require(*REQUIRES["llamacpp"])

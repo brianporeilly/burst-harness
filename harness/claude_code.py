@@ -358,7 +358,8 @@ class ClaudeCodeEngine:
         yours = shlex.split(cfg.claude_args)
         # model_id, unless claude_args picks one: without it Claude Code uses
         # its own default, whatever the harness's settings say.
-        model = [] if any(arg == "--model" or arg.startswith("--model=") for arg in yours) else ["--model", cfg.model_id]
+        model = [] if not cfg.model_id or any(arg == "--model" or arg.startswith("--model=") for arg in yours) \
+            else ["--model", cfg.model_id]
         # The MCP servers you configured, with their tools allowed: you chose them, and
         # nobody is there to approve each call. On the command line without keys, or from
         # the file that has them (prepare()).

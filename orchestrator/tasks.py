@@ -795,6 +795,7 @@ class TaskRunner:
                 state = "cancelled" if record.get("cancelling") else _state(code, result)
                 record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"),
                                             metrics=result.get("metrics"), config=result.get("config"),
+                                            fallback=result.get("fallback"),
                                             egress=_sandbox_line(self._output(slug), record["bursts"][-1]))
                 if result.get("agent"):  # routed to a profile (harness/agents.py): that is what works on it
                     provider, _, model = str(result.get("model") or "").partition(" ")

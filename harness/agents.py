@@ -111,7 +111,8 @@ def check(cfg: HarnessConfig) -> None:
         as_profile(cfg, name)  # each setting the right type
     uses = [("agent", (cfg.agent,) if cfg.agent else ()), ("delegate_to", cfg.delegate_to),
             ("router", (cfg.router,) if cfg.router else ()), ("route_to", cfg.route_to),
-            ("review_with", (cfg.review_with,) if cfg.review_with else ())]
+            ("review_with", (cfg.review_with,) if cfg.review_with else ()),
+            ("fallback_to", (cfg.fallback_to,) if cfg.fallback_to not in ("", "claude-code") else ())]
     uses += [(f"[agents.{name}] delegate_to", tuple(profile.get("delegate_to") or ()))
              for name, profile in cfg.agents.items()]
     for setting, names in uses:
@@ -131,6 +132,7 @@ def in_use(cfg: HarnessConfig) -> list[str]:
     for name in leads:
         used += tuple(cfg.agents[name].get("delegate_to") or ())
     used += (cfg.review_with,) if cfg.review_with else ()
+    used += (cfg.fallback_to,) if cfg.fallback_to not in ("", "claude-code") else ()
     return list(dict.fromkeys(used))
 
 

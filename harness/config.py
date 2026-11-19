@@ -162,6 +162,12 @@ class HarnessConfig:
     # strands: the harness's own Strands agent, driven from outside the target.
     # claude-code: Claude Code running inside the target, headless or in tmux.
     engine: str = "strands"
+    # When a burst's lead is on llama.cpp and its server can't be reached as the burst starts (cli._fall_back):
+    # "claude-code" runs the burst on Claude Code instead (its credentials, a subscription's token or a key, as for
+    # any Claude Code run), with fallback_model ("" for Claude Code's own default); any other value names a
+    # profile ([agents.NAME]) to lead it. "" (the default): no fallback, the burst finds out for itself.
+    fallback_to: str = ""
+    fallback_model: str = ""
 
     # --- where work happens ---
     target: str = "local"  # local | docker | podman | kubectl | agent-sandbox | ssh (a runner's)

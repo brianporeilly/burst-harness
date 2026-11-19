@@ -402,6 +402,7 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
                       for name, used in ctx.delegated.items()} or None,
         "said": said or None,
         "context_files": ctx.context_files or None,
+        "fallback": ctx.fallback,
         "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - ctx.started,
                                  fixups=ctx.fixups, handoffs=ctx.handoffs, checks=ctx.checks,
                                  setup=ctx.setup, review=ctx.review),
@@ -452,9 +453,34 @@ def _session(args: argparse.Namespace, body: Callable[[HarnessContext], str | No
     return _finish(report, ctx)
 
 
+def _fall_back(ctx: HarnessContext) -> None:
+    """fallback_to: a lead on llama.cpp whose server can't be reached as the burst starts is replaced, for this
+    burst, by Claude Code or the profile it names. The task's next burst tries its own model again."""
+    cfg = ctx.cfg
+    if not cfg.fallback_to or cfg.engine != "strands" or cfg.provider != "llamacpp":
+        return
+    url = models.llamacpp_url(cfg)
+    if models.reachable(url):
+        return
+    if cfg.fallback_to == "claude-code":
+        from .claude_code import BYPASS
+
+        # In a sandbox nobody is there to approve a command, as for the orchestrator's Claude Code tasks; on this
+        # machine, the mode stays as set.
+        mode = cfg.claude_permission_mode if isinstance(ctx.target, LocalTarget) else BYPASS
+        ctx.cfg = replace(cfg, engine="claude-code", provider="anthropic", base_url="", model_id=cfg.fallback_model,
+                          claude_permission_mode=mode)
+        ctx.agent = ""
+    else:
+        ctx.cfg, ctx.agent = agents.as_profile(cfg, cfg.fallback_to), cfg.fallback_to
+    ctx.fallback = {"from": url, "to": cfg.fallback_to}
+    print(f"! The model server at {url} can't be reached: this burst falls back to {cfg.fallback_to}.", flush=True)
+
+
 def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
     """Run one headless burst with the configured engine. Returns the usage report."""
     agents.lead_for(ctx, None if resume else prompt)
+    _fall_back(ctx)
     if note := repo_commands.setup(ctx):
         prompt = f"{prompt}\n\n{note}"
     if ctx.cfg.engine == "claude-code":
