@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -176,6 +177,9 @@ class AgentSandboxTarget(KubectlTarget):
     # The shared gateway it is registered with, and where its events are saved on release.
     gateway: Gateway | None = None
     events: str = ""
+    # When the controller deletes it (time.time()), its claim's lifecycle.shutdownTime; 0 when not known. The
+    # burst's budget (budget.py) pauses before it, so the work is committed while the sandbox is still there.
+    deadline: float = 0.0
 
     def describe(self) -> str:
         egress = f" (egress via {self.gateway.url})" if self.gateway else ""
@@ -227,6 +231,7 @@ def acquire(
         print(f"{cfg.claim_name} is gone (deleted at its deadline, or released): claiming a fresh sandbox. "
               "Anything it held that was not pushed is lost.")
         owned = True
+    claimed_at = time.time()  # the deadline counts from about now: a little early is the safe side
     if owned:
         if not cfg.pool:
             raise AgentSandboxError("target=agent-sandbox needs --pool or --claim.")
@@ -239,6 +244,7 @@ def acquire(
     try:
         pod = wait_ready(cfg, claim)
         if not owned:
+            claimed_at = time.time()
             ttl = renew_claim(cfg, claim)
         target = AgentSandboxTarget(
             repo=repo,
@@ -249,6 +255,7 @@ def acquire(
             kubectl=cfg.kubectl,
             claim=claim,
             owned=owned,
+            deadline=claimed_at + ttl,
         )
         if gateway is not None:
             from .containers import events_path  # containers imports this module

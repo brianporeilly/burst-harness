@@ -283,7 +283,8 @@ def delegate_description(cfg: HarnessConfig) -> str:
 
 def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, dict[str, Any]],
                       state_dir: str, limits: budget.Budget | None = None,
-                      record: transcript.Transcript | None = None) -> Callable[[str, str], str] | None:
+                      record: transcript.Transcript | None = None,
+                      watch: Callable[[Agent], None] | None = None) -> Callable[[str, str], str] | None:
     """What a delegate call does, for cfg.delegate_to's profiles: delegate(to, task) -> the report.
     None when there are none. A Strands lead has it as a tool; a Claude Code lead over MCP (claude_lead.py).
 
@@ -291,7 +292,7 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
     tools, and the git guardrails, and returns its final reply. Calls run one at
     a time, as they share one checkout. What each uses is added to `usage`. With `limits`, the burst's budget
     (budget.py), a delegate is stopped once one is reached. With `record`, the burst's transcript, each is
-    recorded in it.
+    recorded in it. `watch`, when given, is called with each delegate's agent before it starts.
     """
     names = cfg.delegate_to
     if not names:
@@ -321,6 +322,8 @@ def delegate_function(target: ExecTarget, cfg: HarnessConfig, usage: dict[str, d
                 looping.watch(helper)
                 if record is not None:
                     record.watch(helper, agent, task)
+                if watch is not None:
+                    watch(helper)
                 text = str(call(helper, task)).strip() or "(it gave no report)"
                 if limits is not None and limits.reason:
                     text += f"\n[harness] {agent} was stopped at the burst's budget ({limits.reason})."

@@ -142,6 +142,11 @@ content blocks, `claude-code` for the Anthropic API's. The newest
   price isn't known counts nothing toward it, and llama.cpp costs nothing.
 - `max_burst_minutes`: wall time.
 
+A sandbox with a deadline (a cluster sandbox, deleted at `claim_ttl`, 4 hours
+by default) also pauses the burst `deadline_margin_minutes` (default 15)
+before it, whatever the limits above. That leaves time to commit and push
+while the sandbox still exists.
+
 When a burst reaches one, it **pauses for review**: everything is committed
 and pushed, and the limit it reached becomes the task document's next step
 and appears in `HARNESS_RESULT`'s `said.budget`. Continuing starts the next
@@ -151,7 +156,10 @@ On the Strands engine, the limits are checked after each round of tool calls,
 for the lead and for a delegate while it runs. A model call already in
 progress isn't cut short, so a burst can go over a limit by one call. Claude
 Code gets the remaining calls and dollars as its own `--max-turns` and
-`--max-budget-usd`, and has no limit on minutes.
+`--max-budget-usd`. For minutes and the deadline, a timer ends `claude` in the
+sandbox, and the burst pauses. Separately, once Claude Code has recorded its
+outcome and finished its turn, the harness ends it. Otherwise a background
+job, or a wake-up it scheduled, could keep the burst waiting.
 
 The budgets are driver settings: they go in the config file or in
 `HARNESS_MAX_COST_USD` and the like, never in the repo's `.harness.toml`. An
@@ -183,8 +191,9 @@ the Strands engine; Claude Code runs its own loop.
 **A check before a PR.** `check_command` names a command that must pass
 before a PR is opened, such as the repo's tests (`uv run pytest -q`). It can
 go in the repo's `.harness.toml`. The lead is told about it up front so it
-can run it first. On either engine, when the model finishes, the harness runs
-the command in the repo before anything is committed or pushed:
+can run it first. On either engine, when the model finishes, the harness first
+commits and pushes the work as a `wip` commit, so a long check or review
+strands nothing. Then it runs the command in the repo:
 
 - **If it passes**, the PR is opened as usual.
 - **If it fails**, no PR is opened. The model gets the end of the output (up to
@@ -203,10 +212,16 @@ repo and run its tests.
   body. The next finish opens the PR, with the review in its body. A burst
   is reviewed only once.
 - **If it replies NO FINDINGS**, the first finish goes through.
-- **If the reviewer fails** (its model can't be reached, or the budget runs
-  out), nothing is held up, and the PR body says so.
+- **If the reviewer fails** (its model can't be reached), or is stopped with
+  nothing to say, nothing is held up, and the PR body says so.
 
-The review counts toward the burst's budget and appears in `delegated`.
+The review has limits of its own: `review_max_minutes` (default 20) and
+`review_max_calls` (default 30), and the sandbox's deadline too. Its brief
+says the check has already passed. It also tells the reviewer not to build
+the project, run long commands or write scratch programs, and to read the
+diff and the code around it instead. Near a limit, it's told to report what
+it has. At the limit it's stopped, and whatever findings it gave still go
+back to the lead. Its usage appears in `delegated`.
 `metrics.review` records who reviewed and what came of it. It works with
 either engine as the lead. It's set in your config or the orchestrator's, not
 the repo's, because it decides where requests go. A local model costs nothing

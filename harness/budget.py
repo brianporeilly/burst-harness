@@ -4,6 +4,9 @@
   max_cost_usd        its approximate cost (metrics.cost), its delegates' included. A model whose price is not
                       known counts nothing toward it; a local llama.cpp model costs nothing
   max_burst_minutes   its wall time, from when the run started
+  the sandbox's deadline   when the target is deleted whatever happens (an agent-sandbox claim's shutdownTime):
+                      always, deadline_margin_minutes before it, so the pause commits and pushes the work while
+                      the sandbox is still there
 
 0, the default, is no limit. Each is per burst: the next one (a Continue) starts again from nothing, so a task
 that pauses at its budget carries on when someone decides it should. They are the driver's settings (config file,
@@ -17,13 +20,15 @@ with that as its reason. A model call already under way is not cut short, so a l
 call's worth.
 
 Claude Code is given what is left of max_model_calls and max_cost_usd as its own --max-turns and
---max-budget-usd, and the burst pauses when it stops at one. It has no limit on minutes here.
+--max-budget-usd, and the burst pauses when it stops at one. Minutes and the deadline it is held to by a timer
+(claude_code.py): when it fires, claude is ended in the sandbox and the burst pauses.
 """
 
 from __future__ import annotations
 
 import time
 import weakref
+from datetime import UTC, datetime
 from typing import Any
 
 from . import metrics
@@ -41,7 +46,18 @@ class Budget:
 
     @property
     def limited(self) -> bool:
-        return bool(self.cfg.max_model_calls or self.cfg.max_cost_usd or self.cfg.max_burst_minutes)
+        return bool(self.cfg.max_model_calls or self.cfg.max_cost_usd or self.cfg.max_burst_minutes
+                    or self.stop_at())
+
+    def stop_at(self) -> float:
+        """When the burst must stop by (time.time()), from max_burst_minutes and the sandbox's deadline; 0 for
+        no such time."""
+        times = []
+        if self.cfg.max_burst_minutes:
+            times.append(self.ctx.started + self.cfg.max_burst_minutes * 60)
+        if deadline := getattr(getattr(self.ctx, "target", None), "deadline", 0) or 0:
+            times.append(deadline - self.cfg.deadline_margin_minutes * 60)
+        return min(times) if times else 0.0
 
     def spent(self) -> tuple[int, float]:
         """Model calls and dollars so far: the lead's, the delegates' that ran, and the one running."""
@@ -65,6 +81,12 @@ class Budget:
         minutes = (time.time() - self.ctx.started) / 60
         if cfg.max_burst_minutes and minutes >= cfg.max_burst_minutes:
             self.reason = f"max_burst_minutes: {minutes:.0f} minutes, the limit is {cfg.max_burst_minutes}"
+            return self.reason
+        deadline = getattr(getattr(self.ctx, "target", None), "deadline", 0) or 0
+        if deadline and time.time() >= deadline - cfg.deadline_margin_minutes * 60:
+            when = datetime.fromtimestamp(deadline, UTC).strftime("%H:%M UTC")
+            self.reason = (f"the sandbox's deadline: it is deleted at {when}, and the burst stops "
+                           f"{cfg.deadline_margin_minutes} minutes before")
             return self.reason
         calls, dollars = self.spent()
         if cfg.max_model_calls and calls >= cfg.max_model_calls:

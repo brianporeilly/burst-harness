@@ -328,6 +328,9 @@ class HarnessConfig:
     max_model_calls: int = 0
     max_cost_usd: float = 0.0
     max_burst_minutes: int = 0
+    # A sandbox with a deadline (an agent-sandbox claim's) pauses the burst this long before it, whatever the
+    # limits above: long enough to commit and push.
+    deadline_margin_minutes: int = 15
     # The same tool call failing the same way (loops.py): told to change approach at loop_warn times, stopped
     # (a burst paused for review) at loop_stop. 0 turns either off.
     loop_warn: int = 3
@@ -350,6 +353,9 @@ class HarnessConfig:
     # A profile ([agents.NAME]) that reviews the change, read-only, before a PR opens (review.py). Its findings go
     # back to the lead once; the PR's body carries the review. Not a repo's to set: it says where requests go.
     review_with: str = ""
+    # The review's own limits (review.py): told to report when it is nearly at one, stopped at it.
+    review_max_minutes: int = 20
+    review_max_calls: int = 30
 
     @classmethod
     def load(

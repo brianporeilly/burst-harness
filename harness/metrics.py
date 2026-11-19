@@ -200,6 +200,6 @@ SHAPING = frozenset({
     "offload_max_result_tokens", "offload_preview_tokens",
     "window_size", "pin_first", "proactive_compression", "cache_ttl", "max_fixup_attempts", "require_clean_tree",
     "check_command", "check_timeout", "setup_command", "setup_timeout",
-    "review_with",
+    "review_with", "review_max_minutes", "review_max_calls",
     "loop_warn", "loop_stop",
 })
