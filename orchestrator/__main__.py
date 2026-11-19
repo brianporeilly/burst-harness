@@ -162,7 +162,7 @@ def main() -> None:
         parser.error(str(err))
     profiles = ProfileStore(state / "profiles.json", base)
     mcp_servers = McpServerStore(state / "mcp.json", base)
-    task_settings = TaskSettings(state / "task-settings.json", base)
+    task_settings = TaskSettings(state / "task-settings.json", base, profiles.profiles)
     try:  # before jobs and tasks: it sets HARNESS_RUNNERS, which what they run reads
         runners = RunnerStore(state / "runners.json", base)
     except RunnersError as err:

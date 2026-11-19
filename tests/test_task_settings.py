@@ -83,3 +83,57 @@ def test_without_the_store_the_api_says_settings_are_off(tmp_path):
     browser = TestClient(create_app(FakeBackend()), base_url="http://127.0.0.1")
     refused = browser.get("/api/settings/tasks")
     assert refused.status_code == 400 and "not on" in refused.json()["error"]
+
+
+def _with_profiles(tmp_path, review_with=""):
+    base = replace(HarnessConfig(), review_with=review_with,
+                   agents={"reviewer": {"provider": "llamacpp", "base_url": "http://typhon:8080", "use_for": "x"}})
+    extra = {"claude": {"provider": "anthropic", "use_for": "anything"}}  # one set in Settings' profiles
+    return TaskSettings(tmp_path / "orchestrator" / "task-settings.json", base,
+                        lambda: {**base.agents, **extra})
+
+
+def test_a_review_and_a_fallback_set_here_over_the_configurations(tmp_path):
+    store = _with_profiles(tmp_path, review_with="reviewer")
+    listed = store.listing()
+    assert (listed["review_with"], listed["review_with_source"]) == ("reviewer", "configuration")
+    assert listed["profiles"] == ["claude", "reviewer"] and listed["fallback_to"] == ""
+
+    store.set({"review_with": "", "fallback_to": "claude-code", "fallback_model": "claude-sonnet-5-5"}, user="me")
+    # Off here, over the configuration's reviewer: "" is given, not left out.
+    assert store.environment() == {"HARNESS_REVIEW_WITH": "", "HARNESS_FALLBACK_TO": "claude-code",
+                                   "HARNESS_FALLBACK_MODEL": "claude-sonnet-5-5"}
+    store.set({"review_with": "claude", "fallback_to": None})
+    assert store.values() == {"review_with": "claude", "fallback_model": "claude-sonnet-5-5"}
+
+    for bad, says in (({"review_with": "nobody"}, "names no profile"), ({"fallback_to": "gpt"}, "claude-code"),
+                      ({"fallback_model": "two words"}, "model's id"), ({"review_with": True}, "text"),
+                      ({"colour": "red"}, "Not a task setting"), ({}, "Give one or more")):
+        with pytest.raises(TaskSettingsError, match=says):
+            store.set(bad)
+    assert store.values()["review_with"] == "claude"  # a refused change leaves the rest as they were
+    with pytest.raises(TaskSettingsError):
+        store.set({"review_with": "reviewer", "fallback_to": "gpt"})  # all or none
+    assert store.values()["review_with"] == "claude"
+
+
+def test_a_tasks_burst_is_given_them_and_its_config_has_them(tmp_path, harness):  # noqa: F811
+    runner = _runner(tmp_path)
+    runner.settings = store = _with_profiles(tmp_path)
+    store.set({"review_with": "reviewer", "fallback_to": "claude-code"})
+    runner.create({"repo": "me/proj", "prompt": "x", "slug": "t", "engine": "claude-code"})
+    env = harness.started[0][1].env
+    assert env["HARNESS_REVIEW_WITH"] == "reviewer" and env["HARNESS_FALLBACK_TO"] == "claude-code"
+    cfg = runner._config(runner._read("t"))  # the reviewer's server takes turns as the task runs
+    assert cfg.review_with == "reviewer" and cfg.fallback_to == "claude-code"
+
+
+def test_the_api_sets_and_says_them(tmp_path):
+    store = _with_profiles(tmp_path)
+    browser = TestClient(create_app(FakeBackend(), task_settings=store), base_url="http://127.0.0.1")
+    said = browser.put("/api/settings/tasks", headers=CHANGE,
+                       json={"review_with": "reviewer", "fallback_to": "claude-code", "fallback_model": None}).json()
+    assert said["message"] == ("The reviewer profile reviews each change before its PR; a burst falls back to Claude Code when "
+                               "the local model is down from now on.")
+    refused = browser.put("/api/settings/tasks", headers=CHANGE, json={"fallback_to": "gpt"})
+    assert refused.status_code == 400 and "fallback_to" in refused.json()["error"]

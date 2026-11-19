@@ -422,13 +422,26 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
     @app.put("/api/settings/tasks")
     async def set_task_settings(request: Request) -> dict[str, str]:
         raw = await body(request)
-        if "claude_attribution" not in raw:
-            raise TaskSettingsError("Give claude_attribution: true, false, or null for the configuration's.")
-        task_settings_store().set_attribution(raw["claude_attribution"], user=request.state.user)
+        task_settings_store().set(raw, user=request.state.user)
         now = task_settings_store().listing()
-        return {"message": "Claude Code " + ("adds" if now["claude_attribution"] else "leaves out")
-                + " its attribution in tasks' commits and PRs from now on"
-                + (" (the configuration's)." if now["claude_attribution_source"] == "configuration" else ".")}
+        said = []
+        if "claude_attribution" in raw:
+            said.append("Claude Code " + ("adds" if now["claude_attribution"] else "leaves out")
+                        + " its attribution in tasks' commits and PRs")
+        if "review_with" in raw:
+            said.append(f"the {now['review_with']} profile reviews each change before its PR" if now["review_with"]
+                        else "no review before a PR")
+        if "fallback_to" in raw or "fallback_model" in raw:
+            to = now["fallback_to"]
+            said.append("no fallback when the local model is down" if not to else
+                        "a burst falls back to " + ("Claude Code" + (f" ({now['fallback_model']})"
+                                                                     if now["fallback_model"] else "")
+                                                    if to == "claude-code" else f"the {to} profile")
+                        + " when the local model is down")
+        message = "; ".join(said)
+        reset = all(now[f"{key}_source"] == "configuration" for key in raw)  # each put back to the configuration's
+        return {"message": message[:1].upper() + message[1:] + " from now on"
+                + (" (the configuration's)." if reset else ".")}
 
     # --- Settings: MCP servers saved for sessions and tasks to choose from (never with a token) ---
 

@@ -155,6 +155,10 @@ fallback lasts one burst: the task's next burst tries its own model again.
 beside the burst. It applies to bursts that start (`start`, `resume`, `run`).
 A server that goes down mid-burst is still the burst's to find out.
 
+On the orchestrator, the Settings tab's Tasks panel sets `review_with`,
+`fallback_to` and `fallback_model` for every task, over its configuration's.
+That includes turning a review or a fallback off.
+
 **Budgets.** These limits apply to one burst, and 0 means no limit:
 
 - `max_model_calls`: model calls, the delegates' included.
