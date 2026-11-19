@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.45.0 (2026-11-19)
+
+### Features
+
+- **orchestrator**: Set the review and the fallback for every task in Settings
+  ([#46](https://github.com/brianporeilly/burst-harness/pull/46),
+  [`a4187c5`](https://github.com/brianporeilly/burst-harness/commit/a4187c5c276b84cafe8de77f9b4af76a9a789302))
+
+
 ## v0.44.0 (2026-11-19)
 
 ### Bug Fixes
