@@ -135,6 +135,26 @@ its engine's own shape, named by `format`: `strands` for the snapshot's
 content blocks, `claude-code` for the Anthropic API's. The newest
 `transcripts_kept` (default 20) are kept for each task, and 0 turns them off.
 
+**Falling back when the local model is down.** `fallback_to` is off by
+default. When it's set and a burst's lead is on llama.cpp, the harness checks
+the server as the burst starts. If it can't be reached (tried twice, so a
+blip doesn't count), that burst runs on something else:
+
+- **`fallback_to = "claude-code"`** runs it on Claude Code, with the same
+  credentials as any Claude Code run (a subscription's
+  `CLAUDE_CODE_OAUTH_TOKEN`, or a key). `fallback_model` picks the model;
+  left empty, Claude Code uses its own default. In a sandbox, it may run any
+  command, as the orchestrator's Claude Code tasks do. On this machine, the
+  permission mode stays as you set it.
+- **`fallback_to = "NAME"`** has the profile `[agents.NAME]` lead the burst
+  instead, such as an Anthropic profile with an API key, or another server.
+
+A server that answers at all, even "loading model", counts as up. The
+fallback lasts one burst: the task's next burst tries its own model again.
+`HARNESS_RESULT`'s `fallback` gives `{from, to}`, and the Tasks tab shows it
+beside the burst. It applies to bursts that start (`start`, `resume`, `run`).
+A server that goes down mid-burst is still the burst's to find out.
+
 **Budgets.** These limits apply to one burst, and 0 means no limit:
 
 - `max_model_calls`: model calls, the delegates' included.

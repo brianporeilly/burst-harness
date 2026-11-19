@@ -61,6 +61,8 @@ class HarnessContext:
     review: dict[str, str] | None = None
     # The burst's limits (budget.py), made when first asked for.
     budget: object = None
+    # The fallback this burst took (cli._fall_back): {"from": the server that couldn't be reached, "to": what led}.
+    fallback: dict[str, str] | None = None
     # The burst's transcript (transcript.py), made when first asked for.
     transcript: object = None
     # The lead's loop watch (loops.py), made when first asked for.

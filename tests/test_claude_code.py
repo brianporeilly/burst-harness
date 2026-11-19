@@ -281,3 +281,75 @@ def test_claude_is_ended_when_the_bursts_time_is_up_and_the_burst_pauses(origin,
     assert time.time() - started < 25
     assert ctx.terminal == "paused" and ctx.said["budget"] == "the burst's time is up"
     assert "work.txt" in sh_git(origin, "ls-tree", "-r", "--name-only", "harness/t").split()  # nothing stranded
+
+
+def test_a_lead_whose_server_is_down_falls_back_to_claude_code(origin, tmp_path, monkeypatch, fake_claude):
+    from harness import models
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "pause")
+    monkeypatch.setenv("HARNESS_FALLBACK_TO", "claude-code")
+    monkeypatch.setattr(models, "reachable", lambda url: url != "http://127.0.0.1:9")
+    ctx = cli._open(_args(repo=str(tmp_path / "w"), repo_url=str(origin), engine="strands", provider="llamacpp",
+                          base_url="http://127.0.0.1:9"))
+    _start(ctx)
+    assert ctx.terminal == "paused" and ctx.cfg.engine == "claude-code"
+    assert ctx.fallback == {"from": "http://127.0.0.1:9", "to": "claude-code"}
+    (argv,) = fake_claude()
+    assert "--model" not in argv  # fallback_model unset: Claude Code's own default
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"  # this machine: the mode as set
+
+    # With the server there, nothing changes; and without fallback_to, a down server is the burst's to find out.
+    up = cli._open(_args(repo=str(tmp_path / "w2"), repo_url=str(origin), engine="strands", provider="llamacpp",
+                         base_url="http://127.0.0.1:10"))
+    cli._fall_back(up)
+    assert up.cfg.engine == "strands" and up.fallback is None
+    monkeypatch.delenv("HARNESS_FALLBACK_TO")
+    off = cli._open(_args(repo=str(tmp_path / "w3"), repo_url=str(origin), engine="strands", provider="llamacpp",
+                          base_url="http://127.0.0.1:9"))
+    cli._fall_back(off)
+    assert off.cfg.engine == "strands" and off.fallback is None
+
+
+def test_a_fallback_can_be_a_profile_and_must_name_one(tmp_path):
+    from types import SimpleNamespace
+
+    from harness import models
+    from harness.agents import AgentsError
+    from harness.config import HarnessConfig
+
+    profile = {"provider": "anthropic", "model_id": "claude-sonnet-5-5", "use_for": "anything"}
+    cfg = HarnessConfig.load(None, {"provider": "llamacpp", "base_url": "http://127.0.0.1:9",
+                                    "agents": {"claude": profile}, "fallback_to": "claude"}, user_config=None)
+    ctx = SimpleNamespace(cfg=cfg, agent="", fallback=None, target=None)
+    real = models.reachable
+    try:
+        models.reachable = lambda url: False
+        cli._fall_back(ctx)
+    finally:
+        models.reachable = real
+    assert (ctx.cfg.provider, ctx.cfg.model_id, ctx.agent) == ("anthropic", "claude-sonnet-5-5", "claude")
+    with pytest.raises(AgentsError, match="fallback_to names no profile: nobody"):
+        HarnessConfig.load(None, {"fallback_to": "nobody"}, user_config=None)
+
+
+def test_reachable_counts_any_reply_and_not_a_closed_port(tmp_path):
+    import http.server
+    import threading
+
+    from harness import models
+
+    class Loading(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(503)  # llama-server while it loads a model: there, not ready
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Loading)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert models.reachable(f"http://127.0.0.1:{server.server_port}", tries=1)
+    finally:
+        server.shutdown()
+    assert not models.reachable("http://127.0.0.1:9", tries=2, wait=0.01)
