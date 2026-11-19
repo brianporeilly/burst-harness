@@ -50,11 +50,13 @@ assumes 200K and every utilization gate misfires on a larger model.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import logging
 import os
 import time
+import weakref
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from importlib.metadata import entry_points
@@ -284,7 +286,6 @@ def llamacpp_url(cfg: HarnessConfig) -> str:
 def reachable(url: str, *, tries: int = 2, timeout: float = 5.0, wait: float = 3.0) -> bool:
     """Whether a model server answers at all: any HTTP reply to /health counts (a 503 while it loads a model
     is a server that is there). Tried `tries` times, so a blip is not taken for a server that is down."""
-    import time
     import urllib.error
     import urllib.request
 
@@ -344,10 +345,40 @@ def _passing_through(LlamaCppModel: Any) -> Any:
     ``chat_template_kwargs`` (``{"enable_thinking": false}``), ``n_predict``,
     ``dry_multiplier``, ``reasoning_format``... Those go in as they are, and are
     named once so it is clear they were sent.
+
+    And with an HTTP client for each event loop it is used on. Strands keeps one
+    httpx.AsyncClient for the model's life, but runs each call of the agent on a
+    loop of its own (run_async), and the harness calls it again and again (a
+    cut-off reply's retry, a restart, the next burst's turn). llama-server keeps
+    connections open, and one left open belongs to its loop: the next call, on
+    another, died closing it ("Event loop is closed"). The old client is dropped,
+    not closed: closing it would be the same mistake.
     """
 
     class PassThroughLlamaCppModel(LlamaCppModel):  # type: ignore[misc, valid-type]
         _announced = False
+        _client: Any = None
+        _client_loop: Any = None  # a weak reference to the loop the client is for; None: not used on one yet
+
+        @property  # type: ignore[override]
+        def client(self) -> Any:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return self._client
+            used_on = self._client_loop() if self._client_loop is not None else None
+            if used_on is not loop:
+                if self._client_loop is not None:  # used on another loop before: a pool of its own for this one
+                    import httpx  # Strands' llama.cpp model's own client
+
+                    old = self._client
+                    self._client = httpx.AsyncClient(base_url=old.base_url, timeout=old.timeout, headers=old.headers)
+                self._client_loop = weakref.ref(loop)
+            return self._client
+
+        @client.setter
+        def client(self, value: Any) -> None:
+            self._client, self._client_loop = value, None
 
         def _format_request(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
             request = super()._format_request(*args, **kwargs)
