@@ -45,7 +45,8 @@ def test_findings_go_back_to_the_lead_once_then_the_pr_opens(tmp_path, origin, l
     assert "f.py" in brief and "NO FINDINGS" in brief
     refused = fake_llama._text(lead_requests[2]["messages"][-1]["content"])
     assert "reviewer reviewed the change first" in refused and "asks for 2" in refused
-    assert "Nothing was pushed" in refused
+    assert "Your work so far is committed to the branch" in refused
+    assert "wip(t1): before the check and review" in git(origin, "log", "--format=%s", "harness/t1")
     assert result["state"] == "pushed_no_pr" and len(lead_requests) == 3  # the second finish went through
     assert result["metrics"]["review"] == {"by": "reviewer", "outcome": "findings"}
     assert result["delegated"]["reviewer"]["calls"] == 1  # its usage counted with the burst's
@@ -83,3 +84,32 @@ def test_review_with_must_name_a_profile_and_isnt_a_repos_to_set(tmp_path):
     with pytest.raises(AgentsError, match="review_with names no profile: nobody"):
         HarnessConfig.load(overrides={"review_with": "nobody"}, user_config=None)
     assert "review_with" not in REPO_SETTABLE
+
+
+def test_a_review_is_held_to_its_limits_told_first_and_holds_nothing_up(tmp_path, origin, llama, capsys,  # noqa: F811
+                                                                        monkeypatch):
+    """One review ran two hours, rebuilding the project and writing simulations, till the sandbox was deleted."""
+    reviewer, reviewer_requests = llama([{"tool": "shell", "args": {"command": "echo looking"}}] * 50)
+    lead, lead_requests = llama([EDIT, FINISH, {"text": "done"}])
+    monkeypatch.setenv("HARNESS_REVIEW_MAX_CALLS", "5")
+    monkeypatch.setenv("HARNESS_CHECK_COMMAND", "true")
+    _run(tmp_path, origin, lead, reviewer)
+    result = _result(capsys.readouterr().out)
+
+    assert len(reviewer_requests) == 5  # stopped at its limit
+    brief = json.dumps(reviewer_requests[0]["messages"])
+    assert "(`true`) has already passed" in brief and "Don't build the project" in brief and "5 model calls" in brief
+    told = [i for i, request in enumerate(reviewer_requests) if "nearly out of time" in json.dumps(request["messages"])]
+    assert told and told[0] == 2  # after its second call's tools: 5 - 3
+    # It gave no findings before it was stopped: nothing held up, the PR went ahead on the first finish.
+    assert result["metrics"]["review"] == {"by": "reviewer", "outcome": "failed"}
+    assert result["state"] == "pushed_no_pr" and len(lead_requests) == 2
+
+
+def test_a_review_cut_off_with_findings_still_gives_them(monkeypatch):
+    ctx = SimpleNamespace(cfg=HarnessConfig(review_with="reviewer"), review=None)
+    monkeypatch.setattr(review, "run", lambda ctx, name: "a.py:3 races with b.py:9\n[harness] reviewer was stopped "
+                                                        "at the burst's budget (max_model_calls: 30 model calls)")
+    with pytest.raises(review.ReviewGiven, match="cut off at its limit") as given:
+        review.before_pr(ctx, "Fixed.")
+    assert "a.py:3 races with b.py:9" in str(given.value) and "[harness]" not in str(given.value)

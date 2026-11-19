@@ -85,3 +85,20 @@ def test_claude_code_is_given_whats_left_and_pauses_at_it(tmp_path):
     engine._on_line(json.dumps({"type": "result", "subtype": "error_max_budget_usd", "is_error": True,
                                 "num_turns": 7, "total_cost_usd": 2.01, "usage": {}}))
     assert ctx.budget.reason == "max_cost_usd: $2.01 as Claude Code reports it, the limit is $2.00"
+
+
+def test_a_sandboxs_deadline_stops_the_burst_before_it():
+    """A burst's Job had 8 hours, its sandbox 4: the sandbox was deleted mid-burst, the work in it lost."""
+    now = time.time()
+    ctx = SimpleNamespace(cfg=HarnessConfig(), started=now, delegated={}, budget=None,
+                          target=SimpleNamespace(deadline=now + 20 * 60))
+    limits = budget.of(ctx)
+    assert limits.limited and abs(limits.stop_at() - (now + 5 * 60)) < 1  # 15 minutes before it
+    assert limits.check() == ""
+    ctx.target.deadline = now + 10 * 60
+    assert limits.check().startswith("the sandbox's deadline: it is deleted at ")
+    assert limits.check().endswith("and the burst stops 15 minutes before")
+
+    both = SimpleNamespace(cfg=replace(HarnessConfig(), max_burst_minutes=2), started=now, delegated={},
+                           budget=None, target=SimpleNamespace(deadline=now + 60 * 60))
+    assert abs(budget.of(both).stop_at() - (now + 120)) < 1  # the sooner of the two

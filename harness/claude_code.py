@@ -59,6 +59,7 @@ import shlex
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,10 @@ class ClaudeCodeEngine:
         self.tool_calls = 0
         self.tool_errors = 0
         self.seen = ClaudeUsage()  # the rest of what it says of its usage: per model, the plan, the largest prompt
+        # Where the running claude's process id is kept, and whether the harness ended it (_end): once its outcome
+        # is written and its turn is over, or when the burst's time is up.
+        self.pid_file = f"{self.dir}/claude-{uuid.uuid4().hex[:12]}.pid"
+        self.ended = False
 
     # --- setup -----------------------------------------------------------
 
@@ -309,6 +314,7 @@ class ClaudeCodeEngine:
         if self.mcp_file:
             self.target.run_shell(f"rm -f {shlex.quote(self.mcp_file)}", check=False, cwd="/")
             self.mcp_file = ""
+        self.target.run_shell(f"rm -f {shlex.quote(self.pid_file)}", check=False, cwd="/")
 
     def state_dir(self) -> Path:
         """The driver's state for this run: where a delegate keeps what it offloads, for a local target."""
@@ -345,8 +351,9 @@ class ClaudeCodeEngine:
             settings["attribution"] = {"commit": "", "pr": ""}  # empty: none, rather than Claude Code's own
         return json.dumps(settings)
 
-    def command(self, *args: str) -> str:
-        """A shell string running `claude` with the harness's settings and yours."""
+    def command(self, *args: str, pid_file: str = "") -> str:
+        """A shell string running `claude` with the harness's settings and yours. With `pid_file`, claude's
+        process id is written there (the shell execs it), so the harness can end that claude and no other."""
         cfg = self.ctx.cfg
         yours = shlex.split(cfg.claude_args)
         # model_id, unless claude_args picks one: without it Claude Code uses
@@ -377,7 +384,9 @@ class ClaudeCodeEngine:
             *yours,
         ]
         env = f"set -a && . {shlex.quote(self.env_file)} && set +a && " if self.has_env_file else ""
-        return env + shlex.join(argv)
+        own = (f"mkdir -p {shlex.quote(str(Path(pid_file).parent))} && echo $$ > {shlex.quote(pid_file)} && exec "
+               if pid_file else "")
+        return env + own + shlex.join(argv)
 
     # --- headless --------------------------------------------------------
 
@@ -406,21 +415,51 @@ class ClaudeCodeEngine:
     def _run(self, prompt: str, *, resume: bool) -> bool:
         """One `claude -p` invocation (a session through the SDK, when delegating). False if claude itself failed."""
         transcript.of(self.ctx).claude({}, prompt=prompt)
+        limits = budget.of(self.ctx)
         args = ["--output-format", "stream-json", "--verbose", *(["--continue"] if resume else []),
-                *budget.of(self.ctx).claude_args(self.turns, self.cost)]
-        if self.delegate is not None:
-            from . import claude_lead
-            from .agent import delegate_description
+                *limits.claude_args(self.turns, self.cost)]
+        # Minutes and the sandbox's deadline, which claude has no flag for: a timer ends it, and the burst pauses.
+        timer = None
+        if stop := limits.stop_at():
+            timer = threading.Timer(max(stop - time.time(), 0.0), self._time_up)
+            timer.daemon = True
+            timer.start()
+        self.ended = False
+        try:
+            if self.delegate is not None:
+                from . import claude_lead
+                from .agent import delegate_description
 
-            # The prompt goes on stdin, as the SDK's first message.
-            argv = self.target._wrap(self.command(*args, *claude_lead.STREAM_INPUT), stdin=True)
-            code = claude_lead.run(argv, prompt, self._on_line, self.delegate, delegate_description(self.ctx.cfg))
-        else:
-            code = self.target.stream_shell(self.command("-p", prompt, *args), self._on_line)
-        if code != 0 and not budget.of(self.ctx).reason:
+                # The prompt goes on stdin, as the SDK's first message.
+                argv = self.target._wrap(self.command(*args, *claude_lead.STREAM_INPUT, pid_file=self.pid_file),
+                                         stdin=True)
+                code = claude_lead.run(argv, prompt, self._on_line, self.delegate,
+                                       delegate_description(self.ctx.cfg))
+            else:
+                code = self.target.stream_shell(self.command("-p", prompt, *args, pid_file=self.pid_file),
+                                                self._on_line)
+        finally:
+            if timer is not None:
+                timer.cancel()
+        if self.ended:  # the harness ended it: its outcome is written, or the time is up
+            return True
+        if code != 0 and not limits.reason:
             print(f"! claude exited with status {code}; not retrying.", file=sys.stderr)
             return False
         return True
+
+    def _end(self) -> None:
+        """End the running claude, the one this engine started."""
+        self.ended = True
+        quoted = shlex.quote(self.pid_file)
+        self.target.run_shell(f"test -f {quoted} && kill -TERM \"$(cat {quoted})\" 2>/dev/null; true",
+                              check=False, cwd="/")
+
+    def _time_up(self) -> None:
+        limits = budget.of(self.ctx)
+        limits.reason = limits.check() or limits.reason or "the burst's time is up"
+        print(f"\n! Stopping Claude Code: {limits.reason}.", file=sys.stderr, flush=True)
+        self._end()
 
     def _on_line(self, line: str) -> None:
         try:
@@ -459,6 +498,10 @@ class ClaudeCodeEngine:
             if why := _budget_stop(str(event.get("subtype") or ""), self.ctx.cfg, self.turns, self.cost):
                 limits = budget.of(self.ctx)
                 limits.reason = limits.reason or why
+            elif not self.ended and self.target.read_file(OUTCOME_PATH) is not None:
+                # Its turn is over and its outcome written: done. Ended now, rather than left running for its
+                # background jobs and wake-ups, which kept one burst waiting 45 minutes for nothing.
+                self._end()
             if event.get("is_error"):
                 print(f"! Claude Code: {event.get('subtype')}: {event.get('result') or ''}".rstrip(), file=sys.stderr)
 

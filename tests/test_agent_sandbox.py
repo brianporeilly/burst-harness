@@ -34,3 +34,25 @@ def test_docker_target_argv():
     from harness.exec_target import DockerTarget
     t = DockerTarget(repo="/workspace/repo", container="c", binary="podman")
     assert t._wrap("ls") == ["podman", "exec", "c", "sh", "-c", "cd /workspace/repo && ls"]
+
+
+def test_a_claimed_sandbox_knows_its_deadline(monkeypatch):
+    """So the burst's budget can pause before the controller deletes it (budget.py)."""
+    import time
+    from dataclasses import replace
+
+    from harness import agent_sandbox
+    from harness.config import HarnessConfig
+
+    monkeypatch.setattr(agent_sandbox, "create_claim", lambda cfg, **kw: "pool-abc")
+    monkeypatch.setattr(agent_sandbox, "wait_ready", lambda cfg, claim: "pod-abc")
+    monkeypatch.setattr(agent_sandbox.AgentSandboxTarget, "missing_commands", lambda self, names: [])
+    cfg = replace(HarnessConfig(), target="agent-sandbox", pool="pool", claim_ttl=3600, gateway_control="")
+    before = time.time()
+    target = agent_sandbox.acquire(cfg, repo="/workspace/repo", slug="t", branch="b")
+    assert before + 3600 - 1 <= target.deadline <= time.time() + 3600
+
+    monkeypatch.setattr(agent_sandbox, "claim_exists", lambda cfg, claim: True)
+    monkeypatch.setattr(agent_sandbox, "renew_claim", lambda cfg, claim: 600)  # a kept one, renewed: 10 minutes
+    target = agent_sandbox.acquire(replace(cfg, claim_name="kept"), repo="/workspace/repo", slug="t", branch="b")
+    assert time.time() + 590 <= target.deadline <= time.time() + 600

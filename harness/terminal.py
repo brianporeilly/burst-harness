@@ -7,7 +7,9 @@ the harness, not the model, commits, pushes, and opens the PR.
 
 from __future__ import annotations
 
-from . import git, repo_commands, review, state
+import time
+
+from . import budget, git, repo_commands, review, state
 from .context import HarnessContext
 
 # How much of a failed check's output goes back to the model: its end, where test runners sum up.
@@ -31,16 +33,20 @@ def check(ctx: HarnessContext) -> None:
     command = cfg.check_command.strip()
     if not command:
         return
-    ran = repo_commands.run(ctx.target, command, cfg.check_timeout)
+    timeout = cfg.check_timeout
+    if stop := budget.of(ctx).stop_at():  # not past the burst's time: it pauses then, with the work committed
+        left = max(int(stop - time.time()), 60)
+        timeout = min(timeout, left) if timeout > 0 else left
+    ran = repo_commands.run(ctx.target, command, timeout)
     ctx.checks["run"] = ctx.checks.get("run", 0) + 1
     if ran.code == 0:
         return
     failed = ctx.checks["failed"] = ctx.checks.get("failed", 0) + 1
-    output, why = ran.output, ran.why(cfg.check_timeout)
+    output, why = ran.output, ran.why(timeout)
     then = ("Fix what it reports, then finish again." if failed < cfg.max_fixup_attempts else
             f"It has failed {failed} times: don't finish again. Pause for review instead, saying what is still "
             "failing and what you tried.")
-    raise CheckFailed(f"No PR: the repo's check (`{command}`) {why}. Nothing was pushed. {then}\n"
+    raise CheckFailed(f"No PR: the repo's check (`{command}`) {why}. Your work so far is committed to the branch, but no PR was opened. {then}\n"
                       f"{output or '(no output)'}")
 
 
@@ -67,6 +73,11 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
     """Check, review, commit, push, and open a PR. Raises ValueError if the task doc is over its cap,
     CheckFailed (one) if check_command fails, ReviewGiven (one) with review_with's findings the first time."""
     cfg = ctx.cfg
+    if cfg.check_command.strip() or cfg.review_with:
+        # Committed and pushed before the check and the review, which can take long: a sandbox that reaches its
+        # deadline meanwhile, or a refusal the lead never gets to fix, strands nothing.
+        for step in _wrap_up(ctx, f"wip({ctx.slug}): before the check and review"):
+            print(step, flush=True)
     try:
         check(ctx)
     except CheckFailed as failed:

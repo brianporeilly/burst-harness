@@ -40,7 +40,9 @@ def test_a_failing_check_refuses_the_pr_until_it_passes(tmp_path, origin, llama,
     assert result["metrics"]["checks"] == {"run": 2, "failed": 1}
     refused = fake_llama._text(requests[1]["messages"][-1]["content"])
     assert "No PR: the repo's check" in refused and "exited 3" in refused and "ok is missing" in refused
-    assert "Nothing was pushed" in refused
+    assert "Your work so far is committed to the branch" in refused
+    # Committed and pushed before the check ran: a refusal, or a sandbox deleted meanwhile, strands nothing.
+    assert "wip(t1): before the check and review" in git(origin, "log", "--format=%s", "harness/t1")
     assert "the harness runs this repo's check" in json.dumps(requests[0])  # told up front
 
 

@@ -16,7 +16,7 @@ from .conftest import git as sh_git
 from .test_cli import _args
 
 FAKE = r'''#!PYTHON
-import json, os, sys
+import json, os, sys, time
 argv = sys.argv[1:]
 with open(os.environ["FAKE_CLAUDE_LOG"], "a") as log:
     log.write(json.dumps(argv) + "\n")
@@ -28,8 +28,10 @@ emit({"type": "assistant", "message": {"content": [
     {"type": "tool_use", "name": "Bash", "input": {"command": "echo hi"}}]}})
 open("work.txt", "a").write("x\n")
 os.makedirs(".harness", exist_ok=True)
+if mode == "slow":  # still at work when the burst's time is up
+    time.sleep(60)
 outcome = None
-if mode == "pause":
+if mode in ("pause", "linger"):
     outcome = {"state": "pause", "summary": "did a thing", "next_step": "do the next thing"}
 elif mode == "late" and resumed:
     outcome = {"state": "pause", "summary": "late", "next_step": "n"}
@@ -42,6 +44,8 @@ if mode == "fail":
     sys.exit(1)
 emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
       "total_cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 5}})
+if mode == "linger":  # a background job, or a wake-up it scheduled, keeps it running after its turn
+    time.sleep(60)
 '''
 
 
@@ -247,3 +251,33 @@ def test_a_key_that_cannot_be_used_stops_the_run_before_it_starts(origin, tmp_pa
     monkeypatch.setenv("ATLASSIAN_BASIC_AUTH", "bWVAZXhhbXBsZS5jb206dG9r")
     with pytest.raises(SystemExit, match="ATLASSIAN_BASIC_AUTH is user:secret"):
         _ctx(origin, tmp_path)
+
+
+def test_claude_is_ended_once_its_outcome_is_written_and_its_turn_is_over(origin, tmp_path, monkeypatch,
+                                                                         fake_claude):
+    """One burst waited 45 minutes for Claude Code's background job, its outcome long written."""
+    import time
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "linger")
+    ctx = _ctx(origin, tmp_path)
+    started = time.time()
+    _start(ctx)
+    assert time.time() - started < 20 and ctx.terminal == "paused"  # not the minute it would have lingered
+    assert "work.txt" in sh_git(origin, "ls-tree", "-r", "--name-only", "harness/t").split()
+
+
+def test_claude_is_ended_when_the_bursts_time_is_up_and_the_burst_pauses(origin, tmp_path, monkeypatch,
+                                                                       fake_claude):
+    import time
+
+    from harness import budget
+
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "slow")
+    ctx = _ctx(origin, tmp_path)
+    stop = time.time() + 3
+    monkeypatch.setattr(budget.Budget, "stop_at", lambda self: stop)  # as max_burst_minutes or a deadline sets it
+    started = time.time()
+    _start(ctx)
+    assert time.time() - started < 25
+    assert ctx.terminal == "paused" and ctx.said["budget"] == "the burst's time is up"
+    assert "work.txt" in sh_git(origin, "ls-tree", "-r", "--name-only", "harness/t").split()  # nothing stranded
