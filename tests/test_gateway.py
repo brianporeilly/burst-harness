@@ -194,6 +194,9 @@ def test_swap_only_touches_the_header_carrying_its_placeholder():
 
 def _handshake(served, host, cafile):
     client = ssl.create_default_context(cafile=cafile)
+    # Strict, as Python 3.13 and later verify by default, whichever Python runs the tests: a certificate without
+    # an Authority Key Identifier is refused (so a sandbox's Python client refused the gateway's).
+    client.verify_flags |= ssl.VERIFY_X509_STRICT
     c_in, c_out, s_in, s_out = ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO(), ssl.MemoryBIO()
     c = client.wrap_bio(c_in, c_out, server_hostname=host)
     srv = served.wrap_bio(s_in, s_out, server_side=True)
