@@ -1034,7 +1034,8 @@ class Certificates:
         self._openssl("req", "-x509", *self.KEY_ARGS, "-keyout", str(self.ca_key), "-out", str(self.ca_crt),
                       "-days", "30", "-subj", f"/CN=burst-gateway {name or 'sandbox'}",
                       "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
-                      "-addext", "keyUsage=critical,keyCertSign")
+                      "-addext", "keyUsage=critical,keyCertSign",
+                      "-addext", "subjectKeyIdentifier=hash")
         self.ca_key.chmod(0o600)
 
     KEY_ARGS = ("-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes")
@@ -1062,7 +1063,11 @@ class Certificates:
         except ValueError:
             name = f"DNS:{host}"
         key, crt, ext = (self.directory / f"{host}.{suffix}" for suffix in ("key", "crt", "ext"))
-        ext.write_text(f"subjectAltName={name}\nextendedKeyUsage=serverAuth\n")
+        # The key identifiers are what strict verification asks for (Python 3.13's default, VERIFY_X509_STRICT):
+        # without an Authority Key Identifier, a client there refuses the certificate.
+        ext.write_text(f"subjectAltName={name}\nextendedKeyUsage=serverAuth\n"
+                       "keyUsage=critical,digitalSignature\nbasicConstraints=critical,CA:FALSE\n"
+                       "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n")
         request = self._openssl("req", "-new", *self.KEY_ARGS, "-keyout", str(key), "-subj", f"/CN={host}")
         self._openssl("x509", "-req", "-CA", str(self.ca_crt), "-CAkey", str(self.ca_key), "-days", "30",
                       "-extfile", str(ext), "-out", str(crt), stdin=request)
