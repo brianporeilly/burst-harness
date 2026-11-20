@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.49.0 (2026-11-20)
+
+### Documentation
+
+- Design for projects on rails: the plan, its progress, and the tools that keep them
+  ([#52](https://github.com/brianporeilly/burst-harness/pull/52),
+  [`a2187af`](https://github.com/brianporeilly/burst-harness/commit/a2187afc101437244549400de632cca60dfce7fb))
+
+### Features
+
+- **harness**: A project's PLAN.md and PROGRESS.md as its record, kept through tools, in place of
+  the task document ([#53](https://github.com/brianporeilly/burst-harness/pull/53),
+  [`acb8d54`](https://github.com/brianporeilly/burst-harness/commit/acb8d54bcbf9bf90cb303946727a0c857790f1c6))
+
+
 ## v0.48.0 (2026-11-20)
 
 ### Features
