@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 
-from . import budget, git, project, repo_commands, review, state
+from . import budget, git, project, repo_commands, review, state, steering
 from .context import HarnessContext
 
 # How much of a failed check's output goes back to the model: its end, where test runners sum up.
@@ -100,6 +100,8 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         # deadline meanwhile, or a refusal the lead never gets to fix, strands nothing.
         for step in _wrap_up(ctx, f"wip({ctx.slug}): before the check and review"):
             print(step, flush=True)
+    if getattr(ctx, "tool_calls", 0) and (why := steering.recorded_nothing(ctx, "finish_with_pr")):
+        raise ValueError(why)
     if getattr(ctx, "project", False) and not ctx.criteria_refused and (unticked := project.Record(ctx.target).unticked()):
         ctx.criteria_refused = True
         listed = "\n".join(f"- {item.id} {item.text}" for item in unticked)
@@ -107,6 +109,8 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
                          "Meet each one and tick_criterion it with the evidence, then finish again. If one can't be "
                          "met in this round, finish again and say why in the body, for each: the PR lists them as "
                          "not met.")
+    if hasattr(ctx, "docs_reminded") and (why := steering.docs_reminder(ctx, changed_files(ctx), RECORD_FILES)):
+        raise ValueError(why)
     try:
         check(ctx)
     except CheckFailed as failed:
@@ -191,14 +195,18 @@ def project_summary(ctx: HarnessContext) -> str:
         out += ["", "### Decisions", *(f"- {d}" for d in others)]
     if current.checkpoint:
         out += ["", "### For you to try", current.checkpoint]
-    docs = [name for name in changed_files(ctx) if name not in RECORD_FILES
+    own = ctx.cfg.docs_dir.rstrip("/") + "/"
+    docs = [name for name in changed_files(ctx) if name not in RECORD_FILES and not name.startswith(own)
             and (name.startswith("docs/") or name.lower().startswith("readme") or name.endswith((".md", ".rst")))]
     out += ["", "Docs changed: " + (", ".join(f"`{name}`" for name in docs) if docs else "none")]
     return "\n".join(out)
 
 
 def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str | None = None) -> str:
-    """Commit and push without a PR. Raises ValueError if the task doc is over its cap."""
+    """Commit and push without a PR. Raises ValueError if the task doc is over its cap, or (once) when the burst
+    worked without recording anything."""
+    if why := steering.recorded_nothing(ctx, "pause_for_review"):
+        raise ValueError(why)
     # Added to what earlier bursts recorded: replacing Done with this burst's summary lost theirs.
     if ctx.project:
         record(ctx, done=summary, next_step=next_step, note=f"Questions: {questions}" if questions else "")

@@ -346,6 +346,11 @@ class HarnessConfig:
     loop_stop: int = 5
     # Replies that keep restating the same thing (loops.Repeats): the model is told it is settled.
     repeat_notice: bool = True
+    # This many tool calls with nothing recorded (steering.py): the next tool result says to record. 0: never.
+    record_nudge_calls: int = 40
+    # The documentation guidance in the prompt (steering.py): "diataxis", "none", or a path to a file in the repo
+    # describing the project's own style.
+    docs_style: str = "diataxis"
     max_fixup_attempts: int = 3
     require_clean_tree: bool = True
     # Each burst's transcript (transcript.py) is written to the driver's state directory; the newest this many
@@ -470,5 +475,5 @@ REPO_SETTABLE = frozenset({
     "offload_max_result_tokens", "offload_preview_tokens", "window_size", "pin_first",
     "proactive_compression", "cache_ttl",
     "max_fixup_attempts", "require_clean_tree", "check_command", "check_timeout",
-    "setup_command", "setup_timeout",
+    "setup_command", "setup_timeout", "record_nudge_calls", "docs_style",
 })

@@ -29,7 +29,8 @@ BRIEF = """Review this change before it becomes a pull request. You are read-onl
 around it, and look things up in the sources. You have about {minutes} minutes and {calls} model calls; you will \
 be told when you are nearly out, and should then report what you have.
 
-Look for bugs, requirements in the task's record (below) the change misses, claims the work doesn't back up, and \
+Look for bugs, requirements in the task's record (below) the change misses, Accept items ticked as met that \
+the change doesn't back up, behaviour it adds or changes that no documentation describes, claims the work doesn't back up, and \
 risky or unrelated changes. Report the findings that matter, most serious first, each with where (file:line) \
 and why; at most ten. Skip style nits. If there is nothing worth changing, reply with exactly {nothing}.
 
