@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.52.0 (2026-11-20)
+
+### Features
+
+- **harness**: The setup round: a foundation document or a prompt turned into a project's plan,
+  ending in a PR to approve ([#56](https://github.com/brianporeilly/burst-harness/pull/56),
+  [`47b7fcc`](https://github.com/brianporeilly/burst-harness/commit/47b7fccb1e5b622c4830414a9b42385355c526c4))
+
+
 ## v0.51.0 (2026-11-20)
 
 ### Features
