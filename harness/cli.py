@@ -24,6 +24,7 @@ from . import (
     egress,
     git,
     handover,
+    project,
     job,
     loops,
     mcp,
@@ -75,6 +76,14 @@ REPO_NEXT_ROUND_PROMPT = ("""This task's earlier work was merged into {base}. Yo
 The document's Done and Decisions are from earlier rounds, already merged: do not redo that work, and where a decision says something was left for later, that was then. This round starts from its Next step. Record this round's progress in it as you go.
 
 {instruction}""")
+# A project (project.py): PLAN.md's current milestone and PROGRESS.md are the record, not a task document.
+PROJECT_PROMPT = """You are on {branch}, a branch from {base}. This is a fresh conversation: earlier sessions' messages are not here, and nothing needs them. The repo is the record. Where the current milestone stands (from PLAN.md and PROGRESS.md), the branch's commits and anything uncommitted, as they are now, are below. Do not re-read the codebase to rebuild what they record.
+
+{where}
+
+{instruction}"""
+PROJECT_CARRY_ON = "Carry on with the current milestone."
+PROJECT_RESUME_PROMPT = "Resume. Call current_milestone, and carry on from where it stands."
 ANSWERED = "The last burst ended by asking:\n{asks}\n\nThe answer: {answer}"
 # A branch named with --branch: what git takes, and nothing an option could be read from.
 BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
@@ -385,7 +394,7 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
     elif ctx.terminal == "push_failed":
         print("Committed, but the push was refused (see above); the sandbox is kept with the commits.")
     elif ctx.terminal == "paused":
-        print(f"Paused. State: {state.doc_relpath(ctx.cfg, ctx.slug)}")
+        print(f"Paused. State: {project.PROGRESS if ctx.project else state.doc_relpath(ctx.cfg, ctx.slug)}")
     elif ctx.terminal == "abandoned":
         print("Abandoned.")
     elif ctx.waiting:
@@ -533,6 +542,12 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | 
         )
     # Branch setup happens here, deterministically, rather than being asked of the model.
     print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    ctx.project = project.is_project(ctx.target)
+    if ctx.project:
+        print(f"{project.PLAN} has a roadmap: a project, recorded in {project.PROGRESS}.")
+        instruction = "\n\n".join(part for part in (f"The person's message: {task}" if task else "", message or "")
+                                    if part) or PROJECT_CARRY_ON
+        return _drive(ctx, _project_prompt(ctx, instruction), resume=False)
     if ctx.target.read_file(state.doc_relpath(ctx.cfg, ctx.slug)) is not None:
         # The task's document came with the base: its earlier work was merged (and its branch is gone, or
         # this round has a branch of its own). Carry on from the document rather than start over.
@@ -547,15 +562,23 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | 
     return _drive(ctx, task, resume=False)
 
 
+def _project_prompt(ctx: HarnessContext, instruction: str) -> str:
+    return PROJECT_PROMPT.format(branch=ctx.branch, base=f"{ctx.cfg.remote}/{ctx.cfg.base_branch}",
+                                 where=handover.where_you_are(ctx), instruction=instruction)
+
+
 def _resume(ctx: HarnessContext, message: str | None) -> str | None:
     print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    ctx.project = project.is_project(ctx.target)
     asks = handover.take_asks(ctx.cfg.resolve_state_dir(ctx.state_key), ctx.slug)
     if ctx.cfg.resume_from == "snapshot":  # the question is in the restored conversation
-        return _drive(ctx, message or RESUME_PROMPT, resume=True)
+        return _drive(ctx, message or (PROJECT_RESUME_PROMPT if ctx.project else RESUME_PROMPT), resume=True)
     if asks and message:
         instruction = ANSWERED.format(asks="\n".join(f"- {ask}" for ask in asks), answer=message)
     else:
-        instruction = message or NEXT_STEP
+        instruction = message or (PROJECT_CARRY_ON if ctx.project else NEXT_STEP)
+    if ctx.project:
+        return _drive(ctx, _project_prompt(ctx, instruction), resume=True)
     return _drive(ctx, REPO_RESUME_PROMPT.format(where=handover.where_you_are(ctx), instruction=instruction),
                   resume=True)
 
@@ -605,6 +628,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 engine.cleanup()
             return None
         agents.lead_for(ctx, None)
+        ctx.project = project.is_project(ctx.target)
         agent, _ = build_agent(ctx)
         restored = len(agent.messages)
         print(f"Restored {restored} message(s)." if restored else "Fresh session.")
@@ -624,6 +648,26 @@ def cmd_chat(args: argparse.Namespace) -> int:
         return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
     return _session(args, body)
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """`plan check`: a project's layout, read from the repo's files on this machine (--repo, or here)."""
+    root = Path(args.repo or ".").expanduser()
+    plan_file = root / project.PLAN
+    if not plan_file.is_file():
+        print(f"No {project.PLAN} in {root}.", file=sys.stderr)
+        return 1
+    progress_file = root / project.PROGRESS
+    problems = project.check_plan(plan_file.read_text(),
+                                  progress_file.read_text() if progress_file.is_file() else None)
+    for problem in problems:
+        print(f"- {problem}")
+    if problems:
+        return 1
+    milestones = project.parse_plan(plan_file.read_text()).milestones
+    print(f"{project.PLAN}: {len(milestones)} milestones, "
+          f"{sum(len([i for i in m.items if not i.struck]) for m in milestones)} Accept items. Fine.")
+    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -1017,6 +1061,11 @@ def main(argv: list[str] | None = None) -> int:
 
     ls = sub.add_parser("list", help="Show containers, sandbox claims, and harness Jobs in flight.")
     ls.set_defaults(func=cmd_list)
+
+    plan = sub.add_parser("plan", help="A project's PLAN.md and PROGRESS.md (docs/project-layout.md).")
+    plan.add_argument("action", choices=["check"], help="check: whether they are laid out as the harness reads "
+                                                        "them; exit 1 with what is wrong, if not.")
+    plan.set_defaults(func=cmd_plan)
 
     sess = sub.add_parser("session", help="Long-lived interactive sandboxes with a web UI (podman, or "
                                           "agent-sandbox behind the cluster's gateway).")

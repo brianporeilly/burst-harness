@@ -67,3 +67,8 @@ class HarnessContext:
     transcript: object = None
     # The lead's loop watch (loops.py), made when first asked for.
     loops: object = None
+    # A project (project.py): the repo's PLAN.md has a roadmap, so PROGRESS.md and DECISIONS.md are the record,
+    # not the task document. Decided as the burst starts (cli._drive), once its branch is checked out.
+    project: bool = False
+    # This burst's entry in PROGRESS.md's log, made the first time something is recorded (terminal.log_heading).
+    log_heading: str = ""

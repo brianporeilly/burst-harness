@@ -178,7 +178,7 @@ def test_a_task_finished_on_a_forge_opens_its_pr_there(monkeypatch):
     calls = []
     monkeypatch.setattr(terminal.git, "open_pr", lambda **kw: calls.append(kw) or "https://forgejo.example.com/p/1")
     monkeypatch.setattr(terminal, "_wrap_up", lambda ctx, title: ["Pushed."])
-    monkeypatch.setattr(terminal, "update_doc", lambda ctx, **kw: None)
+    monkeypatch.setattr(terminal, "record", lambda ctx, **kw: None)
 
     class Ctx:
         cfg = HarnessConfig(forges=(FORGEJO,))

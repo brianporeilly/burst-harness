@@ -751,6 +751,11 @@ each run and judges nothing, so there is one set of numbers.
     foundation document and ends in a PR, so merging it approves the plan.
     Then each round takes a milestone to a PR you review. Its own order of
     work follows there.
+    Step 1, the layout, built (2026-11-20): PLAN.md read, the record kept
+    through `current_milestone`, `read_plan`, `record_progress`,
+    `record_decision` and `add_backlog`, the task document retired in a
+    project, a pause adding to Done instead of replacing it, and
+    `harness plan check`.
 
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a

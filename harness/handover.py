@@ -16,7 +16,7 @@ import json
 import shutil
 from pathlib import Path
 
-from . import git, state
+from . import git, project, state
 from .context import HarnessContext
 
 RESUME_FROM = ("repo", "snapshot")
@@ -68,9 +68,15 @@ def _cut(text: str) -> str:
 
 
 def where_you_are(ctx: HarnessContext) -> str:
-    """The task document as it is now, the branch's commits since the base, and anything uncommitted."""
+    """The record as it is now (a project's current milestone, or the task document), the branch's commits since
+    the base, and anything uncommitted."""
     cfg, target = ctx.cfg, ctx.target
-    doc = target.read_file(state.doc_relpath(cfg, ctx.slug))
+    if ctx.project:
+        record = f"<project files=\"{project.PLAN} {project.PROGRESS}\">\n{project.Record(target).view()}\n</project>"
+    else:
+        doc = target.read_file(state.doc_relpath(cfg, ctx.slug))
+        record = (f"<task-document path=\"{state.doc_relpath(cfg, ctx.slug)}\">\n"
+                  f"{(doc or '(none yet)').strip()}\n</task-document>")
     try:
         log = git.run(target, "log", "--oneline", f"-{LOG_LIMIT}", f"{cfg.remote}/{cfg.base_branch}..HEAD",
                       check=False).strip()
@@ -81,8 +87,7 @@ def where_you_are(ctx: HarnessContext) -> str:
     except git.GitError:
         status = ""
     return (
-        f"<task-document path=\"{state.doc_relpath(cfg, ctx.slug)}\">\n"
-        f"{(doc or '(none yet)').strip()}\n</task-document>\n\n"
+        f"{record}\n\n"
         f"<commits branch=\"{ctx.branch}\" since=\"{cfg.remote}/{cfg.base_branch}\">\n"
         f"{_cut(log) or '(none yet)'}\n</commits>\n\n"
         f"<uncommitted>\n{_cut(status) or '(nothing)'}\n</uncommitted>"

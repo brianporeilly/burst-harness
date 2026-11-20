@@ -310,8 +310,22 @@ answer.
 
 ## State
 
-- **`docs/tasks/<slug>.md`** — committed. Goal, constraints, done, decisions,
-  open questions, next step. **Size-capped**: an oversized write is rejected, not
+- **A project's `PLAN.md`, `PROGRESS.md`, `DECISIONS.md` and `BACKLOG.md`** —
+  committed, at the repo root, in place of a task document when `PLAN.md` has a
+  `## Roadmap` of milestones (`### M3 — Title`) with numbered Accept items
+  (`- M3.1 ...`). See `docs/project-layout.md`. A burst starts from the current
+  milestone: its Accept items with their ticks, blockers, `FEEDBACK.md` and the
+  last log entry, not the whole plan. The agent keeps the record through tools
+  that write each file's format: `current_milestone`, `read_plan`,
+  `record_progress` (a finished step, the next step, a blocker, a blocker
+  resolved, a measurement), `record_decision` (the next `D-NNN`) and
+  `add_backlog`. A pause adds this burst's summary to its log entry.
+  `harness plan check` (from the repo, or `--repo`) says whether the files are
+  laid out as the harness reads them.
+- **`docs/tasks/<slug>.md`** — committed, for a repo without a plan. Goal,
+  constraints, done, decisions, open questions, next step. `record_progress`
+  and `record_decision` add to Done and Decisions without rewriting them, and a
+  pause adds its summary to Done (it used to replace it). **Size-capped**: an oversized write is rejected, not
   truncated, so the handoff document cannot grow into the token problem it exists
   to solve.
 - **`~/.burst-harness/<repo>/`** — not in the repo. Strands snapshots (the
