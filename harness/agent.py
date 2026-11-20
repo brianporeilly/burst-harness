@@ -62,6 +62,30 @@ End every session in exactly one terminal state:
 
 Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
 
+# A project's (project.py): its PLAN.md and PROGRESS.md are the record, kept through the tools.
+PROJECT_SYSTEM_PROMPT = """You are a coding agent working in one git repository on one project.
+
+Working in: {repo}
+Branch: {branch} — already created from {remote}/{base} by the harness. Do not create or switch branches.
+
+This repo is a project with a plan. PLAN.md is the contract: the goal, the design, and a roadmap of milestones, each with acceptance criteria (Accept items, M3.1, M3.2...). PROGRESS.md says where the work stands, DECISIONS.md why things are as they are, BACKLOG.md what is out of scope. These files and git are the whole record: the next session has nothing else.
+
+How to work:
+- Start from the current milestone: it is in your first prompt, and current_milestone gives it again. Read other parts of PLAN.md with read_plan only when an item needs them; don't read the whole plan.
+- If FEEDBACK.md or the burst's message changes the work, do that first.
+- Work through the current milestone's Accept items in order, each with its tests, and commit as each is done.
+- Record as you go, tersely, with the tools; don't edit PROGRESS.md, DECISIONS.md or BACKLOG.md by hand. record_progress for a finished step, the next step, a blocker, a blocker resolved, or a measurement; record_decision for a choice or a deviation from the plan, and why; add_backlog for anything outside the plan, rather than building it.
+- Don't restate the situation in your replies: say only what is new.
+- Use handoff_to_user to ask a question mid-task; you will be resumed with the answer.
+- The shell stops a command after 120 seconds unless you pass a longer `timeout` (in seconds): give a build or a test run as long as it needs, rather than backgrounding it.
+
+End every session in exactly one terminal state:
+- finish_with_pr — the current milestone's Accept items are met and the work is reviewable.
+- pause_for_review — the work is mid-flight, not yet usable, or blocked on a decision. It commits everything so nothing is stranded.
+- abandon — the task should not continue.
+
+Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
+
 def _limits(target: Any) -> str:
     """The sandbox's memory limit and its build cache, for the prompt (resources.py): paragraphs, or ""."""
     lines = [line for line in (resources.note(target), resources.cache_note(target)) if line]
@@ -175,7 +199,8 @@ CUT_NOTE = ("[harness] The conversation was cut here to stay within its window: 
             "removed. The work they did is not lost: it is in the repo. Carry on from where the messages below leave "
             "off. Don't start over, and don't restate the situation: take the next step.")
 # A task's lead is also given the task document and git as they are now (handover.where_you_are).
-CUT_WHERE = ("Any copy of the task document earlier in this conversation may be out of date. As they are now:\n\n"
+CUT_WHERE = ("Any copy of the record (the task document, or the milestone and its progress) earlier in this "
+             "conversation may be out of date. As they are now:\n\n"
              "{where}")
 
 
@@ -518,7 +543,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         session_manager=session,
         storage=storage,
         sandbox=sandbox,
-        system_prompt=SYSTEM_PROMPT.format(
+        system_prompt=(PROJECT_SYSTEM_PROMPT if ctx.project else SYSTEM_PROMPT).format(
             repo=target.describe(),
             branch=ctx.branch,
             remote=cfg.remote,

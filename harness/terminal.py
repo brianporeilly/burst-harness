@@ -8,8 +8,9 @@ the harness, not the model, commits, pushes, and opens the PR.
 from __future__ import annotations
 
 import time
+from datetime import UTC, datetime
 
-from . import budget, git, repo_commands, review, state
+from . import budget, git, project, repo_commands, review, state
 from .context import HarnessContext
 
 # How much of a failed check's output goes back to the model: its end, where test runners sum up.
@@ -50,6 +51,27 @@ def check(ctx: HarnessContext) -> None:
                       f"{output or '(no output)'}")
 
 
+def log_heading(ctx: HarnessContext) -> str:
+    """This burst's entry in PROGRESS.md's log: when it started, the milestone, and the branch."""
+    if not ctx.log_heading:
+        current = project.Record(ctx.target).current()
+        when = datetime.fromtimestamp(ctx.started, UTC).strftime("%Y-%m-%d %H:%MZ")
+        ctx.log_heading = f"{when} — {current.id if current else 'no milestone'} · {ctx.branch}"
+    return ctx.log_heading
+
+
+def record(ctx: HarnessContext, *, done: str = "", next_step: str = "", note: str = "") -> str:
+    """Add to the record: in a project, this burst's log entry; otherwise the task document's Done (added to,
+    never replaced) and Next step. Returns the file written."""
+    if ctx.project:
+        project.Record(ctx.target).log(log_heading(ctx), done=done, next_step=next_step, note=note)
+        return project.PROGRESS
+    doc = state.read(ctx.target, ctx.cfg, ctx.slug)
+    more = "\n".join(f"- {line.strip().removeprefix('- ')}" for line in done.strip().splitlines() if line.strip())
+    return update_doc(ctx, done=(doc.done.rstrip() + "\n" + more).strip() if more else None,
+                      next_step=next_step or None, open_questions=note or None)
+
+
 def update_doc(ctx: HarnessContext, **updates: str | None) -> str:
     """Replace sections of the task document. Raises ValueError over the size cap."""
     doc = state.merge(state.read(ctx.target, ctx.cfg, ctx.slug), **updates)
@@ -87,7 +109,7 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         return pause(ctx, summary=f"Stopped trying to open a PR: the repo's check failed {ctx.checks['failed']} "
                                   "times.", next_step=f"Make `{cfg.check_command.strip()}` pass.") + f"\n{failed}"
     body = review.before_pr(ctx, body)  # review_with: its findings go back once (ReviewGiven), then into the body
-    update_doc(ctx, next_step=next_step or "Awaiting PR review.")
+    record(ctx, next_step=next_step or "Awaiting PR review.")
     steps = _wrap_up(ctx, title)
     if ctx.push_error:
         # Nothing on the remote to open a PR from. The sandbox is kept (cli._close), so a later burst
@@ -115,7 +137,11 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
 
 def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str | None = None) -> str:
     """Commit and push without a PR. Raises ValueError if the task doc is over its cap."""
-    update_doc(ctx, done=summary, next_step=next_step, open_questions=questions)
+    # Added to what earlier bursts recorded: replacing Done with this burst's summary lost theirs.
+    if ctx.project:
+        record(ctx, done=summary, next_step=next_step, note=f"Questions: {questions}" if questions else "")
+    else:
+        record(ctx, done=summary, next_step=next_step, note=questions or "")
     steps = _wrap_up(ctx, f"wip({ctx.slug}): {next_step}")
     ctx.terminal = "paused"
     ctx.said = {"summary": summary, "next_step": next_step, **({"questions": questions} if questions else {})}
@@ -124,7 +150,7 @@ def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str |
 
 def abandon(ctx: HarnessContext, *, reason: str) -> str:
     """Commit and push what exists, recording why. Raises ValueError over the cap."""
-    update_doc(ctx, next_step=f"Abandoned: {reason}")
+    record(ctx, next_step=f"Abandoned: {reason}")
     steps = _wrap_up(ctx, f"wip({ctx.slug}): abandoned - {reason}")
     ctx.terminal = "abandoned"
     ctx.said = {"reason": reason}

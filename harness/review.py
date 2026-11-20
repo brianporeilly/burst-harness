@@ -17,7 +17,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
-from . import budget, git, metrics, state, transcript
+from . import budget, git, metrics, project, state, transcript
 
 # How much of the diff goes into the reviewer's brief; it can run git diff itself for the rest.
 DIFF_CHARS = 30000
@@ -29,7 +29,7 @@ BRIEF = """Review this change before it becomes a pull request. You are read-onl
 around it, and look things up in the sources. You have about {minutes} minutes and {calls} model calls; you will \
 be told when you are nearly out, and should then report what you have.
 
-Look for bugs, requirements in the task document the change misses, claims the work doesn't back up, and \
+Look for bugs, requirements in the task's record (below) the change misses, claims the work doesn't back up, and \
 risky or unrelated changes. Report the findings that matter, most serious first, each with where (file:line) \
 and why; at most ten. Skip style nits. If there is nothing worth changing, reply with exactly {nothing}.
 
@@ -74,7 +74,10 @@ def _brief(ctx: Any) -> str:
     diff = diff.strip()
     if len(diff) > DIFF_CHARS:
         diff = diff[:DIFF_CHARS] + f"\n[harness] The diff was cut here: run `git diff {since}` for the rest."
-    doc = ctx.target.read_file(state.doc_relpath(cfg, ctx.slug)) or ""
+    if getattr(ctx, "project", False):
+        doc = project.Record(ctx.target).view(log_entries=0)  # the milestone, its criteria and their ticks
+    else:
+        doc = ctx.target.read_file(state.doc_relpath(cfg, ctx.slug)) or ""
     checked = (f"The repo's check (`{cfg.check_command.strip()}`) has already passed on this change: don't run "
                "it, or the tests, again. " if cfg.check_command.strip() else "")
     return BRIEF.format(nothing=NOTHING, checked=checked, minutes=cfg.review_max_minutes, calls=cfg.review_max_calls,
