@@ -5,6 +5,16 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.53.0 (2026-11-20)
+
+### Features
+
+- **orchestrator**: The review loop: a PR's review in the next burst, a roadmap change holding
+  auto-continue, the milestone on the card and in Slack
+  ([#57](https://github.com/brianporeilly/burst-harness/pull/57),
+  [`77094a3`](https://github.com/brianporeilly/burst-harness/commit/77094a3bb1809c9ad38fadc308090334d07a8eff))
+
+
 ## v0.52.0 (2026-11-20)
 
 ### Features
