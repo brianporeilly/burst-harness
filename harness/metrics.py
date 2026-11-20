@@ -173,7 +173,8 @@ def burst(lead: dict[str, Any] | None, delegated: dict[str, dict[str, Any]], *, 
         "cost_usd": None if any(part is None for part in parts) else round(sum(parts), 4),
         "fixups": fixups,
         "handoffs": handoffs,
-        "checks": checks or None,  # check_command: how often it ran before a PR, and failed
+        # check_command: how often it ran before a PR, and failed
+        "checks": {"run": checks.get("run", 0), "failed": checks.get("failed", 0)} if checks else None,
         "setup": setup or None,  # setup_command: its exit code and seconds
         # review_with before the PR: who reviewed, and what came of it (findings, no findings, failed)
         "review": {"by": review["by"], "outcome": review["outcome"]} if review else None,
