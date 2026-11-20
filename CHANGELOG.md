@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.45.2 (2026-11-20)
+
+### Bug Fixes
+
+- **harness**: A smoke test and replay of a whole burst; checks always say how many failed
+  ([#48](https://github.com/brianporeilly/burst-harness/pull/48),
+  [`006be91`](https://github.com/brianporeilly/burst-harness/commit/006be9144ff67d500b8e07b8ef5e298e8d44051a))
+
+
 ## v0.45.1 (2026-11-19)
 
 ### Bug Fixes
