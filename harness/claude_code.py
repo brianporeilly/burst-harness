@@ -100,7 +100,9 @@ If unsure which applies, pause. You may commit as you go; anything left uncommit
 
 # In a project (project.py) the record is the repo's PLAN.md and PROGRESS.md, in place of the task document.
 PROJECT_RECORD = """Task document: none. This repo is a project with a plan, and these files are the record instead: the next session has only them and git.
-- PLAN.md is the contract: the goal, the design, and a roadmap of milestones (`### M3 — Title`), each with Accept items (`- M3.1 ...`). Work through the current milestone's (PROGRESS.md's `Current:` line) in order, each with its tests. Read the rest of the plan only where an item needs it. Change it only to fix an error, and record why in DECISIONS.md.
+- PLAN.md is the contract: the goal, the design, and a roadmap of milestones (`### M3 — Title`), each with Accept items (`- M3.1 ...`). Work through the current milestone's (PROGRESS.md's `Current:` line) in order, each with its tests. Read the rest of the plan only where an item needs it.
+- When an Accept item is met, tick it in PROGRESS.md's `## Milestones`, on its line under the current milestone: `  - [x] M3.1 <its text> — <evidence: the test or command, and its result> (<date>)`. Finishing checks the ticks: the PR lists each item as met or not.
+- If the work shows the plan is wrong, change PLAN.md in its layout: keep items' ids, strike an item through (`- ~~M3.2 ...~~`) rather than deleting it, and give a new item the next number. Record each change in DECISIONS.md as `## D-NNN — Plan change: <title> (<milestone>, <date>)` with what the plan said before and why.
 - PROGRESS.md: keep its headings. Under `## Log`, add to one entry for this session (`### <date> — <milestone> · {branch}`): what was done, as terse outcomes, and `Next: ...`. Add blockers under `## Blockers`, and measurements as rows of the `## Measured` table.
 - DECISIONS.md: append-only. A choice or a deviation from the plan is `## D-NNN — Title (<milestone>, <date>)`, the next number, with What, Why and Alternatives.
 - BACKLOG.md: anything outside the plan goes here (under `## Ideas`), never into code.

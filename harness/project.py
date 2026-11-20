@@ -105,6 +105,24 @@ def parse_plan(text: str) -> Plan:
     return Plan(milestones)
 
 
+def _number(ident: str) -> str:
+    """M3, M3a, M3.2 -> "3": the milestone a split one, or an item, belongs to."""
+    found = re.match(r"M(\d+)", ident)
+    return found.group(1) if found else ident
+
+
+def _milestone_spans(text: str) -> dict[str, tuple[int, int]]:
+    """Where each `### M<n>` section of the roadmap starts and ends in PLAN.md's text."""
+    roadmap = re.search(r"^##\s+(?:[\d.]+\s+)?Roadmap\s*$", text, re.M | re.I)
+    if roadmap is None:
+        return {}
+    end = re.search(r"^##\s", text[roadmap.end():], re.M)
+    stop = roadmap.end() + end.start() if end else len(text)
+    heads = [(found.start() + roadmap.end(), found.group(1))
+             for found in re.finditer(r"^###\s+(M\d+[a-z]?)\b.*$", text[roadmap.end():stop], re.M)]
+    return {ident: (start, heads[i + 1][0] if i + 1 < len(heads) else stop) for i, (start, ident) in enumerate(heads)}
+
+
 def check_plan(plan_text: str, progress_text: str | None = None) -> list[str]:
     """What is wrong with the plan's layout, as sentences: nothing when it is fine."""
     plan = parse_plan(plan_text)
@@ -119,7 +137,7 @@ def check_plan(plan_text: str, progress_text: str | None = None) -> list[str]:
         if not [item for item in milestone.items if not item.struck]:
             problems.append(f"{milestone.id} has no Accept items (`- {milestone.id}.1 ...` under `Accept:`).")
         for item in milestone.items:
-            if not item.id.startswith(milestone.id + "."):
+            if _number(item.id) != _number(milestone.id):  # M3a and M3b, split from M3, keep M3's items
                 problems.append(f"{item.id} is under {milestone.id}: its id should start {milestone.id}.")
             if item.id in seen:
                 problems.append(f"{item.id} is in the plan twice.")
@@ -245,6 +263,9 @@ class Record:
         current = plan.find(current_id(progress.head) or "") or (plan.milestones[0] if plan.milestones else None)
         if current is None:
             return "PLAN.md has no milestones."
+        held_all = ticks("## Milestones\n" + progress.section("Milestones"))
+        if held_all.get(current.id, (False,))[0] and current is plan.milestones[-1]:
+            return f"Every milestone in PLAN.md is done; {current.id} — {current.title} was the last."
         held = ticks("## Milestones\n" + progress.section("Milestones"))
         done = sum(1 for m in plan.milestones if held.get(m.id, (False, ""))[0])
         lines = [f"Current milestone: {current.id} — {current.title} "
@@ -335,6 +356,136 @@ class Record:
         self.target.write_file(DECISIONS, text.rstrip() + "\n\n" + "\n".join(entry) + "\n")
         return ident
 
+    def tick(self, item_id: str, evidence: str) -> Item:
+        """Tick one of the current milestone's Accept items, with what shows it is met."""
+        plan, progress = self.plan(), self.progress()
+        current = plan.find(current_id(progress.head) or "")
+        if current is None:
+            raise ProjectError("PROGRESS.md names no current milestone that is in the plan.")
+        item = next((i for i in current.items if i.id == item_id.strip() and not i.struck), None)
+        if item is None:
+            listed = ", ".join(i.id for i in current.items if not i.struck)
+            raise ProjectError(f"{item_id} is not an Accept item of the current milestone, {current.id} ({listed}).")
+        if not evidence.strip():
+            raise ProjectError("Give the evidence: the test or command that shows it is met, and its result.")
+        sync_milestones(progress, plan)
+        line = f"  - [x] {item.id} {item.text} — {' '.join(evidence.split())} ({today()})"
+        progress.sections["Milestones"] = re.sub(rf"^\s*[-*]\s+\[[ xX]\]\s+{re.escape(item.id)}\b.*$",
+                                                 lambda _: line, progress.section("Milestones"), flags=re.M)
+        self.write_progress(progress)
+        return item
+
+    def unticked(self) -> list[Item]:
+        """The current milestone's Accept items not yet ticked."""
+        plan = self.plan()
+        progress_text = self.read(PROGRESS) or ""
+        current = plan.find(current_id(progress_text) or "")
+        held = ticks(progress_text)
+        return [] if current is None else [i for i in current.items if not i.struck and not held.get(i.id, (0,))[0]]
+
+    def criteria(self) -> dict[str, int] | None:
+        """The current milestone's Accept items: how many are ticked, of how many."""
+        current = self.current()
+        if current is None:
+            return None
+        total = len([i for i in current.items if not i.struck])
+        return {"ticked": total - len(self.unticked()), "total": total}
+
+    def advance(self, base_progress: str | None) -> str | None:
+        """Move on to the next milestone when the current one's Accept items are all ticked in `base_progress`,
+        PROGRESS.md as the base branch has it: its PR was merged. Returns the new milestone's id, if it moved."""
+        if not base_progress:
+            return None
+        plan, progress = self.plan(), self.progress()
+        ident = current_id(progress.head)
+        current = plan.find(ident or "")
+        if current is None:
+            return None
+        held = ticks(base_progress)
+        if any(not item.struck and not held.get(item.id, (0,))[0] for item in current.items):
+            return None
+        at = plan.milestones.index(current)
+        later = plan.milestones[at + 1] if at + 1 < len(plan.milestones) else None
+        lines = progress.section("Milestones").splitlines()
+        progress.sections["Milestones"] = "\n".join(
+            re.sub(r"\[ \]", "[x]", line, count=1) if re.match(rf"^[-*]\s+\[ \]\s+{re.escape(current.id)}\b", line)
+            else line for line in lines)
+        if later is None:
+            self.write_progress(progress)
+            return None
+        progress.head = CURRENT.sub(f"Current: {later.id} — {later.title}", progress.head)
+        self.write_progress(progress)
+        return later.id
+
+    def amend(self, target: str, text: str, title: str, why: str, alternatives: str = "") -> tuple[str, str]:
+        """Change PLAN.md: a milestone's section replaced (`M3`; split into M3a and M3b; empty text drops it), new
+        milestones added (`after M3`), or another `##` section's body replaced (its heading, or a word of it). The
+        result must pass check_plan, and Accept items are struck (`~~M3.2 ...~~`), never deleted, unless their
+        milestone goes. Records a plan-change decision with what the plan said before. Returns the decision's id
+        and the kind of change: "roadmap" (milestones added, dropped or reshaped, or anything outside the
+        roadmap) or "item" (within a milestone)."""
+        old = self.read(PLAN) or ""
+        spans = _milestone_spans(old)
+        wanted = target.strip()
+        text = text.strip()
+        if re.fullmatch(r"M\d+[a-z]?", wanted):
+            if wanted not in spans:
+                raise ProjectError(f"There is no {wanted} in the roadmap ({', '.join(spans)}).")
+            start, end = spans[wanted]
+            was = old[start:end].strip()
+            new = old[:start] + (text + "\n\n" if text else "") + old[end:]
+            section = False
+        elif re.fullmatch(r"after\s+M\d+[a-z]?", wanted, re.I):
+            after = wanted.split()[1]
+            if after not in spans:
+                raise ProjectError(f"There is no {after} in the roadmap ({', '.join(spans)}).")
+            if not text:
+                raise ProjectError("Give the new milestones' text.")
+            end = spans[after][1]
+            was = ""
+            new = old[:end].rstrip("\n") + "\n\n" + text + "\n\n" + old[end:].lstrip("\n")
+            section = False
+        else:
+            found = [m for m in re.finditer(r"^##\s+(.+?)\s*$", old, re.M)
+                     if wanted.lower().lstrip("# ") in m.group(1).lower()]
+            if len(found) != 1:
+                headings = ", ".join(m.group(1) for m in re.finditer(r"^##\s+(.+?)\s*$", old, re.M))
+                raise ProjectError(f"Name a milestone (M3), `after M3`, or one `##` section ({headings}).")
+            if re.search(r"roadmap", found[0].group(1), re.I):
+                raise ProjectError("Change the roadmap a milestone at a time: M3, or after M3.")
+            rest = old[found[0].end():]
+            nxt = re.search(r"^##\s", rest, re.M)
+            end = found[0].end() + (nxt.start() if nxt else len(rest))
+            was = old[found[0].end():end].strip()
+            new = old[:found[0].end()] + "\n\n" + text + "\n\n" + old[end:].lstrip("\n")
+            section = True
+        if problems := check_plan(new):
+            raise ProjectError("The plan would not be laid out as the harness reads it:\n" + "\n".join(problems))
+        before, after_plan = parse_plan(old), parse_plan(new)
+        kept = {m.id for m in after_plan.milestones}
+        lost = [item.id for m in before.milestones if any(_number(k) == _number(m.id) for k in kept)
+                for item in m.items if not item.struck and item.id not in {i.id for n in after_plan.milestones
+                                                                           for i in n.items}]
+        if lost:
+            raise ProjectError(f"{', '.join(lost)} would be gone: strike an item through (`- ~~M3.2 ...~~`) rather "
+                               "than deleting it, so its id is never used again.")
+        reshaped = [m.id for m in before.milestones] != [m.id for m in after_plan.milestones]
+        kind = "roadmap" if section or reshaped else "item"
+        self.target.write_file(PLAN, new)
+        progress = self.progress()
+        ident = current_id(progress.head)
+        if after_plan.find(ident or "") is None:  # the current milestone was split or dropped
+            later = next((m for m in after_plan.milestones if m.id not in {b.id for b in before.milestones}), None)
+            later = later or (after_plan.milestones[0] if after_plan.milestones else None)
+            if later is not None:
+                progress.head = CURRENT.sub(f"Current: {later.id} — {later.title}", progress.head)
+        self.write_progress(progress)
+        current = self.current()
+        cut = was if len(was) <= 1500 else was[:1500] + " [...]"
+        decision = self.decide(title, f"PLAN.md, {wanted}, changed." + (f" It said:\n\n```\n{cut}\n```" if was else ""),
+                               why, alternatives, milestone=current.id if current else "", plan_change=True)
+        return decision, kind
+
     def add_backlog(self, idea: str) -> None:
         text = self.read(BACKLOG) or ("# Backlog\n\nOut-of-scope ideas and deferred bugs. Nothing here is built "
                                       "without a person saying so.\n\n## Ideas\n")
@@ -353,6 +504,23 @@ class Record:
 
 def _log_entries(log: str) -> list[str]:
     return [entry.strip() for entry in re.split(r"(?=^###\s)", log, flags=re.M) if entry.strip().startswith("###")]
+
+
+def plan_change(before: str, after: str) -> str:
+    """How PLAN.md changed: "roadmap" (milestones added, dropped or reshaped, or anything outside the roadmap: the
+    goal, the scope, the design), "item" (only within milestones), or "" (not at all)."""
+    if " ".join(before.split()) == " ".join(after.split()):
+        return ""
+
+    def outside(text: str) -> str:
+        spans = _milestone_spans(text)
+        if spans:
+            start, end = min(s for s, _ in spans.values()), max(e for _, e in spans.values())
+            text = text[:start] + text[end:]
+        return " ".join(text.split())
+
+    ids = [[m.id for m in parse_plan(text).milestones] for text in (before, after)]
+    return "roadmap" if ids[0] != ids[1] or outside(before) != outside(after) else "item"
 
 
 def is_project(target: ExecTarget) -> bool:

@@ -29,10 +29,10 @@ REVIEWER = [{"text": "NO FINDINGS"}]
 # HARNESS_RESULT's keys, and its metrics': a field gone, or renamed, breaks whatever reads it. A field added is
 # fine, and is added here.
 RESULT_KEYS = {"slug", "branch", "state", "pr", "engine", "target", "kept", "model", "base_url", "agent", "delegated",
-               "said", "context_files", "fallback", "metrics", "config", "transcript"}
+               "said", "context_files", "fallback", "project", "metrics", "config", "transcript"}
 METRIC_KEYS = {"schema", "seconds", "model_seconds", "tool_seconds", "model_calls", "tool_calls", "tool_errors",
                "tokens", "peak_prompt_tokens", "cut_off", "window_drops", "window_cuts", "repeats", "model_retries", "lost_server", "cost_usd",
-               "fixups", "handoffs", "checks", "setup", "review"}
+               "fixups", "handoffs", "checks", "setup", "review", "criteria", "records"}
 
 
 def _burst(tmp_path, name, lead, helper, reviewer, capsys):
@@ -75,8 +75,10 @@ def test_a_tiny_task_finishes_with_every_number_filled_in(smoke):
 
     numbers = result["metrics"]
     assert set(numbers) == METRIC_KEYS and numbers["schema"] == metrics.METRICS_SCHEMA
-    # A Strands burst on llama.cpp knows all of it: nothing is left null.
-    assert all(value is not None for value in numbers.values()), numbers
+    # A Strands burst on llama.cpp knows all of it: nothing is left null, but a project's criteria (this isn't one).
+    assert all(value is not None for key, value in numbers.items() if key != "criteria"), numbers
+    assert numbers["criteria"] is None and result["project"] is None
+    assert numbers["records"] == {"progress": 0, "decisions": 0, "plan_changes": 0, "backlog": 0, "ticks": 0}
     assert numbers["model_calls"] == len(LEAD) - 1  # the last turn's "Done." is never asked for: finishing ended it
     assert numbers["tool_calls"] == 3 and numbers["tool_errors"] == 0
     assert numbers["tokens"]["input"] > 0 and numbers["tokens"]["output"] > 0 and numbers["peak_prompt_tokens"] > 0

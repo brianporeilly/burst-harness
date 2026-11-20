@@ -21,6 +21,9 @@
   checks               check_command before a PR: {run, failed}, or None when none ran
   setup                setup_command before the model: {exit, seconds}, or None when none ran
   review               review_with before the PR: {by, outcome}, or None when none ran
+  criteria             a project's current milestone at the end: {ticked, total} Accept items; None elsewhere
+  records              what the burst recorded through the harness's tools: {progress, decisions, plan_changes,
+                       backlog, ticks}, each a count (docs/project-layout.md)
 
 What is not known for an engine (Claude Code reports no timings) is null, never a guess. Nothing here is a
 setting's value or a secret: `config` (cli._result_line) names the --config layers and a hash of the settings.
@@ -53,6 +56,7 @@ FREE = frozenset(("llamacpp",))  # a model run locally costs nothing per token
 # (llama.cpp, OpenAI, Gemini) count the cached prefix in the prompt's tokens.
 CACHE_OUTSIDE_INPUT = frozenset(("anthropic", "bedrock"))
 
+RECORDS = ("progress", "decisions", "plan_changes", "backlog", "ticks")
 COUNTERS = ("cut_off", "window_drops", "window_cuts", "repeats", "model_retries", "lost_server")
 
 # What the harness counts itself, by agent, alongside Strands' own metrics.
@@ -160,7 +164,8 @@ def add(total: dict[str, Any] | None, more: dict[str, Any]) -> dict[str, Any]:
 
 def burst(lead: dict[str, Any] | None, delegated: dict[str, dict[str, Any]], *, seconds: float, fixups: int,
           handoffs: int, checks: dict[str, int] | None = None,
-          setup: dict[str, Any] | None = None, review: dict[str, Any] | None = None) -> dict[str, Any]:
+          setup: dict[str, Any] | None = None, review: dict[str, Any] | None = None,
+          criteria: dict[str, int] | None = None, records: dict[str, int] | None = None) -> dict[str, Any]:
     """`metrics` for a run: the lead's numbers (None when the engine recorded none), its wall time and loop
     counts, and the cost of the lead and its delegates together."""
     lead = lead or {}
@@ -180,6 +185,8 @@ def burst(lead: dict[str, Any] | None, delegated: dict[str, dict[str, Any]], *, 
         "setup": setup or None,  # setup_command: its exit code and seconds
         # review_with before the PR: who reviewed, and what came of it (findings, no findings, failed)
         "review": {"by": review["by"], "outcome": review["outcome"]} if review else None,
+        "criteria": criteria,
+        "records": {kind: (records or {}).get(kind, 0) for kind in RECORDS},
         # What only an engine reports (Claude Code's: per model, the plan; claude_usage.py), as it reports it.
         **{key: value for key, value in lead.items() if key not in standard and key != "cost_usd"},
     }

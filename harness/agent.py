@@ -73,8 +73,9 @@ This repo is a project with a plan. PLAN.md is the contract: the goal, the desig
 How to work:
 - Start from the current milestone: it is in your first prompt, and current_milestone gives it again. Read other parts of PLAN.md with read_plan only when an item needs them; don't read the whole plan.
 - If FEEDBACK.md or the burst's message changes the work, do that first.
-- Work through the current milestone's Accept items in order, each with its tests, and commit as each is done.
-- Record as you go, tersely, with the tools; don't edit PROGRESS.md, DECISIONS.md or BACKLOG.md by hand. record_progress for a finished step, the next step, a blocker, a blocker resolved, or a measurement; record_decision for a choice or a deviation from the plan, and why; add_backlog for anything outside the plan, rather than building it.
+- Work through the current milestone's Accept items in order, each with its tests. When one is met, tick_criterion it with the evidence (the test or command, and its result), then commit.
+- Record as you go, tersely, with the tools; don't edit PLAN.md, PROGRESS.md, DECISIONS.md or BACKLOG.md by hand. record_progress for a finished step, the next step, a blocker, a blocker resolved, or a measurement; record_decision for a choice or a deviation from the plan, and why; add_backlog for anything outside the plan, rather than building it.
+- If the work shows the plan is wrong (an item that can't be met as written, a milestone too big for one PR, a step it missed), change it with amend_plan and say why. The reviewer sees every change first.
 - Don't restate the situation in your replies: say only what is new.
 - Use handoff_to_user to ask a question mid-task; you will be resumed with the answer.
 - The shell stops a command after 120 seconds unless you pass a longer `timeout` (in seconds): give a build or a test run as long as it needs, rather than backgrounding it.

@@ -100,6 +100,13 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         # deadline meanwhile, or a refusal the lead never gets to fix, strands nothing.
         for step in _wrap_up(ctx, f"wip({ctx.slug}): before the check and review"):
             print(step, flush=True)
+    if getattr(ctx, "project", False) and not ctx.criteria_refused and (unticked := project.Record(ctx.target).unticked()):
+        ctx.criteria_refused = True
+        listed = "\n".join(f"- {item.id} {item.text}" for item in unticked)
+        raise ValueError(f"No PR yet: the current milestone's Accept items aren't all ticked:\n{listed}\n"
+                         "Meet each one and tick_criterion it with the evidence, then finish again. If one can't be "
+                         "met in this round, finish again and say why in the body, for each: the PR lists them as "
+                         "not met.")
     try:
         check(ctx)
     except CheckFailed as failed:
@@ -109,6 +116,8 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         return pause(ctx, summary=f"Stopped trying to open a PR: the repo's check failed {ctx.checks['failed']} "
                                   "times.", next_step=f"Make `{cfg.check_command.strip()}` pass.") + f"\n{failed}"
     body = review.before_pr(ctx, body)  # review_with: its findings go back once (ReviewGiven), then into the body
+    if getattr(ctx, "project", False):
+        body = f"{project_summary(ctx)}\n\n---\n\n{body}"
     record(ctx, next_step=next_step or "Awaiting PR review.")
     steps = _wrap_up(ctx, title)
     if ctx.push_error:
@@ -133,6 +142,59 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
     ctx.terminal, ctx.pr_url = "pr", url
     kind = "draft PR" if cfg.pr_draft else "PR"
     return "\n".join([*steps, f"Opened {kind}: {url}"])
+
+
+RECORD_FILES = frozenset((project.PLAN, project.PROGRESS, project.DECISIONS, project.BACKLOG, project.FEEDBACK))
+
+
+def changed_files(ctx: HarnessContext) -> list[str]:
+    """What this branch changes against the base, committed or not, new files included."""
+    base = f"{ctx.cfg.remote}/{ctx.cfg.base_branch}"
+    since = git.run(ctx.target, "merge-base", base, "HEAD", check=False).strip() or base
+    names = git.run(ctx.target, "diff", "--name-only", since, check=False).splitlines()
+    names += git.run(ctx.target, "ls-files", "--others", "--exclude-standard", check=False).splitlines()
+    return sorted({name.strip() for name in names if name.strip()})
+
+
+def project_summary(ctx: HarnessContext) -> str:
+    """The top of a project's PR, from its record: the milestone's Accept items met and not, plan changes (first,
+    for review), this round's decisions, the checkpoint questions, and whether docs changed."""
+    record = project.Record(ctx.target)
+    current = record.current()
+    if current is None:
+        return "(PLAN.md names no current milestone.)"
+    base_plan = git.run(ctx.target, "show", f"{ctx.cfg.remote}/{ctx.cfg.base_branch}:{project.PLAN}", check=False)
+    found = project.plan_change(base_plan, record.read(project.PLAN) or "") if base_plan else ""
+    if found == "roadmap" or not ctx.plan_change:
+        ctx.plan_change = found or ctx.plan_change
+    held = project.ticks(record.read(project.PROGRESS) or "")
+    items = [item for item in current.items if not item.struck]
+    met = [item for item in items if held.get(item.id, (0,))[0]]
+    out = [f"## {current.id} — {current.title}" + (" (complete)" if len(met) == len(items) else
+                                                   f" ({len(met)} of {len(items)} Accept items met)")]
+    base = f"{ctx.cfg.remote}/{ctx.cfg.base_branch}"
+    before = git.run(ctx.target, "show", f"{base}:{project.DECISIONS}", check=False)
+    old = set(project.DECISION.findall(before or ""))
+    decisions = [line[3:].strip() for line in (record.read(project.DECISIONS) or "").splitlines()
+                 if (found := project.DECISION.match(line)) and found.group(1) not in old]
+    changes = [d for d in decisions if "Plan change:" in d]
+    if ctx.plan_change and not changes:
+        changes = ["PLAN.md changed, with no decision recorded for it: see its diff."]
+    if changes:
+        out += ["", "### Plan changes: review these" + (" (the roadmap changed: the next round waits for you)"
+                                                         if ctx.plan_change == "roadmap" else ""),
+                *(f"- {d}" for d in changes)]
+    out += ["", "### Met", *(f"- [x] {i.id} {i.text} — {held[i.id][1].split(' — ', 1)[-1]}" for i in met)] if met else []
+    if unmet := [i for i in items if i not in met]:
+        out += ["", "### Not met (the reasons are below)", *(f"- [ ] {i.id} {i.text}" for i in unmet)]
+    if others := [d for d in decisions if d not in changes]:
+        out += ["", "### Decisions", *(f"- {d}" for d in others)]
+    if current.checkpoint:
+        out += ["", "### For you to try", current.checkpoint]
+    docs = [name for name in changed_files(ctx) if name not in RECORD_FILES
+            and (name.startswith("docs/") or name.lower().startswith("readme") or name.endswith((".md", ".rst")))]
+    out += ["", "Docs changed: " + (", ".join(f"`{name}`" for name in docs) if docs else "none")]
+    return "\n".join(out)
 
 
 def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str | None = None) -> str:

@@ -411,11 +411,41 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
     return EXIT_NEEDS_INPUT if ctx.waiting else EXIT_NO_TERMINAL_STATE
 
 
+def _project_end(ctx: HarnessContext) -> None:
+    """A project's milestone and its Accept items' ticks as the burst ends, kept for the result line, which is said
+    after the target is released."""
+    if not ctx.project:
+        return
+    try:
+        record = project.Record(ctx.target)
+        current, criteria = record.current(), record.criteria()
+        # However it changed (amend_plan, or by hand, as Claude Code does): against the base.
+        base = git.run(ctx.target, "show", f"{ctx.cfg.remote}/{ctx.cfg.base_branch}:{project.PLAN}", check=False)
+        found = project.plan_change(base, record.read(project.PLAN) or "") if base else ""
+        if found == "roadmap" or not ctx.plan_change:
+            ctx.plan_change = found or ctx.plan_change
+    except Exception as err:  # noqa: BLE001 -- the result line is said regardless
+        print(f"! Could not read the project's record: {type(err).__name__}: {err}", file=sys.stderr)
+        return
+    ctx.project_end = {"milestone": current.id if current else None, "criteria": criteria}
+
+
+def _project_result(ctx: HarnessContext) -> dict[str, object] | None:
+    if not ctx.project:
+        return None
+    end = ctx.project_end or {}
+    criteria = end.get("criteria")
+    return {"milestone": end.get("milestone"),
+            "complete": bool(criteria) and criteria["ticked"] == criteria["total"],
+            "plan_change": ctx.plan_change or None}
+
+
 def _result_line(ctx: HarnessContext, state_name: str) -> None:
     """One machine-readable line for whatever launched this (a Job, the orchestrator). `target`
     reattaches a later run to this one's sandbox, which is still there if `kept`. `said` is what the
     agent said its end was about (ctx.said), each text cut to SAID_LIMIT."""
     said = {key: [_cut(v) for v in value] if isinstance(value, list) else _cut(value) for key, value in ctx.said.items()}
+    criteria = (ctx.project_end or {}).get("criteria")
     result = {
         "slug": ctx.slug, "branch": ctx.branch, "state": state_name, "pr": ctx.pr_url,
         "engine": ctx.cfg.engine, "target": ctx.target.attach_hint() or None, "kept": ctx.kept,
@@ -428,9 +458,12 @@ def _result_line(ctx: HarnessContext, state_name: str) -> None:
         "said": said or None,
         "context_files": ctx.context_files or None,
         "fallback": ctx.fallback,
+        # A project's (project.py): its milestone at the end, whether its Accept items are all ticked, and the
+        # plan's change this burst, if any ("roadmap" holds auto-continue in the orchestrator).
+        "project": _project_result(ctx),
         "metrics": metrics.burst(ctx.lead_metrics, ctx.delegated, seconds=time.time() - ctx.started,
                                  fixups=ctx.fixups, handoffs=ctx.handoffs, checks=ctx.checks,
-                                 setup=ctx.setup, review=ctx.review),
+                                 setup=ctx.setup, review=ctx.review, criteria=criteria, records=ctx.records),
         "config": metrics.config_label(ctx.cfg),
     }
     try:
@@ -515,6 +548,7 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
             engine.headless(prompt)
         finally:
             engine.cleanup()
+            _project_end(ctx)
         return engine.report()
     state_dir = ctx.cfg.resolve_state_dir(ctx.state_key)
     if ctx.cfg.resume_from == "repo" and handover.set_aside(state_dir, ctx.slug):
@@ -531,6 +565,7 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
         _run(agent, ctx, prompt, interactive=False)
     finally:
         ctx.lead_metrics = metrics.of_agent(agent, models.model_name(ctx.cfg), ctx.cfg.provider)
+        _project_end(ctx)
     return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
 
@@ -563,6 +598,10 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | 
 
 
 def _project_prompt(ctx: HarnessContext, instruction: str) -> str:
+    # The current milestone's PR was merged since (its ticks are in the base): on to the next one.
+    base = git.run(ctx.target, "show", f"{ctx.cfg.remote}/{ctx.cfg.base_branch}:{project.PROGRESS}", check=False)
+    if moved := project.Record(ctx.target).advance(base):
+        print(f"The last milestone was merged: on to {moved}.")
     return PROJECT_PROMPT.format(branch=ctx.branch, base=f"{ctx.cfg.remote}/{ctx.cfg.base_branch}",
                                  where=handover.where_you_are(ctx), instruction=instruction)
 
