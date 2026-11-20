@@ -1223,6 +1223,13 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   task keeps its earlier rounds' branches and PRs (`rounds` in
   `GET /api/tasks/SLUG`). So a multi-step piece of work is one task: merge, then
   Continue.
+- **Reviewing.** Comment on a task's open PR (comments, a review, comments on
+  lines) and press Continue: the next burst's first prompt has what was said
+  since its last commit, bots left out, and finishing again updates the same PR.
+  A project's card and its Slack message at a burst's end show the milestone and
+  how many Accept items are met. A round that changed the project's roadmap says
+  so; after its merge, auto-continue doesn't start the next round, and you
+  continue it yourself.
 - A burst that fails or is stopped with work not yet pushed keeps its
   sandbox. The next burst carries on in it, and the orchestrator removes it
   once a burst pushes or gives up, or the task is removed.

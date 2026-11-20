@@ -17,7 +17,9 @@ token ever being there.
 from __future__ import annotations
 
 import base64
+import json
 import os
+from datetime import UTC, datetime
 import re
 import shlex
 import subprocess
@@ -273,6 +275,75 @@ def pr_state(url: str, cfg: HarnessConfig | None = None) -> str:
     if proc.returncode != 0 or state not in ("open", "merged", "closed"):
         raise GitError(_redact(f"gh pr view failed: {(proc.stderr or proc.stdout).strip()}"))
     return state
+
+
+def _gh(args: list[str], what: str) -> str:
+    env = dict(os.environ)
+    if secret := token():
+        env["GH_TOKEN"] = secret
+    try:
+        proc = subprocess.run(["gh", *args], capture_output=True, text=True, env=env, timeout=60, check=False)
+    except FileNotFoundError as err:
+        raise GitError("gh is not installed on the driver.") from err
+    except subprocess.TimeoutExpired as err:
+        raise GitError(f"{what} took too long.") from err
+    if proc.returncode != 0:
+        raise GitError(_redact(f"{what} failed: {(proc.stderr or proc.stdout).strip()}"))
+    return proc.stdout
+
+
+def find_pr(repo: str, head: str, cfg: HarnessConfig | None = None) -> str | None:
+    """The open PR from branch `head` of `repo` (host/owner/repo, as repo_slug gives it), if there is one."""
+    if (host := _forge(cfg, f"https://{repo}")).kind == "forgejo":
+        try:
+            return forge.forgejo_find_pr(host, f"https://{repo}", head)
+        except forge.ForgeError as err:
+            raise GitError(_redact(str(err))) from err
+    found = _gh(["pr", "list", "--repo", repo, "--head", head, "--state", "open", "--json", "url",
+                 "--jq", ".[0].url // \"\""], f"gh pr list --head {head}").strip()
+    return found or None
+
+
+def feedback(url: str, cfg: HarnessConfig | None = None, *, since: str = "") -> list[dict[str, str]]:
+    """What people said on a PR, oldest first: its comments, its reviews, and the reviews' comments on lines, each
+    {who, when, where, text}, after `since` (an ISO time; empty for all). Bots' are left out."""
+    host = _forge(cfg, url)
+    if host.kind == "forgejo":
+        try:
+            found = forge.forgejo_feedback(host, url)
+        except forge.ForgeError as err:
+            raise GitError(_redact(str(err))) from err
+    else:
+        match = PR_URL.fullmatch(url)
+        if not match:
+            raise GitError(f"{url!r} is not a PR's URL.")
+        owner, repo, number = url.rstrip("/").split("/")[-4], url.rstrip("/").split("/")[-3], url.rstrip("/").split("/")[-1]
+        base = f"repos/{owner}/{repo}"
+        jq = ("[.[] | {who: (.user.login // \"\"), bot: (.user.type // \"\"), when: (.%s // \"\"), "
+              "where: %s, text: (.body // \"\")}]")
+        found = []
+        for path, when, where in ((f"{base}/issues/{number}/comments", "created_at", '""'),
+                                  (f"{base}/pulls/{number}/reviews", "submitted_at",
+                                   '("review (" + ((.state // "") | ascii_downcase) + ")")'),
+                                  (f"{base}/pulls/{number}/comments", "created_at",
+                                   '((.path // "") + ":" + ((.line // .original_line // "") | tostring))')):
+            said = _gh(["api", "--paginate", path, "--jq", jq % (when, where)], f"gh api {path}")
+            for page in said.splitlines():  # --paginate with --jq: an array a page
+                if page.strip():
+                    found += json.loads(page)
+    after = _utc(since) if since else None
+    kept = [item for item in found if item.get("text", "").strip() and item.get("bot") != "Bot"
+            and not item.get("who", "").endswith("[bot]") and (after is None or _utc(item.get("when", "")) > after)]
+    return sorted(kept, key=lambda item: _utc(item.get("when", "")))
+
+
+def _utc(when: str) -> datetime:
+    """An ISO time as GitHub (`...Z`), Forgejo or git (`...+01:00`) writes it; the epoch when there is none."""
+    try:
+        found = datetime.fromisoformat(when.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.fromtimestamp(0, UTC)
+    return found if found.tzinfo else found.replace(tzinfo=UTC)
 
 
 def open_pr(*, repo: str, head: str, title: str, body: str, base: str, draft: bool,

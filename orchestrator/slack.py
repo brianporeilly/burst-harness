@@ -331,6 +331,7 @@ class SlackBot:
             if said.get(key):
                 parts.append(f"*{label}:* {escape(str(said[key]))}")
         parts += [f"> {escape(str(ask))}" for ask in said.get("asks") or []]
+        parts += _project_lines(record)
         if state not in ENDED:  # a failure: the end of what it printed
             parts.append("```" + escape(self._tail(str(record["slug"]))) + "```")
         if state in ("paused", "waiting"):
@@ -608,3 +609,21 @@ def _repo(url: str) -> str:
 def _line(task: dict[str, Any]) -> str:
     pr = f" {task['pr']}" if task.get("pr") else ""
     return f"`{task['slug']}` {task['state']}: {_repo(str(task['repo'])) if task.get('repo') else 'a question'}{pr}"
+
+
+def _project_lines(record: dict[str, Any]) -> list[str]:
+    """A project's milestone, its Accept items met, and a plan change, for the message at a burst's end."""
+    found = record.get("project")
+    if not isinstance(found, dict) or not found.get("milestone"):
+        return []
+    if found.get("setup"):
+        return [f"*The plan:* starts at {found['milestone']}. Review it in the PR; merging it approves the plan."]
+    criteria = found.get("criteria") or {}
+    met = f", {criteria.get('ticked')} of {criteria.get('total')} Accept items met" if criteria else ""
+    lines = [f"*Milestone:* {found['milestone']}" + (" — complete" if found.get("complete") else met)]
+    if found.get("plan_change") == "roadmap":
+        lines.append(":warning: *It changed the roadmap.* Review the plan changes at the top of the PR; after you "
+                     "merge, the next round waits for you to continue it.")
+    elif found.get("plan_change"):
+        lines.append("It changed items in the plan: they are at the top of the PR.")
+    return lines

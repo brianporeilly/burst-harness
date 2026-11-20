@@ -613,6 +613,44 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None, *, setup:
     return _drive(ctx, task, resume=False)
 
 
+REVIEWED = """The person reviewed this task's PR ({pr}) since the last burst:
+<review>
+{items}
+</review>
+Address each point: change the work, or say why not. Finishing again updates the same PR."""
+REVIEW_ITEM_CHARS, REVIEW_CHARS = 1500, 8000
+
+
+def _review_feedback(ctx: HarnessContext) -> str:
+    """What people said on the branch's open PR since its last commit (the last burst's work), for the next burst's
+    first prompt; "" when there is no PR, nothing new, or the forge can't be asked."""
+    if not ctx.repo_slug:
+        return ""
+    try:
+        pr = git.find_pr(ctx.repo_slug, ctx.branch, ctx.cfg)
+        if not pr:
+            return ""
+        since = git.run(ctx.target, "log", "-1", "--format=%cI", check=False).strip()
+        said = git.feedback(pr, ctx.cfg, since=since)
+    except git.GitError as err:
+        print(f"! Could not read the PR's review: {err}", file=sys.stderr)
+        return ""
+    if not said:
+        return ""
+    lines, size = [], 0
+    for item in said:
+        text = item["text"].strip()
+        text = text if len(text) <= REVIEW_ITEM_CHARS else text[:REVIEW_ITEM_CHARS] + " [...]"
+        line = f"- {item['who'] or 'someone'}" + (f" on {item['where']}" if item.get("where") else "") + f": {text}"
+        if size + len(line) > REVIEW_CHARS:
+            lines.append(f"- ... and {len(said) - len(lines)} more on the PR.")
+            break
+        lines.append(line)
+        size += len(line)
+    print(f"The PR has {len(said)} new comment(s) from review; they are in the first prompt.")
+    return REVIEWED.format(pr=pr, items="\n".join(lines))
+
+
 def _project_prompt(ctx: HarnessContext, instruction: str) -> str:
     # The current milestone's PR was merged since (its ticks are in the base): on to the next one.
     base = git.run(ctx.target, "show", f"{ctx.cfg.remote}/{ctx.cfg.base_branch}:{project.PROGRESS}", check=False)
@@ -624,6 +662,8 @@ def _project_prompt(ctx: HarnessContext, instruction: str) -> str:
 
 def _resume(ctx: HarnessContext, message: str | None, *, setup: bool = False, task: str = "") -> str | None:
     print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    if review := _review_feedback(ctx):
+        message = f"{review}\n\n{message}" if message else review
     if setup:
         return _setup(ctx, task, message, resume=True)
     ctx.project = project.is_project(ctx.target)

@@ -166,6 +166,42 @@ def forgejo_open_pr(forge: Forge, repo_url: str, *, head: str, base: str, title:
     raise ForgeError(f"{forge.name} refused the PR ({status}): {_message(said) or 'no reason given'}")
 
 
+def forgejo_find_pr(forge: Forge, repo_url: str, head: str) -> str | None:
+    """The open PR from `head`, if there is one."""
+    owner, repo = _repo_path(repo_url)
+    status, listed = _api(forge, "GET", f"/repos/{owner}/{repo}/pulls?state=open&limit=50")
+    for pr in listed if status == 200 and isinstance(listed, list) else []:
+        if isinstance(pr, dict) and (pr.get("head") or {}).get("ref") == head and pr.get("html_url"):
+            return str(pr["html_url"])
+    return None
+
+
+def forgejo_feedback(forge: Forge, pr_url: str) -> list[dict[str, str]]:
+    """A Forgejo PR's comments and reviews, as git.feedback lists them."""
+    match = FORGEJO_PR.fullmatch(pr_url)
+    if not match:
+        raise ForgeError(f"{pr_url!r} is not a {forge.name} PR's URL.")
+    base = f"/repos/{match['owner']}/{match['repo']}"
+    out: list[dict[str, str]] = []
+    status, said = _api(forge, "GET", f"{base}/issues/{match['number']}/comments")
+    for c in said if status == 200 and isinstance(said, list) else []:
+        out.append({"who": str((c.get("user") or {}).get("login") or ""), "when": str(c.get("created_at") or ""),
+                    "where": "", "text": str(c.get("body") or ""), "bot": ""})
+    status, reviews = _api(forge, "GET", f"{base}/pulls/{match['number']}/reviews")
+    for r in reviews if status == 200 and isinstance(reviews, list) else []:
+        who, when = str((r.get("user") or {}).get("login") or ""), str(r.get("submitted_at") or "")
+        if r.get("body"):
+            out.append({"who": who, "when": when, "where": f"review ({str(r.get('state') or '').lower()})",
+                        "text": str(r["body"]), "bot": ""})
+        found, comments = _api(forge, "GET", f"{base}/pulls/{match['number']}/reviews/{r.get('id')}/comments")
+        for c in comments if found == 200 and isinstance(comments, list) else []:
+            line = c.get("position") or c.get("original_position") or ""
+            out.append({"who": who, "when": str(c.get("created_at") or when),
+                        "where": f"{c.get('path')}:{line}" if line else str(c.get("path") or ""),
+                        "text": str(c.get("body") or ""), "bot": ""})
+    return out
+
+
 def forgejo_pr_state(forge: Forge, pr_url: str) -> str:
     """A Forgejo PR's state: "open", "merged" or "closed"."""
     match = FORGEJO_PR.fullmatch(pr_url)
