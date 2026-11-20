@@ -297,7 +297,9 @@ Each is one PR, with its tests, README and ROADMAP:
 
 ## Open
 
-- Claude Code tasks: the tools reach it through the harness's MCP server (as `delegate` does with
-  `delegate_to`), or as instructions only. Decide in step 2.
+- Claude Code tasks get the layout as instructions: they tick items and amend the plan by editing the files in
+  their format, and the harness sees a plan change from git against the base, as it does for any hand edit.
+  The tools through the harness's MCP server (as `delegate` reaches it) are left until instructions prove not
+  enough.
 - Whether `tick_criterion` should run the evidence's command itself, when it is one. Probably not at first: the
   check and the review cover it.

@@ -755,7 +755,11 @@ each run and judges nothing, so there is one set of numbers.
     through `current_milestone`, `read_plan`, `record_progress`,
     `record_decision` and `add_backlog`, the task document retired in a
     project, a pause adding to Done instead of replacing it, and
-    `harness plan check`.
+    `harness plan check`. Step 2, milestones, built (2026-11-21):
+    `tick_criterion`, `amend_plan`, finishing checked against the
+    milestone, the PR body written from the record, the next milestone
+    taken up after a merge, `HARNESS_RESULT`'s `project`, and
+    `metrics.criteria` and `metrics.records`.
 
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a

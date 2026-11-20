@@ -319,7 +319,18 @@ answer.
   that write each file's format: `current_milestone`, `read_plan`,
   `record_progress` (a finished step, the next step, a blocker, a blocker
   resolved, a measurement), `record_decision` (the next `D-NNN`) and
-  `add_backlog`. A pause adds this burst's summary to its log entry.
+  `add_backlog`, `tick_criterion` (an Accept item met, with its evidence) and
+  `amend_plan` (PLAN.md changed in its layout, ids kept, each change recorded
+  as a decision). `finish_with_pr` is refused once while the milestone's items
+  aren't all ticked; the next finish goes through, and the PR body is written
+  from the record: the milestone, its items met and not, plan changes first,
+  this round's decisions, the checkpoint questions, and whether docs changed.
+  Once that PR is merged, the next round takes up the next milestone.
+  `HARNESS_RESULT`'s `project` says the milestone, whether it is complete, and
+  whether the plan changed (`roadmap` or `item`, seen from git against the
+  base however it was changed); `metrics.criteria` and `metrics.records` count
+  the ticks and what was recorded. A pause adds this burst's summary to its log
+  entry.
   `harness plan check` (from the repo, or `--repo`) says whether the files are
   laid out as the harness reads them.
 - **`docs/tasks/<slug>.md`** — committed, for a repo without a plan. Goal,

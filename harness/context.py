@@ -72,3 +72,13 @@ class HarnessContext:
     project: bool = False
     # This burst's entry in PROGRESS.md's log, made the first time something is recorded (terminal.log_heading).
     log_heading: str = ""
+    # What the burst recorded through the tools, for metrics' `records`: progress, decisions, plan_changes, backlog,
+    # ticks.
+    records: dict[str, int] = field(default_factory=dict)
+    # The plan changed this burst: "roadmap" (milestones added, dropped or reshaped; the goal) or "item". The PR
+    # says so first, and a roadmap change holds auto-continue (HARNESS_RESULT's `project`).
+    plan_change: str = ""
+    # finish_with_pr was refused once for Accept items not ticked: the next finish goes through, saying why.
+    criteria_refused: bool = False
+    # A project's milestone and {ticked, total} as the burst ended (cli._project_end), for HARNESS_RESULT.
+    project_end: dict[str, object] | None = None

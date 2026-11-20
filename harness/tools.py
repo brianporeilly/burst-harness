@@ -155,9 +155,11 @@ def make_tools(ctx: HarnessContext) -> list:
         if not (done or next_step):
             return "Rejected: give done, next_step, or both."
         try:
-            return f"Recorded in {terminal.record(ctx, done=done or '', next_step=next_step or '')}."
+            path = terminal.record(ctx, done=done or "", next_step=next_step or "")
         except ValueError as err:
             return f"Rejected: {err}"
+        ctx.records["progress"] = ctx.records.get("progress", 0) + 1
+        return f"Recorded in {path}."
 
     @tool
     def record_decision(title: str, what: str, why: str, alternatives: str = "") -> str:
@@ -176,6 +178,7 @@ def make_tools(ctx: HarnessContext) -> list:
             path = terminal.update_doc(ctx, decisions=(doc.decisions.rstrip() + "\n" + line).strip())
         except ValueError as err:
             return f"Rejected: {err}"
+        ctx.records["decisions"] = ctx.records.get("decisions", 0) + 1
         return f"Recorded in {path}."
 
     return [read_task_doc, update_task_doc, record_progress, record_decision, *terminals]
@@ -185,6 +188,9 @@ def project_tools(ctx: HarnessContext) -> list:
     """A project's: its plan read a part at a time, and its record added to through fields, never laid out by hand
     (project.py writes the files' shape)."""
     record = project.Record(ctx.target)
+
+    def count(kind: str) -> None:
+        ctx.records[kind] = ctx.records.get(kind, 0) + 1
 
     def attempt(step: Callable[[], str]) -> str:
         try:
@@ -258,6 +264,7 @@ def project_tools(ctx: HarnessContext) -> list:
             if done or next_step:
                 terminal.record(ctx, done=done or "", next_step=next_step or "")
                 said.append("log entry updated")
+            count("progress")
             return f"Recorded in {project.PROGRESS}: {', '.join(said)}."
 
         return attempt(write)
@@ -276,6 +283,7 @@ def project_tools(ctx: HarnessContext) -> list:
 
         def write() -> str:
             ident = record.decide(title, what, why, alternatives, milestone=current.id if current else "")
+            count("decisions")
             return f"Recorded {ident} in {project.DECISIONS}."
 
         return attempt(write)
@@ -287,6 +295,53 @@ def project_tools(ctx: HarnessContext) -> list:
         Args:
             idea: The idea, in a sentence.
         """
-        return attempt(lambda: (record.add_backlog(idea), f"Added to {project.BACKLOG}.")[1])
+        return attempt(lambda: (record.add_backlog(idea), count("backlog"), f"Added to {project.BACKLOG}.")[2])
 
-    return [current_milestone, read_plan, record_progress, record_decision, add_backlog]
+    @tool
+    def tick_criterion(item: str, evidence: str) -> str:
+        """Tick one of the current milestone's Accept items once it is met, with what shows it: the test's name or the
+        command, and its result. Then commit. Ticks are what finishing checks, and what the PR lists as met.
+
+        Args:
+            item: Its id, such as M3.2.
+            evidence: What shows it is met (a test that passes, a command and what it printed, a measurement).
+        """
+        def write() -> str:
+            ticked = record.tick(item, evidence)
+            count("ticks")
+            left = record.unticked()
+            return (f"Ticked {ticked.id}. " + (f"Still to meet: {', '.join(i.id for i in left)}." if left else
+                                               "Every Accept item of this milestone is met: finish_with_pr."))
+
+        return attempt(write)
+
+    @tool
+    def amend_plan(target: str, text: str, title: str, why: str, alternatives: str = "") -> str:
+        """Change PLAN.md when the work shows it is wrong: an item added, reworded or struck; a milestone too big,
+        split; one added, dropped or moved; the goal. Every change is recorded as a decision and put first in the PR
+        for review; a change to the roadmap makes the next round wait for a person.
+
+        Args:
+            target: A milestone's id (M3) to replace its section with `text`, or drop it with empty text; `after M3`
+                to add milestones after it; or a `##` section's heading (or a word of it) to replace its body.
+            text: The new text, in the plan's layout: `### M3 — Title`, `Build: ...`, `Accept:` with `- M3.1 ...`
+                items, `Checkpoint: ...`. Keep existing items' ids; strike an item through (`- ~~M3.2 ...~~`) rather
+                than deleting it. New items take the next number; a split milestone's parts (M3a, M3b) keep its items.
+            title: A few words naming the change.
+            why: What was found that the plan didn't foresee.
+            alternatives: What else was considered, briefly.
+        """
+        def write() -> str:
+            ident, kind = record.amend(target, text, title, why, alternatives)
+            count("plan_changes")
+            if kind == "roadmap" or not ctx.plan_change:
+                ctx.plan_change = kind
+            current = record.current()
+            return (f"Changed PLAN.md and recorded {ident}." + (f" The current milestone is {current.id}."
+                                                                if current else "")
+                    + (" It changes the roadmap: the PR puts it first, and the next round waits for a person."
+                       if kind == "roadmap" else ""))
+
+        return attempt(write)
+
+    return [current_milestone, read_plan, tick_criterion, record_progress, record_decision, amend_plan, add_backlog]
