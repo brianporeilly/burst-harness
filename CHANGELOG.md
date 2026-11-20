@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.51.0 (2026-11-20)
+
+### Features
+
+- **harness**: Keep the record and the docs current: a nudge, a burst sent back once to record,
+  docs_style, one docs reminder ([#55](https://github.com/brianporeilly/burst-harness/pull/55),
+  [`64f6ccd`](https://github.com/brianporeilly/burst-harness/commit/64f6ccdd3085b7228ebf0a48fa478cc1038b8fa7))
+
+
 ## v0.50.0 (2026-11-20)
 
 ### Features
