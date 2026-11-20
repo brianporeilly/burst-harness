@@ -765,7 +765,10 @@ each run and judges nothing, so there is one set of numbers.
     reminder at finish, and the review's brief. Step 4, the setup round,
     built (2026-11-21): `--setup` and the task option, the template
     (`harness/plan_template.md`, `docs/plan-template.md` for a chat), the
-    foundation's banner, and finishing held to the plan check.
+    foundation's banner, and finishing held to the plan check. Step 5, the
+    review loop, built (2026-11-21): a PR's review comments in the next
+    burst, a roadmap change holding auto-continue, and the milestone on the
+    task's card and in Slack.
 
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a

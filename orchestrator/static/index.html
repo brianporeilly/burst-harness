@@ -30,6 +30,7 @@
   .muted { color: var(--muted); }
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; }
   .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); }
+  span.warn { color: var(--warn); }
   button, .button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
                     padding: 5px 11px; border-radius: 6px; cursor: pointer; text-decoration: none; }
   button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
@@ -882,6 +883,19 @@ let selectedTask = null;
 const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", answered: "ok", merged: "ok", running: "warn", queued: "warn", paused: "warn",
   waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn", push_failed: "bad", max_tokens: "bad" }[state] || "") },
   { pr: "PR", merged: "PR merged", pushed_no_pr: "pushed, no PR", push_failed: "push refused", waiting: "needs input", max_tokens: "output limit" }[state] || state);
+// A project's milestone and its Accept items met, and a plan change (harness HARNESS_RESULT's `project`).
+function projectLine(t) {
+  const p = t.project;
+  if (!p || !p.milestone) return null;
+  if (p.setup) return el("p", {}, el("strong", {}, "The setup round: "),
+    `the plan starts at ${p.milestone}. Merging its PR approves it; the next round builds ${p.milestone}.`);
+  const c = p.criteria || {};
+  const met = p.complete ? " — complete" : (c.total ? ` — ${c.ticked} of ${c.total} Accept items met` : "");
+  return el("p", {}, el("strong", {}, `Milestone ${p.milestone}`), met,
+    p.plan_change === "roadmap" ? el("span", { class: "warn" }, " · it changed the roadmap: review the plan changes at the top of the PR. After merging, continue it by hand.")
+      : p.plan_change ? el("span", { class: "muted" }, " · it changed plan items (at the top of the PR)") : null);
+}
+
 // A PR's link, with what GitHub last said of it when that is not "open".
 const prLink = (url, state) => el("span", {}, el("a", { href: url, target: "_blank", rel: "noopener" }, url),
   state && state !== "open" ? el("span", { class: "muted" }, ` (${state})`) : null);
@@ -957,7 +971,7 @@ async function renderTask() {
   catch (err) { box.replaceChildren(el("p", { class: "muted" }, "Gone.")); delete box.dataset.key; return; }
   if (selectedTask !== t.slug) return;
   const output = box.querySelector("pre[data-output]");
-  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue, t.notify, t.told]);
+  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue, t.notify, t.told, t.project]);
   if (box.dataset.key === key) {
     // Only the output moves while a burst runs; keep it scrolled to the end if it was.
     if (output && output.textContent !== (t.output || "")) {
@@ -999,8 +1013,9 @@ async function renderTask() {
     el("p", {}, taskChip(t.state), " ", t.pr ? prLink(t.pr, t.pr_state) : null,
       el("span", { class: "muted" }, ` ${asking ? "a question" : `${t.repo} · ${t.branch}${t.base_branch ? ` from ${t.base_branch}` : ""}`} · ${modelLabel(t)}`
         + ((t.uses || t).base_url ? ` at ${(t.uses || t).base_url}` : "") + (t.created_by ? ` · by ${t.created_by}` : ""))),
+    projectLine(t),
     t.state === "merged" ? el("p", { class: "muted" }, `The PR is merged. Continuing starts round ${rounds.length + 1}: `
-      + `a fresh branch from ${t.base_branch}, carrying on from the task document, and a PR of its own.`) : null,
+      + `a fresh branch from ${t.base_branch}, carrying on from ${t.project ? "the project's next milestone" : "the task document"}, and a PR of its own.`) : null,
     rounds.length > 1 ? el("div", {}, el("h3", {}, "Rounds"), el("table", {}, rounds.map((r, i) => el("tr", {},
       el("td", {}, String(i + 1)), el("td", {}, el("code", {}, r.branch)),
       el("td", {}, r.pr ? prLink(r.pr, r.pr_state) : el("span", { class: "muted" }, i === rounds.length - 1 ? "no PR yet" : "no PR")))))) : null,

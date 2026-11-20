@@ -542,6 +542,10 @@ class TaskRunner:
                 record["pr_state"] = found
                 if found == "merged" and record.get("state") in IDLE:
                     carry_on = auto and bool(record.get("auto_continue")) and record["state"] == "pr"
+                    if carry_on and _roadmap_changed(record):
+                        carry_on = False
+                        print(f"tasks: {slug}: its PR is merged, but it changed the project's roadmap: the next "
+                              "round waits for a person to continue it.", flush=True)
                     record["state"] = "merged"
             self._write(record)
         if carry_on:
@@ -806,8 +810,11 @@ class TaskRunner:
                 state = "cancelled" if record.get("cancelling") else _state(code, result)
                 record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"),
                                             metrics=result.get("metrics"), config=result.get("config"),
-                                            fallback=result.get("fallback"),
+                                            fallback=result.get("fallback"), project=result.get("project"),
                                             egress=_sandbox_line(self._output(slug), record["bursts"][-1]))
+                if isinstance(result.get("project"), dict):  # a project's milestone, its ticks, a plan change
+                    criteria = (result.get("metrics") or {}).get("criteria")
+                    record["project"] = {**result["project"], "criteria": criteria}
                 if result.get("agent"):  # routed to a profile (harness/agents.py): that is what works on it
                     provider, _, model = str(result.get("model") or "").partition(" ")
                     record["uses"] = {"provider": provider, "model": model, "base_url": result.get("base_url") or "",
@@ -947,9 +954,14 @@ def _sandbox_line(output: Path, burst: dict[str, Any]) -> dict[str, Any] | None:
     return found if isinstance(found, dict) and found.get("claim") else None
 
 
+def _roadmap_changed(record: dict[str, Any]) -> bool:
+    """The round changed a project's roadmap (harness project.plan_change): a person continues it, not auto_continue."""
+    return (record.get("project") or {}).get("plan_change") == "roadmap"
+
+
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "keep_conversation", "setup", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "keep_conversation", "setup", "project", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
         "allow", "runner", "notify")} | {"from_slack": bool(record.get("slack")), "told": bool(record.get("dm")),
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}
