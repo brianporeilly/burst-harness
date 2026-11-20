@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.47.0 (2026-11-20)
+
+### Features
+
+- **harness**: A note where the window cut the conversation, with the task document and git as they
+  are now ([#50](https://github.com/brianporeilly/burst-harness/pull/50),
+  [`3ef8aa7`](https://github.com/brianporeilly/burst-harness/commit/3ef8aa7d637fb1b6a26532a6da0c06de0ffd8346))
+
+
 ## v0.46.0 (2026-11-20)
 
 ### Bug Fixes
