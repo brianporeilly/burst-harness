@@ -742,6 +742,13 @@ each run and judges nothing, so there is one set of numbers.
        prompt and settings changed, starting from the repo alone.
     Measured in local-llm-benchmark: riftwardens' second round, before and
     after, the model fixed.
+    Steps 4 and 5 grew into a design (2026-11-20): `docs/project-layout.md`.
+    A repo's `PLAN.md` (milestones with acceptance criteria), `PROGRESS.md`
+    and `DECISIONS.md` become the record, written through the harness's
+    tools, in place of the task document. A setup round makes them from a
+    foundation document and ends in a PR, so merging it approves the plan.
+    Then each round takes a milestone to a PR you review. Its own order of
+    work follows there.
 
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a
