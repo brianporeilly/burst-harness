@@ -63,3 +63,61 @@ def test_tasks_and_jobs_get_it_from_their_config():
     assert isinstance(window, ChunkedWindow)
     assert (window.window_size, window.pin_first, window.per_turn) == (50, 3, True)
     assert HarnessConfig().window_size == 200
+
+
+def _notes(agent) -> list[tuple[int, str]]:
+    return [(i, block["text"]) for i, message in enumerate(agent.messages) for block in message["content"]
+            if block.get("text", "").startswith("[harness] The conversation was cut here")]
+
+
+def test_a_cut_leaves_one_note_where_it_was_made():
+    window = ChunkedWindow(window_size=20, per_turn=True, pin_first=2, on_cut=lambda: "The document, as it is now.")
+    agent = _agent(22)
+    window.apply_management(agent)
+    [(at, note)] = _notes(agent)
+    assert agent.messages[0]["content"][0]["text"] == "m0" and at == 2  # the first message after the pinned ones
+    assert agent.messages[at]["role"] == "user" and agent.messages[at]["content"][0] == {"text": "m12"}
+    assert "10 earlier messages were removed" in note and note.endswith("The document, as it is now.")
+    _say(agent, 12)
+    window.apply_management(agent)
+    assert len(_notes(agent)) == 1  # the latest cut's alone
+
+
+def test_a_note_that_cant_be_completed_still_says_the_cut():
+    def broken():
+        raise RuntimeError("no git")
+
+    agent = _agent(22)
+    ChunkedWindow(window_size=20, per_turn=True, on_cut=broken).apply_management(agent)
+    [(_, note)] = _notes(agent)
+    assert "earlier messages were removed" in note and "no git" not in note
+
+
+def test_a_tasks_lead_is_told_the_document_and_git_at_a_cut(tmp_path, origin, monkeypatch, capsys):
+    import json
+    from pathlib import Path
+
+    from harness import cli
+
+    from . import fake_llama
+    from .conftest import git
+
+    # The fake picks its reply by counting the assistant's turns, which a cut takes back: it steps along for good,
+    # and the budget ends the burst.
+    server, requests = fake_llama.serve([{"tool": "shell", "args": {"command": "echo step"}}])
+    try:
+        work = tmp_path / "work"
+        git(tmp_path, "clone", "-q", str(origin), str(work))
+        monkeypatch.setenv("HARNESS_WINDOW_SIZE", "10")
+        monkeypatch.setenv("HARNESS_MAX_MODEL_CALLS", "14")
+        cli.main(["--provider", "llamacpp", "--base-url", f"http://127.0.0.1:{server.server_port}",
+                  "--repo", str(work), "start", "t1", "--task", "Step along."])
+        result = json.loads(capsys.readouterr().out.split("HARNESS_RESULT ", 1)[1].splitlines()[0])
+    finally:
+        server.shutdown()
+    cut = next(request for request in requests if "conversation was cut here" in json.dumps(request["messages"]))
+    sent = json.dumps(cut["messages"])
+    assert "may be out of date" in sent and "<task-document" in sent and "Step along." in sent
+    assert result["metrics"]["window_cuts"] >= 1 and result["metrics"]["window_drops"] >= 1
+    cuts = json.loads(Path(result["transcript"]).read_text())["cuts"]
+    assert len(cuts) == result["metrics"]["window_cuts"] and cuts[0]["agent"] == "lead" and cuts[0]["dropped"] > 0

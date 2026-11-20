@@ -729,8 +729,10 @@ each run and judges nothing, so there is one set of numbers.
        anything uncommitted; an answer comes with its question.
        `resume_from = "snapshot"`, or a task's "Carry each burst's
        conversation into the next", keeps the old way.
-    2. A note where the window was cut: how many messages went, and the
-       same document and git state, since the copy read earlier may be stale.
+    2. A note where the window was cut: built (2026-11-20). How many messages
+       went, and for a task's lead the same document and git state, since the
+       copy read earlier may be stale. `metrics.window_cuts`, and the
+       transcript's `cuts`.
     3. Repeated replies noticed: three that open with the same recap are
        told it is settled and to take the next step (`metrics.repeats`).
     4. The document kept current: the preamble asks for milestones in Done
