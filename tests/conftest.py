@@ -41,15 +41,20 @@ def git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-@pytest.fixture
-def origin(tmp_path) -> Path:
-    """A bare repo with one commit on main, standing in for a remote."""
-    seed = tmp_path / "seed"
+def make_origin(root: Path) -> Path:
+    """A bare repo under root with one commit on main, standing in for a remote."""
+    seed = root / "seed"
     seed.mkdir()
     git(seed, "init", "-q", "-b", "main")
     (seed / "README.md").write_text("hello\n")
     git(seed, "add", "-A")
     git(seed, "commit", "-qm", "init")
-    bare = tmp_path / "origin.git"
-    git(tmp_path, "clone", "-q", "--bare", str(seed), str(bare))
+    bare = root / "origin.git"
+    git(root, "clone", "-q", "--bare", str(seed), str(bare))
     return bare
+
+
+@pytest.fixture
+def origin(tmp_path) -> Path:
+    """A bare repo with one commit on main, standing in for a remote."""
+    return make_origin(tmp_path)

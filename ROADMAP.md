@@ -628,8 +628,10 @@ Since then (2026-11-12 to 11-16):
 Next (2026-11-18):
 
 - Phase 10's first steps: run metrics, and the repo's `AGENTS.md` for the
-  Strands agent (#31, #32); then budgets per burst.
-- Falling back from the local model to Claude when the llama-server is down.
+  Strands agent (#31, #32); then budgets per burst. Done, with the rest of
+  phase 10 (below).
+- Falling back from the local model to Claude when the llama-server is down:
+  done (2026-11-19, 0.44.0), set per task in Settings (0.45.0).
 - Model settings from Slack.
 - Delegates working in parallel, and other delegation improvements.
 - Sessions on runners; refusals listed for local podman tasks.
@@ -704,9 +706,13 @@ each run and judges nothing, so there is one set of numbers.
    the burst runs, so it has what the window dropped, and Claude Code's runs
    too; the benchmark's `transcript.json` was the session snapshot, which has
    neither. A format Harbor reads is still worth a look.
-9. Comparing harness changes. What stays here: a smoke test that a tiny task
-   still finishes with its metrics filled in, using the fake llama server,
-   and maybe a replay against a recorded run. Everything that scores or ranks
+9. Comparing harness changes. What stays here: built (2026-11-19,
+   `tests/test_smoke.py`). A tiny task on the fake llama server sets up,
+   delegates, edits, passes its check and review, and pushes; every key of
+   HARNESS_RESULT and its `metrics` is checked to be there, none null. The
+   same burst then replays from its transcript (`fake_llama.from_transcript`,
+   or `python -m tests.fake_llama TRANSCRIPT.json` for a live run) to the
+   same end and the same tool calls. Everything that scores or ranks
    is the benchmark's. It runs a variant per `--config` layer against a
    baseline with the model fixed, and reports the before and after for a PR
    that changes how the harness behaves. A job (a weekly run of a few tasks on

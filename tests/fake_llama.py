@@ -1,7 +1,7 @@
 """A stand-in llama.cpp server: /v1/chat/completions, streamed, from a script.
 
 Each turn of the script is what the model says next: {"tool": NAME, "args": {...}}
-for a tool call, {"text": "..."}, or {"cut": "..."} for a reply cut off at the
+for a tool call, {"calls": [{"tool", "args"}, ...]} for several at once, {"text": "..."}, or {"cut": "..."} for a reply cut off at the
 output limit (finish_reason "length"). The turn is picked by how many assistant
 messages the request already has, so the conversation drives it; a request
 with no tools gets a plain reply (`side`, a string or a turn) and does not advance it. In string
@@ -10,7 +10,11 @@ shows that a tool's output made it back to the model. A cut-off reply is
 served once: the next request at that turn gets the step after it, as if the
 model, told it was cut off, did something else.
 
-    python -m tests.fake_llama SCRIPT.json [PORT]     # for a live run
+A recorded burst can be served again: from_transcript() turns its transcript (HARNESS_RESULT's
+`transcript`) into a script per agent, what each one said, in order.
+
+    python -m tests.fake_llama SCRIPT.json [PORT]          # for a live run
+    python -m tests.fake_llama TRANSCRIPT.json [PORT]      # the lead's turns from a burst's transcript
 """
 
 from __future__ import annotations
@@ -70,11 +74,12 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
             def send(event: dict[str, Any]) -> None:
                 out.append(f"data: {json.dumps(event)}\n\n".encode())
 
-            if "tool" in step:
+            if "tool" in step or "calls" in step:
+                calls = step.get("calls") or [step]
                 send({"choices": [{"delta": {"tool_calls": [{
-                    "index": 0, "id": f"call-{turn}", "type": "function",
-                    "function": {"name": step["tool"], "arguments": json.dumps(_fill(step.get("args", {}), last_tool))},
-                }]}}]})
+                    "index": n, "id": f"call-{turn}-{n}", "type": "function",
+                    "function": {"name": call["tool"], "arguments": json.dumps(_fill(call.get("args", {}), last_tool))},
+                } for n, call in enumerate(calls)]}}]})
                 send({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]})
             elif "cut" in step:
                 send({"choices": [{"delta": {"content": step["cut"]}}]})
@@ -98,6 +103,33 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
     return Handler
 
 
+def from_transcript(data: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """A burst's transcript as scripts, by agent ("lead", then each delegate's profile): each assistant message
+    of a Strands agent's, its tool calls (text beside them is dropped) or else its text. A delegate called more
+    than once can't be served by one script, whose turns count from each call's start: that is a ValueError, as
+    is a Claude Code lead, whose model the harness does not call."""
+    scripts: dict[str, list[dict[str, Any]]] = {}
+    for agent in data["agents"]:
+        name = agent["name"]
+        if agent.get("format") != "strands":
+            raise ValueError(f"{name}'s messages are {agent.get('format')}'s; only a Strands agent's can be replayed")
+        if name in scripts:
+            raise ValueError(f"{name} was called more than once; one script can't serve each call")
+        steps = []
+        for message in agent["messages"]:
+            if message["role"] != "assistant":
+                continue
+            content = message.get("content") or []
+            calls = [{"tool": block["toolUse"]["name"], "args": block["toolUse"].get("input") or {}}
+                     for block in content if "toolUse" in block]
+            if calls:
+                steps.append(calls[0] if len(calls) == 1 else {"calls": calls})
+            else:
+                steps.append({"text": "".join(block.get("text", "") for block in content)})
+        scripts[name] = steps
+    return scripts
+
+
 def serve(script: list[dict[str, Any]], port: int = 0, host: str = "127.0.0.1",
           side: str | dict[str, Any] = "Side reply", keep_alive: bool = False) -> tuple[ThreadingHTTPServer, list]:
     """Start it in a thread. Returns the server and the list each request body is appended to."""
@@ -111,6 +143,8 @@ if __name__ == "__main__":
     VERBOSE = True
     with open(sys.argv[1]) as f:
         steps = json.load(f)
+    if isinstance(steps, dict):  # a burst's transcript
+        steps = from_transcript(steps)["lead"]
     server, seen = serve(steps, int(sys.argv[2]) if len(sys.argv) > 2 else 0,
                          sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1")
     print(f"fake llama-server on http://{server.server_address[0]}:{server.server_address[1]}", flush=True)
