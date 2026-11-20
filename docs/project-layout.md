@@ -109,8 +109,8 @@ Current: M3 — Readouts and feel
 
 ## Log
 
-### 2026-11-21 — M3, harness/graveyard-orbit-3a48-3 (burst 2)
-Done: ...
+### 2026-11-21 14:03Z — M3 · harness/graveyard-orbit-3a48-3
+- what was done, one outcome a line
 Next: ...
 ```
 
@@ -120,10 +120,11 @@ tolerates hand edits that keep the headings.
 ### DECISIONS.md
 
 ```markdown
-### D-008 — Pe/Ap markers computed in sim, not render (2026-11-21, M3)
-What: ...
-Why: ...
-Alternatives: ...
+## D-008 — Pe/Ap markers computed in sim, not render (M3, 2026-11-21)
+
+- **What:** ...
+- **Why:** ...
+- **Alternatives:** ...
 ```
 
 Plan changes are decisions too, with `Plan change:` before the title. They also record what PLAN.md said before.
