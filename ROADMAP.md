@@ -718,6 +718,29 @@ each run and judges nothing, so there is one set of numbers.
    that changes how the harness behaves. A job (a weekly run of a few tasks on
    the local model, its table posted to Slack) could do it unattended.
 
+10. The repo carries the context (2026-11-20). From a long local round on a
+    27B model, which repeated the same recap for 35 minutes: a next round
+    restored round one's whole conversation, and when the window cut it back
+    it kept round one's prompt pinned, so the model kept reconciling a stale
+    goal with the work in front of it. The task document and git are the
+    record, as in get-shit-done without its token cost. In order:
+    1. Every burst starts from the repo: built (2026-11-20). A fresh
+       conversation, given the task document, the branch's commits and
+       anything uncommitted; an answer comes with its question.
+       `resume_from = "snapshot"`, or a task's "Carry each burst's
+       conversation into the next", keeps the old way.
+    2. A note where the window was cut: how many messages went, and the
+       same document and git state, since the copy read earlier may be stale.
+    3. Repeated replies noticed: three that open with the same recap are
+       told it is settled and to take the next step (`metrics.repeats`).
+    4. The document kept current: the preamble asks for milestones in Done
+       and no restated situation; a nudge after many tool calls without an
+       update; a burst that ends without updating it is sent back once.
+    5. Clone a task in the orchestrator: a new task from an old one, its
+       prompt and settings changed, starting from the repo alone.
+    Measured in local-llm-benchmark: riftwardens' second round, before and
+    after, the model fixed.
+
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a
 bash-only loop, and benchmarks at SWE-bench's scale.

@@ -306,6 +306,9 @@ class TaskRunner:
             "egress": egress_mode or None, "allow": allow, "runner": on or None,
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "auto_continue": bool(raw.get("auto_continue")) and url is not None,
+            # Each burst carries on the last one's conversation, rather than starting from the repo (the task
+            # document and git): the harness's resume_from = "snapshot". Off unless chosen.
+            "keep_conversation": bool(raw.get("keep_conversation")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
             "sandbox": None, "said": None, "slack": slack,
@@ -734,9 +737,10 @@ class TaskRunner:
             chosen = {"agent": record["uses"]["agent"], "router": ""}
         # Its MCP servers, even none: over the orchestrator's HARNESS_MCP, which the burst would otherwise inherit.
         servers = {"HARNESS_MCP": ",".join(record["mcp"])} if record.get("mcp") is not None else {}
+        kept = {"HARNESS_RESUME_FROM": "snapshot"} if record.get("keep_conversation") else {}
         return {f"HARNESS_{name.upper()}": str(value).lower() if isinstance(value, bool) else str(value)
                 for name, value in chosen.items()} | self._profile_env(record) | servers \
-            | (self.settings.environment() if self.settings is not None else {})
+            | (self.settings.environment() if self.settings is not None else {}) | kept
 
     def _profile_env(self, record: dict[str, Any]) -> dict[str, str]:
         """The profiles, and who this task's lead may hand work to, as the burst's HARNESS_AGENTS and
@@ -940,7 +944,7 @@ def _sandbox_line(output: Path, burst: dict[str, Any]) -> dict[str, Any] | None:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "keep_conversation", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
         "allow", "runner", "notify")} | {"from_slack": bool(record.get("slack")), "told": bool(record.get("dm")),
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}

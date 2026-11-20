@@ -267,10 +267,12 @@ def test_a_task_is_routed_once_and_its_lead_delegates(tmp_path, origin, llama, c
     assert "Scout: README.md says hello." in (work / "docs" / "tasks" / "t1.md").read_text()
     assert "- scout: scout work" in fake_llama._text(coder_requests[0]["messages"][0]["content"])
 
-    # A later burst keeps the router's choice, without asking it again.
-    assert cli.main(["--config", str(scenario), "--repo", str(work), "resume", "t1"]) == cli.EXIT_NO_TERMINAL_STATE
+    # A later burst keeps the router's choice, without asking it again. It starts a fresh conversation (the
+    # fake's script from its start), so it delegates and pauses again.
+    assert cli.main(["--config", str(scenario), "--repo", str(work), "resume", "t1"]) == cli.EXIT_DONE
     assert len(asked) == 1 and "as the router chose" in capsys.readouterr().out
-    assert len(coder_requests) == 3 and len(scout_requests) == 1  # two to its pause, which ended the burst; one more
+    assert len(coder_requests) == 4 and len(scout_requests) == 2
+    assert [m["role"] for m in coder_requests[2]["messages"]] == ["system", "user"]
 
 
 def test_a_profiles_role_shapes_it_as_a_delegate_and_read_only_changes_are_told(tmp_path, origin, llama, capsys):

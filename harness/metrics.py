@@ -197,7 +197,7 @@ def config_label(cfg: Any) -> dict[str, Any]:
 SHAPING = frozenset({
     "engine", "provider", "model_id", "model_params", "max_tokens", "effort", "thinking", "context_window_limit",
     "model_timeout", "model_retries", "agents", "delegate_to", "router", "mcp",
-    "docs_dir", "doc_max_bytes", "skills_dir", "repo_instructions", "repo_instructions_max_bytes",
+    "docs_dir", "doc_max_bytes", "skills_dir", "repo_instructions", "repo_instructions_max_bytes", "resume_from",
     "offload_max_result_tokens", "offload_preview_tokens",
     "window_size", "pin_first", "proactive_compression", "cache_ttl", "max_fixup_attempts", "require_clean_tree",
     "check_command", "check_timeout", "setup_command", "setup_timeout",

@@ -60,7 +60,8 @@ resumes it otherwise — so a CronJob or a button can fire the same command ever
 time. A branch that doesn't exist yet while the task's document is already in the
 base branch is the task's **next round**: its earlier work was merged (and its
 branch deleted, or `--branch` names a new one), so the run carries on from the
-document, with `--message` as what to do next, rather than starting over. Exit status: `0` for any terminal state (a PR, a pause, an abandon), `3` when
+document, with `--message` as what to do next, rather than starting over, in a
+fresh conversation (below, "Every burst starts from the repo"). Exit status: `0` for any terminal state (a PR, a pause, an abandon), `3` when
 a headless run stopped on a question for the user, `1` otherwise. The last line of
 output is `HARNESS_RESULT {json}` with the slug, branch, state, PR URL, and claim.
 
@@ -310,15 +311,27 @@ answer.
   open questions, next step. **Size-capped**: an oversized write is rejected, not
   truncated, so the handoff document cannot grow into the token problem it exists
   to solve.
-- **`~/.burst-harness/<repo>/`** — not in the repo. Strands snapshots (verbatim
-  conversation resume) and offloaded tool results. `<repo>` comes from the
+- **`~/.burst-harness/<repo>/`** — not in the repo. Strands snapshots (the
+  conversation, for `chat` and `resume_from = "snapshot"`), transcripts, and
+  offloaded tool results. `<repo>` comes from the
   remote (`github.com_owner_repo`), so every sandbox's `/workspace/repo` does not
   collapse into one directory, and a fresh clone of the same repo finds its
   snapshots again.
 
-Resuming with the same state directory restores the conversation. A fresh clone
-anywhere works from the committed document alone — which is what makes a sandbox
-disposable between bursts.
+**Every burst starts from the repo.** A headless burst (`run`, `resume`, a next
+round) starts a fresh conversation, not the last burst's. Its first prompt
+carries the task document as it is now, the branch's commits since the base, and
+anything uncommitted, and an answer comes with the question the last burst asked.
+A next round is also told that the document's Done and Decisions are from earlier
+rounds. Carrying a conversation on brought stale goals back with it: a next round
+began under all of round one's messages, and the window, cutting them back, kept
+round one's prompt pinned at the top. So the task document is the record, kept
+current by the agent, and a fresh clone anywhere works from it alone, which is
+what makes a sandbox disposable between bursts. The last burst's snapshot is set
+aside (`session/<slug>.previous`), and its transcript has every message.
+`resume_from = "snapshot"` (or `HARNESS_RESUME_FROM`, or "Carry each burst's
+conversation into the next" on a task in the orchestrator) restores it instead,
+as before. `chat` always restores it.
 
 **The repo's instructions for agents.** On the Strands engine, the agent's
 prompt includes the repo's `AGENTS.md`, or its `CLAUDE.md` if there is no
