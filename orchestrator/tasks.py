@@ -309,6 +309,9 @@ class TaskRunner:
             # Each burst carries on the last one's conversation, rather than starting from the repo (the task
             # document and git): the harness's resume_from = "snapshot". Off unless chosen.
             "keep_conversation": bool(raw.get("keep_conversation")) and url is not None,
+            # The setup round (harness --setup): its first round turns a foundation document, or the prompt, into the
+            # project's plan, ending in a PR; merging it approves the plan, and later rounds build it.
+            "setup": bool(raw.get("setup")) and url is not None,
             "branch": self.base.branch_prefix + slug if url else None, "created": _now(), "created_by": user,
             "state": "queued", "queued": time.time_ns(), "pr": None, "message": None, "restarts": 0, "bursts": [],
             "sandbox": None, "said": None, "slack": slack,
@@ -700,6 +703,8 @@ class TaskRunner:
         if record.get("sandbox"):
             argv += shlex.split(record["sandbox"])  # the sandbox the last burst kept, after --target to win
         argv += ["run", record["slug"], "--task", record["prompt"]]
+        if record.get("setup") and not record.get("rounds"):
+            argv.append("--setup")  # until the plan's PR is merged: then the rounds that build it
         if record.get("rounds"):
             argv += ["--branch", record["branch"]]  # a later round's own branch, which the harness starts from the base
         if record.get("message"):
@@ -944,7 +949,7 @@ def _sandbox_line(output: Path, burst: dict[str, Any]) -> dict[str, Any] | None:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "keep_conversation", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "keep_conversation", "setup", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
         "allow", "runner", "notify")} | {"from_slack": bool(record.get("slack")), "told": bool(record.get("dm")),
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}

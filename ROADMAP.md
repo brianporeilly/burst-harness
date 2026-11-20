@@ -762,7 +762,10 @@ each run and judges nothing, so there is one set of numbers.
     `metrics.criteria` and `metrics.records`. Step 3, checks and steering,
     built (2026-11-21): the nudge after `record_nudge_calls`, a burst that
     recorded nothing sent back once, `docs_style` in the prompt, one docs
-    reminder at finish, and the review's brief.
+    reminder at finish, and the review's brief. Step 4, the setup round,
+    built (2026-11-21): `--setup` and the task option, the template
+    (`harness/plan_template.md`, `docs/plan-template.md` for a chat), the
+    foundation's banner, and finishing held to the plan check.
 
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a

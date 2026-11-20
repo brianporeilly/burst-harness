@@ -25,6 +25,7 @@ from . import (
     git,
     handover,
     project,
+    setup_round,
     job,
     loops,
     mcp,
@@ -414,14 +415,14 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
 def _project_end(ctx: HarnessContext) -> None:
     """A project's milestone and its Accept items' ticks as the burst ends, kept for the result line, which is said
     after the target is released."""
-    if not ctx.project:
+    if not (ctx.project or ctx.setup_round and project.is_project(ctx.target)):
         return
     try:
         record = project.Record(ctx.target)
         current, criteria = record.current(), record.criteria()
         # However it changed (amend_plan, or by hand, as Claude Code does): against the base.
         base = git.run(ctx.target, "show", f"{ctx.cfg.remote}/{ctx.cfg.base_branch}:{project.PLAN}", check=False)
-        found = project.plan_change(base, record.read(project.PLAN) or "") if base else ""
+        found = project.plan_change(base, record.read(project.PLAN) or "") if base and not ctx.setup_round else ""
         if found == "roadmap" or not ctx.plan_change:
             ctx.plan_change = found or ctx.plan_change
     except Exception as err:  # noqa: BLE001 -- the result line is said regardless
@@ -431,13 +432,13 @@ def _project_end(ctx: HarnessContext) -> None:
 
 
 def _project_result(ctx: HarnessContext) -> dict[str, object] | None:
-    if not ctx.project:
+    if not (ctx.project or ctx.setup_round):
         return None
     end = ctx.project_end or {}
     criteria = end.get("criteria")
     return {"milestone": end.get("milestone"),
-            "complete": bool(criteria) and criteria["ticked"] == criteria["total"],
-            "plan_change": ctx.plan_change or None}
+            "complete": not ctx.setup_round and bool(criteria) and criteria["ticked"] == criteria["total"],
+            "plan_change": ctx.plan_change or None, "setup": ctx.setup_round}
 
 
 def _result_line(ctx: HarnessContext, state_name: str) -> None:
@@ -569,7 +570,20 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
     return _report(agent, models.model_name(ctx.cfg), ctx.cfg.provider, ctx.delegated)
 
 
-def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | None:
+def _setup(ctx: HarnessContext, task: str, message: str | None, *, resume: bool) -> str | None:
+    """A burst of the setup round (setup_round.py)."""
+    if not resume and not setup_round.ready(ctx):
+        raise SystemExit(f"{project.PLAN} already passes the plan check: this repo is set up. Run the task without "
+                         "--setup.")
+    ctx.setup_round = True
+    print("The setup round: writing the project's plan.")
+    prompt = setup_round.prompt(ctx, task, message, project.today())
+    if resume:
+        prompt += "\n\nSome of this may be done already, on this branch:\n\n" + handover.where_you_are(ctx)
+    return _drive(ctx, prompt, resume=resume)
+
+
+def _start(ctx: HarnessContext, task: str, message: str | None = None, *, setup: bool = False) -> str | None:
     if git.is_dirty(ctx.target):
         raise SystemExit(
             "The working tree has uncommitted changes. Commit or stash them first — "
@@ -577,6 +591,8 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | 
         )
     # Branch setup happens here, deterministically, rather than being asked of the model.
     print(git.start_branch(ctx.target, ctx.branch, base=ctx.cfg.base_branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    if setup:
+        return _setup(ctx, task, message, resume=False)
     ctx.project = project.is_project(ctx.target)
     if ctx.project:
         print(f"{project.PLAN} has a roadmap: a project, recorded in {project.PROGRESS}.")
@@ -606,8 +622,10 @@ def _project_prompt(ctx: HarnessContext, instruction: str) -> str:
                                  where=handover.where_you_are(ctx), instruction=instruction)
 
 
-def _resume(ctx: HarnessContext, message: str | None) -> str | None:
+def _resume(ctx: HarnessContext, message: str | None, *, setup: bool = False, task: str = "") -> str | None:
     print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
+    if setup:
+        return _setup(ctx, task, message, resume=True)
     ctx.project = project.is_project(ctx.target)
     asks = handover.take_asks(ctx.cfg.resolve_state_dir(ctx.state_key), ctx.slug)
     if ctx.cfg.resume_from == "snapshot":  # the question is in the restored conversation
@@ -627,8 +645,13 @@ def _branch_exists(ctx: HarnessContext) -> bool:
     return remote or bool(git.run(ctx.target, "branch", "--list", ctx.branch))
 
 
+SETUP_HELP = ("The setup round: turn a foundation document in the repo, or --task, into a project's PLAN.md, "
+              "PROGRESS.md and the rest (docs/project-layout.md), ending in a PR to review. Refused once the repo is "
+              "a project whose plan passes the check.")
+
+
 def cmd_start(args: argparse.Namespace) -> int:
-    return _session(args, lambda ctx: _start(ctx, args.task))
+    return _session(args, lambda ctx: _start(ctx, args.task, setup=args.setup))
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -643,10 +666,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     def body(ctx: HarnessContext) -> str | None:
         if _branch_exists(ctx):
             print(f"{ctx.branch} exists; resuming.")
-            return _resume(ctx, args.message)
-        if not args.task:
+            return _resume(ctx, args.message, setup=args.setup, task=args.task or "")
+        if not args.task and not args.setup:
             raise SystemExit(f"{ctx.branch} does not exist yet, so --task is needed to start it.")
-        return _start(ctx, args.task, args.message)
+        return _start(ctx, args.task or "", args.message, setup=args.setup)
 
     return _session(args, body)
 
@@ -1078,6 +1101,7 @@ def main(argv: list[str] | None = None) -> int:
     start = sub.add_parser("start", help="Begin a new task on a fresh branch.")
     start.add_argument("slug")
     start.add_argument("--task", required=True, help="What to do.")
+    start.add_argument("--setup", action="store_true", help=SETUP_HELP)
     start.set_defaults(func=cmd_start)
 
     resume = sub.add_parser("resume", help="Continue a task headlessly.")
@@ -1092,6 +1116,7 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--branch", help="The branch to work on (default: the branch prefix and the slug). A new one, "
                                       "when the task's document is already in the base branch, is a next round: "
                                       "it carries on from the document, after earlier work was merged.")
+    run.add_argument("--setup", action="store_true", help=SETUP_HELP)
     run.set_defaults(func=cmd_run)
 
     chat = sub.add_parser("chat", help="Drive a task interactively, starting it if needed.")

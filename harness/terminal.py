@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime
 
-from . import budget, git, project, repo_commands, review, state, steering
+from . import budget, git, project, repo_commands, review, setup_round, state, steering
 from .context import HarnessContext
 
 # How much of a failed check's output goes back to the model: its end, where test runners sum up.
@@ -63,9 +63,11 @@ def log_heading(ctx: HarnessContext) -> str:
 def record(ctx: HarnessContext, *, done: str = "", next_step: str = "", note: str = "") -> str:
     """Add to the record: in a project, this burst's log entry; otherwise the task document's Done (added to,
     never replaced) and Next step. Returns the file written."""
-    if ctx.project:
+    if ctx.project or getattr(ctx, "setup_round", False) and project.is_project(ctx.target):
         project.Record(ctx.target).log(log_heading(ctx), done=done, next_step=next_step, note=note)
         return project.PROGRESS
+    if getattr(ctx, "setup_round", False):  # no plan yet to record in, and no task document wanted
+        return ""
     doc = state.read(ctx.target, ctx.cfg, ctx.slug)
     more = "\n".join(f"- {line.strip().removeprefix('- ')}" for line in done.strip().splitlines() if line.strip())
     return update_doc(ctx, done=(doc.done.rstrip() + "\n" + more).strip() if more else None,
@@ -100,6 +102,9 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         # deadline meanwhile, or a refusal the lead never gets to fix, strands nothing.
         for step in _wrap_up(ctx, f"wip({ctx.slug}): before the check and review"):
             print(step, flush=True)
+    if getattr(ctx, "setup_round", False) and (problems := setup_round.ready(ctx)):
+        raise ValueError("No PR yet: the plan doesn't pass the check:\n" + "\n".join(f"- {p}" for p in problems)
+                         + "\nFix these, then finish again.")
     if getattr(ctx, "tool_calls", 0) and (why := steering.recorded_nothing(ctx, "finish_with_pr")):
         raise ValueError(why)
     if getattr(ctx, "project", False) and not ctx.criteria_refused and (unticked := project.Record(ctx.target).unticked()):
@@ -120,7 +125,9 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         return pause(ctx, summary=f"Stopped trying to open a PR: the repo's check failed {ctx.checks['failed']} "
                                   "times.", next_step=f"Make `{cfg.check_command.strip()}` pass.") + f"\n{failed}"
     body = review.before_pr(ctx, body)  # review_with: its findings go back once (ReviewGiven), then into the body
-    if getattr(ctx, "project", False):
+    if getattr(ctx, "setup_round", False):
+        body = f"{setup_round.summary(ctx)}\n\n---\n\n{body}"
+    elif getattr(ctx, "project", False):
         body = f"{project_summary(ctx)}\n\n---\n\n{body}"
     record(ctx, next_step=next_step or "Awaiting PR review.")
     steps = _wrap_up(ctx, title)

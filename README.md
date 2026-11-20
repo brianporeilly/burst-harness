@@ -332,7 +332,16 @@ answer.
   the ticks and what was recorded. A pause adds this burst's summary to its log
   entry.
   `harness plan check` (from the repo, or `--repo`) says whether the files are
-  laid out as the harness reads them.
+  laid out as the harness reads them. **The setup round** makes them:
+  `run --setup` (or "Set up this repo as a project" on a task in the
+  orchestrator) turns a foundation document found in the repo (`PRD.md`,
+  `docs/000-foundation.md`, a brief or a vision), or the prompt, into `PLAN.md`
+  from the template (`harness/plan_template.md`; `docs/plan-template.md` is the
+  same, to paste into a chat), with `PROGRESS.md`, `DECISIONS.md`,
+  `BACKLOG.md`, `AGENTS.md` and `.harness.toml`, and a "superseded" line at the
+  top of the foundation. It writes no product code, and finishing is refused
+  until the plan check passes. Merging its PR approves the plan; the
+  orchestrator passes `--setup` until then, and the next round starts M0.
 - **`docs/tasks/<slug>.md`** — committed, for a repo without a plan. Goal,
   constraints, done, decisions, open questions, next step. `record_progress`
   and `record_decision` add to Done and Decisions without rewriting them, and a

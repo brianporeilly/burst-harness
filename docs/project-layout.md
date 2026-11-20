@@ -244,7 +244,8 @@ not turned into a project.
 5. **It always ends in a PR**, which is the plan for review. Merging it approves the plan; auto-continue then
    starts M0.
 
-`docs/plan-template.md` (in this repo) is the same layout as a prompt you can paste. A foundation document
+`docs/plan-template.md` (in this repo) is the same layout as a prompt you can paste; the setup round is given
+the same template, from `harness/plan_template.md`. A foundation document
 written in a chat elsewhere then comes out in this shape from the start, and the setup round has little to do.
 
 ## You as the reviewer

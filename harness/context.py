@@ -84,6 +84,8 @@ class HarnessContext:
     project_end: dict[str, object] | None = None
     # steering.py: the lead's tool calls, and those since the record was last added to; whether the burst was sent
     # back once for recording nothing, and reminded once about docs.
+    # The setup round (setup_round.py): this burst writes the project's plan, and finishing needs it to pass the check.
+    setup_round: bool = False
     tool_calls: int = 0
     since_record: int = 0
     told_to_record: bool = False
