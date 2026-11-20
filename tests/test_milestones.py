@@ -151,7 +151,7 @@ def test_a_burst_ticks_its_milestone_and_says_so(tmp_path, origin, llama, capsys
     assert "aren't all ticked" in refused and "M1.3 Determinism" in refused
     assert "Every Accept item of this milestone is met" in json.dumps(requests[2]["messages"][-1])
     assert result["state"] == "pushed_no_pr"
-    assert result["project"] == {"milestone": "M1", "complete": True, "plan_change": "roadmap"}
+    assert result["project"] == {"milestone": "M1", "complete": True, "plan_change": "roadmap", "setup": False}
     assert result["metrics"]["criteria"] == {"ticked": 2, "total": 2}
     assert result["metrics"]["records"] == {"progress": 0, "decisions": 0, "plan_changes": 1, "backlog": 0, "ticks": 1}
 

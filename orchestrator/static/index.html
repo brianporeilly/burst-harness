@@ -163,6 +163,7 @@
       </div>
       <label class="inline"><input type="checkbox" name="draft"> Open the PR as a draft</label>
       <label class="inline"><input type="checkbox" name="auto_continue"> Once its PR is merged, start the next round by itself</label>
+      <label class="inline"><input type="checkbox" name="setup"> Set up this repo as a project: turn its foundation document (or this prompt) into a plan with milestones, for a PR to review first</label>
       <label class="inline"><input type="checkbox" name="keep_conversation"> Carry each burst's conversation into the next (otherwise each starts fresh from the task document and git)</label>
       <label class="inline" id="task-notify" hidden><input type="checkbox" name="notify"> Tell me in Slack when a burst ends (a PR, a question for you, a failure), and continue it from there</label>
       <p class="muted">With no repository, the task is a question (a summary, some research): it runs in a fresh
@@ -1240,6 +1241,7 @@ taskForm.onsubmit = async (event) => {
   data.draft = taskForm.draft.checked;
   data.auto_continue = taskForm.auto_continue.checked;
   data.keep_conversation = taskForm.keep_conversation.checked;
+  data.setup = taskForm.setup.checked;
   data.notify = !document.getElementById("task-notify").hidden && taskForm.notify.checked;
   // Only Anthropic takes effort and thinking as settings; elsewhere they are in the JSON already.
   if (taskProvider !== "anthropic") { delete data.effort; delete data.thinking; }

@@ -99,6 +99,9 @@ When you stop, write {outcome} -- a JSON object in exactly one of these shapes -
   {{"state": "abandon", "reason": "why"}}  -- the task should not continue.
 If unsure which applies, pause. You may commit as you go; anything left uncommitted is committed for you."""
 
+# The setup round (setup_round.py): the plan is what this round writes.
+SETUP_RECORD = """Task document: none. This round sets the repo up as a project: your first prompt says what to write, and in what layout. Write no product code: the next rounds build it. Finishing is refused until PLAN.md and PROGRESS.md pass the harness's plan check, with what is wrong."""
+
 # In a project (project.py) the record is the repo's PLAN.md and PROGRESS.md, in place of the task document.
 PROJECT_RECORD = """Task document: none. This repo is a project with a plan, and these files are the record instead: the next session has only them and git.
 - PLAN.md is the contract: the goal, the design, and a roadmap of milestones (`### M3 — Title`), each with Accept items (`- M3.1 ...`). Work through the current milestone's (PROGRESS.md's `Current:` line) in order, each with its tests. Read the rest of the plan only where an item needs it.
@@ -346,8 +349,10 @@ class ClaudeCodeEngine:
             branch=self.ctx.branch, remote=cfg.remote, base=cfg.base_branch,
             doc=state.doc_relpath(cfg, self.ctx.slug), cap=cfg.doc_max_bytes, outcome=OUTCOME_PATH,
         )
-        if getattr(self.ctx, "project", False):
-            task_doc = next(line for line in rules.splitlines() if line.startswith("Task document:"))
+        task_doc = next(line for line in rules.splitlines() if line.startswith("Task document:"))
+        if getattr(self.ctx, "setup_round", False):
+            rules = rules.replace(task_doc, SETUP_RECORD)
+        elif getattr(self.ctx, "project", False):
             rules = rules.replace(task_doc, PROJECT_RECORD.format(branch=self.ctx.branch))
         return (rules + (f"\n\n{limits}" if limits else "") + terminal.check_note(cfg)
                 + steering.docs_note(cfg, self.target))

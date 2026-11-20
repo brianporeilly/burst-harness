@@ -10,7 +10,7 @@ from strands.types.tools import ToolContext
 
 import re
 
-from . import project, state, terminal
+from . import project, setup_round, state, terminal
 from .context import HarnessContext
 
 # In request_state: a tool stopped the loop (stop_loop). Strands keeps a deferred cancel to itself, so this is
@@ -140,6 +140,19 @@ def make_tools(ctx: HarnessContext) -> list:
         return end(tool_context, lambda: terminal.abandon(ctx, reason=reason))
 
     terminals = [finish_with_pr, pause_for_review, abandon]
+    if ctx.setup_round:
+        @tool
+        def check_plan() -> str:
+            """Check PLAN.md and PROGRESS.md against the layout the harness reads: what is wrong, or that they pass.
+            Finishing runs it too, and is refused until it passes."""
+            problems = setup_round.ready(ctx)
+            if problems:
+                return "Not yet:\n" + "\n".join(f"- {problem}" for problem in problems)
+            plan = project.Record(target).plan()
+            items = sum(len([i for i in m.items if not i.struck]) for m in plan.milestones)
+            return f"PLAN.md passes: {len(plan.milestones)} milestones, {items} Accept items."
+
+        return [check_plan, *terminals]
     if ctx.project:
         return [*project_tools(ctx), *terminals]
 

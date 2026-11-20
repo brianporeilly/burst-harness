@@ -72,6 +72,8 @@ class Watch:
 
         def after_call(event: AfterToolCallEvent) -> None:
             ctx = self.ctx
+            if ctx.setup_round:  # the setup round writes the plan; there is no record to keep yet
+                return
             name = str((event.tool_use or {}).get("name"))
             ctx.tool_calls += 1
             if name in RECORDING:
@@ -88,7 +90,7 @@ class Watch:
 def recorded_nothing(ctx: Any, end: str) -> str | None:
     """Why the burst should record before it ends, the first time it would end having recorded nothing after real
     work; else None. `end` names the tool, for the message."""
-    if ctx.told_to_record or ctx.tool_calls < MIN_WORK or ctx.records or ctx.since_record < ctx.tool_calls:
+    if getattr(ctx, "setup_round", False) or ctx.told_to_record or ctx.tool_calls < MIN_WORK or ctx.records or ctx.since_record < ctx.tool_calls:
         return None
     ctx.told_to_record = True
     return NOTHING_RECORDED.format(tools=tools_named(ctx.project), end=end)

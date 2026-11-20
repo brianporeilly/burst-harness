@@ -27,7 +27,8 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, budget, handover, loops, mcp, metrics, repo_rules, resources, steering, terminal, transcript
+from . import (agents, budget, handover, loops, mcp, metrics, repo_rules, resources, setup_round, steering, terminal,
+               transcript)
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -544,7 +545,8 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         session_manager=session,
         storage=storage,
         sandbox=sandbox,
-        system_prompt=(PROJECT_SYSTEM_PROMPT if ctx.project else SYSTEM_PROMPT).format(
+        system_prompt=(setup_round.SETUP_SYSTEM_PROMPT if ctx.setup_round else PROJECT_SYSTEM_PROMPT if ctx.project
+                       else SYSTEM_PROMPT).format(
             repo=target.describe(),
             branch=ctx.branch,
             remote=cfg.remote,
