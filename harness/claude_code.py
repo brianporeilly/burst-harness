@@ -64,7 +64,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import agents, budget, credentials, git, git_policy, mcp, models, resources, state, terminal, transcript
+from . import (agents, budget, credentials, git, git_policy, mcp, models, resources, state, steering, terminal,
+               transcript)
 from .agent_sandbox import label_value
 from .claude_usage import ClaudeUsage
 from .containers import MODEL_CREDENTIALS
@@ -348,7 +349,8 @@ class ClaudeCodeEngine:
         if getattr(self.ctx, "project", False):
             task_doc = next(line for line in rules.splitlines() if line.startswith("Task document:"))
             rules = rules.replace(task_doc, PROJECT_RECORD.format(branch=self.ctx.branch))
-        return rules + (f"\n\n{limits}" if limits else "") + terminal.check_note(cfg)
+        return (rules + (f"\n\n{limits}" if limits else "") + terminal.check_note(cfg)
+                + steering.docs_note(cfg, self.target))
 
     def hook_settings(self) -> str:
         cfg = self.ctx.cfg

@@ -194,7 +194,8 @@ At the start of a burst and at a window cut, the "where you are" block (handover
 
 ## Checks and nudges
 
-- **Sent back once** when a burst ends having recorded nothing (no tick, progress, decision or plan change):
+- **Sent back once** when a burst ends, after 10 or more tool calls, having recorded nothing (no tick, progress,
+  decision or plan change):
   "record where this stands before you stop." A pause records its summary anyway; this catches the burst
   that worked for an hour and only paused.
 - **A nudge** after `record_nudge_calls` tool calls (default 40, 0 for off) with nothing recorded.

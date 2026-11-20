@@ -59,6 +59,7 @@ def _burst(tmp_path, name, lead, helper, reviewer, capsys):
 def smoke(tmp_path, llama, capsys, monkeypatch):  # noqa: F811
     def run(name, lead=LEAD, helper=HELPER, reviewer=REVIEWER):
         monkeypatch.delenv("HARNESS_CONFIG", raising=False)  # --config adds to it: a second burst would have it twice
+        monkeypatch.delenv("HARNESS_DOCS_STYLE", raising=False)  # the default, as a real burst has it
         monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / name / "state"))  # a burst of its own, not a resume
         (lead_url, _), (helper_url, _), (reviewer_url, _) = llama(lead), llama(helper), llama(reviewer)
         return _burst(tmp_path, name, lead_url, helper_url, reviewer_url, capsys)

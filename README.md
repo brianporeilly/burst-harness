@@ -378,6 +378,20 @@ before them, the next tool result tells the model the summary is settled and to
 take the next step. `repeat_notice = false` turns it off. Checked against 350
 earlier runs, it fired in 11, nearly all of them stuck that way.
 
+**Keeping the record and the docs current.** The record (a project's
+`PROGRESS.md` and `DECISIONS.md`, or the task document) is all the next session
+has, so after `record_nudge_calls` tool calls (40; 0 for never) with nothing
+recorded, the next tool result says to record. A burst that pauses or finishes
+after 10 or more tool calls without recording anything is sent back once to do
+it. Documentation is steered, not checked hard: `docs_style` puts guidance in
+the prompt, `diataxis` (the default: tutorials, how-to guides, reference and
+explanation under `docs/`, and a README that says how to start), `none`, or the
+path of a file in the repo describing the project's own style. A finish whose
+change touches code (tests aside) but no documentation gets one reminder, which
+finishing again passes; a project's PR says which docs changed, and the review is
+asked about ticked items the change doesn't back up and behaviour no doc
+describes.
+
 **The repo's instructions for agents.** On the Strands engine, the agent's
 prompt includes the repo's `AGENTS.md`, or its `CLAUDE.md` if there is no
 `AGENTS.md`. Delegates get it too. This is where repos usually keep their test

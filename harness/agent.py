@@ -27,7 +27,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, budget, handover, loops, mcp, metrics, repo_rules, resources, terminal, transcript
+from . import agents, budget, handover, loops, mcp, metrics, repo_rules, resources, steering, terminal, transcript
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -550,7 +550,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
             remote=cfg.remote,
             base=cfg.base_branch,
             doc=doc_rel,
-        ) + _limits(target) + rules + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
+        ) + _limits(target) + rules + steering.docs_note(cfg, target) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
         tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else [])],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
@@ -558,5 +558,6 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
     )
     limits.watch(agent, cfg, lead=True)
     loops.of(ctx).watch(agent)
+    steering.Watch(cfg, ctx).watch(agent)
     transcript.of(ctx).watch(agent)
     return agent, session

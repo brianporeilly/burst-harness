@@ -31,6 +31,9 @@ def _isolated_env(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     # Snapshots and job run records go here, not in the real ~/.burst-harness.
     monkeypatch.setenv("HARNESS_STATE_DIR", str(tmp_path / "state"))
+    # The docs reminder at finish would refuse every test's first finish after a code change; steering.py's tests,
+    # and the smoke test, turn it on.
+    monkeypatch.setenv("HARNESS_DOCS_STYLE", "none")
     for key, value in GIT_ENV.items():
         monkeypatch.setenv(key, value)
     from harness import models

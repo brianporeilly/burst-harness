@@ -82,3 +82,9 @@ class HarnessContext:
     criteria_refused: bool = False
     # A project's milestone and {ticked, total} as the burst ended (cli._project_end), for HARNESS_RESULT.
     project_end: dict[str, object] | None = None
+    # steering.py: the lead's tool calls, and those since the record was last added to; whether the burst was sent
+    # back once for recording nothing, and reminded once about docs.
+    tool_calls: int = 0
+    since_record: int = 0
+    told_to_record: bool = False
+    docs_reminded: bool = False

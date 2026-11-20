@@ -759,7 +759,10 @@ each run and judges nothing, so there is one set of numbers.
     `tick_criterion`, `amend_plan`, finishing checked against the
     milestone, the PR body written from the record, the next milestone
     taken up after a merge, `HARNESS_RESULT`'s `project`, and
-    `metrics.criteria` and `metrics.records`.
+    `metrics.criteria` and `metrics.records`. Step 3, checks and steering,
+    built (2026-11-21): the nudge after `record_nudge_calls`, a burst that
+    recorded nothing sent back once, `docs_style` in the prompt, one docs
+    reminder at finish, and the review's brief.
 
 Left out: Spec Kit's whole workflow (only acceptance criteria, step 5),
 approving each tool call (the gateway and the sandbox are the boundary), a
