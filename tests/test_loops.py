@@ -95,3 +95,60 @@ def test_retrying_between_new_work_is_not_a_loop_but_padding_it_is():
         other.note("read", {"path": f"missing{n}"}, {"status": "error", "content": [{"text": "no such file"}]})
         other.note("send_invite", {"to": "a@example.com"}, down)
     assert other.reason
+
+
+RECAPS = [
+    "The picture is now clear. The roadmap review and agent-workflow scaffolding are already merged in PR #1, so "
+    "this session's job is Phase 0 tooling: the cargo workspace, the toolchain pin and CI. The build cache is empty.",
+    "Now I have the full picture. Roadmap review plus agent-workflow scaffolding (AGENTS.md, docs/agents) were "
+    "merged in PR #1; this session's job is the cargo workspace, toolchain pin and CI for Phase 0. Build cache empty.",
+    "I now have full clarity. Summary: the roadmap review and the agent-workflow scaffolding are merged (PR #1). "
+    "This session's job: Phase 0, the cargo workspace, toolchain pin, CI. The build cache is empty, so builds are slow.",
+    "This is very clear now. The roadmap review and agent-workflow scaffolding already merged in PR #1. The job of "
+    "this session is Phase 0: cargo workspace, toolchain pin, CI. The build cache is empty.",
+]
+WORK = [
+    "Fixing the borrow in deal_damage: take the attack by value so callers can hold the unit mutably meanwhile.",
+    "The A* search hangs on a closed grid: the open set never empties because visited nodes are pushed again.",
+    "Adding a test for line of sight across diagonal walls, then running cargo test for rift_core alone.",
+    "The CI workflow needs the pinned toolchain: reading rust-toolchain.toml and matching it in the action.",
+]
+
+
+def test_replies_restating_the_same_summary_are_a_loop():
+    from harness.loops import Repeats
+
+    repeats = Repeats()
+    told = [repeats.note(text) for text in [*WORK, *RECAPS]]
+    # The first recaps only set the scene; the third repeats two before it, the fourth is a loop, told.
+    assert told == [False] * 4 + [False, False, False, True]
+    assert repeats.note("") is False and repeats.note("Done.") is False  # nothing, or too little, to compare
+
+    working = Repeats()
+    assert not any(working.note(text) for text in WORK * 2)  # one piece of work after another: each different
+
+
+def test_the_model_is_told_in_its_next_tool_result(tmp_path, origin, monkeypatch, capsys):
+    script = [{"text": text, "tool": "shell", "args": {"command": "echo ok"}} for text in RECAPS]
+    script += [{"tool": "pause_for_review", "args": {"summary": "s", "next_step": "n"}}, {"text": "Paused."}]
+
+    def run(name):
+        server, requests = fake_llama.serve(script)
+        try:
+            work = tmp_path / name
+            git(tmp_path, "clone", "-q", str(origin), str(work))
+            cli.main(["--provider", "llamacpp", "--base-url", f"http://127.0.0.1:{server.server_port}",
+                      "--repo", str(work), "start", name, "--task", "Build it."])
+            out = capsys.readouterr().out
+            return requests, json.loads(out.split("HARNESS_RESULT ", 1)[1].splitlines()[0])
+        finally:
+            server.shutdown()
+
+    requests, result = run("t1")
+    told = [i for i, request in enumerate(requests) if "keep restating the same summary" in json.dumps(request)]
+    assert told and told[0] == 4  # after the fourth recap's call: the request that follows it
+    assert result["metrics"]["repeats"] == 1
+
+    monkeypatch.setenv("HARNESS_REPEAT_NOTICE", "false")
+    requests, result = run("t2")
+    assert "keep restating" not in json.dumps(requests) and result["metrics"]["repeats"] == 0

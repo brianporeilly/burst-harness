@@ -18,6 +18,16 @@ well, nearly all retrying a service the task had down on purpose.
 
 0 turns either off. A call counts as failed when its tool raised or returned an error, or when a shell's exit
 code is not 0. A call that succeeds is never counted, however often it is repeated.
+
+Repeats (`repeat_notice`) are the other kind of loop: every call succeeds and differs, but the replies keep
+restating the same thing ("the picture is now clear: X is done, this session's job is Y..."), each restatement
+priming the next. A reply repeats when its first REPEAT_WORDS content words overlap (Jaccard, at least
+REPEAT_OVERLAP) those of 2 of the REPEAT_LOOKBACK replies before it. Paraphrase defeats n-grams, which is why it is
+words. One such reply is often a model working on one thing with one vocabulary; two within REPEAT_CLOSE replies of
+each other is a loop, and from then on each repeat tells the model, in its next tool result, that it is settled
+(metrics' `repeats`). Replayed over 350 local-llm-benchmark and cluster runs, it fired in 11, nearly all models
+restating the same plan or the same failed finish_with_pr; in the cluster run it came from, at the first of the
+recaps that went on for 35 minutes.
 """
 
 from __future__ import annotations
@@ -27,7 +37,16 @@ import json
 import re
 from typing import Any
 
-STOPPED = "harness_loop"  # in request_state: the stop was a loop's (agent._call does not restart it)
+STOPPED = "harness_loop"
+REPEAT_WORDS, REPEAT_OVERLAP, REPEAT_LOOKBACK, REPEAT_CLOSE, REPEAT_MIN = 60, 0.3, 6, 3, 8
+STOPWORDS = frozenset(
+    "the a an and or of to in is are was were be been it this that with for on as at by from i i'm my we our now "
+    "let me have has not no but so can will should which what then there their its into all any also just only more "
+    "most other some such than too very".split())
+REPEATING = ("\n[harness] Your recent replies keep restating the same summary. It is settled: don't restate it. Take "
+             "the next step with a tool call, and record anything new in the task document.")
+REPEATING_DELEGATE = ("\n[harness] Your recent replies keep restating the same summary. It is settled: take the "
+                      "next step, or report.")  # in request_state: the stop was a loop's (agent._call does not restart it)
 
 WARNING = ("\n[harness] This exact call has now failed the same way {count} times. Repeating it will not help: "
            "change your approach (read the error, look at the code it points to, try something else), or "
@@ -61,9 +80,40 @@ def _key(*parts: Any) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def _words(text: str) -> frozenset[str]:
+    found = (w for w in re.findall(r"[a-z0-9_]+", text.lower()) if len(w) > 2 and w not in STOPWORDS)
+    return frozenset(w for _, w in zip(range(REPEAT_WORDS), found))
+
+
+def _overlap(a: frozenset[str], b: frozenset[str]) -> float:
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+class Repeats:
+    """Replies restating the same thing, though every call works (the module's docstring)."""
+
+    def __init__(self) -> None:
+        self.replies: list[frozenset[str]] = []  # each reply with text: its first content words
+        self.flagged: list[int] = []  # which of them repeated earlier ones
+
+    def note(self, text: str) -> bool:
+        """Count a reply's text. True when it is a repeat of a loop: the model should be told."""
+        if not text.strip():
+            return False
+        words, at = _words(text), len(self.replies)
+        earlier = self.replies[max(0, at - REPEAT_LOOKBACK):]
+        self.replies.append(words)
+        if len(words) < REPEAT_MIN or sum(_overlap(words, e) >= REPEAT_OVERLAP for e in earlier) < 2:
+            return False
+        close = any(at - before <= REPEAT_CLOSE for before in self.flagged)
+        self.flagged.append(at)
+        return close
+
+
 class Loops:
     def __init__(self, cfg: Any, *, delegate: bool = False) -> None:
         self.warn, self.stop = cfg.loop_warn, cfg.loop_stop
+        self.repeats = Repeats() if getattr(cfg, "repeat_notice", True) else None
         self.delegate = delegate
         self.seen: dict[str, int] = {}  # each failure, how often: for the warning
         self.streak: dict[str, int] = {}  # each failure, how often since anything new worked: for the stop
@@ -89,20 +139,41 @@ class Loops:
         return count
 
     def watch(self, agent: Any) -> None:
-        if not (self.warn or self.stop):
+        if not (self.warn or self.stop or self.repeats):
             return
-        from strands.hooks import AfterToolCallEvent
+        from strands.hooks import AfterToolCallEvent, MessageAddedEvent
+
+        from . import metrics
+
+        told: list[bool] = [False]  # a repeat's notice, still to go into the next tool result
+
+        def added(event: MessageAddedEvent) -> None:
+            message = event.message or {}
+            if self.repeats is None or message.get("role") != "assistant":
+                return
+            text = " ".join(str(block.get("text", "")) for block in message.get("content") or []
+                            if isinstance(block, dict) and "text" in block)
+            if self.repeats.note(text):
+                metrics.count(event.agent, "repeats")
+                told[0] = True
 
         def after_call(event: AfterToolCallEvent) -> None:
             use = event.tool_use or {}
             count = self.note(str(use.get("name")), use.get("input"), event.result, event.exception)
-            if self.warn and count == self.warn and isinstance(event.result, dict):
-                text = (WARNING_DELEGATE if self.delegate else WARNING).format(count=count)
-                event.result = {**event.result, "content": [*(event.result.get("content") or []), {"text": text}]}
+            notes = []
+            if self.warn and count == self.warn:
+                notes.append((WARNING_DELEGATE if self.delegate else WARNING).format(count=count))
+            if told[0]:
+                notes.append(REPEATING_DELEGATE if self.delegate else REPEATING)
+                told[0] = False
+            if notes and isinstance(event.result, dict):
+                event.result = {**event.result, "content": [*(event.result.get("content") or []),
+                                                            *({"text": note} for note in notes)]}
             if self.reason:
                 event.invocation_state.setdefault("request_state", {})[STOPPED] = True
                 event.agent.cancel(after_current_tools=True)
 
+        agent.hooks.add_callback(MessageAddedEvent, added)
         agent.hooks.add_callback(AfterToolCallEvent, after_call)
 
 

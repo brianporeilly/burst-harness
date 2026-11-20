@@ -1,7 +1,8 @@
 """A stand-in llama.cpp server: /v1/chat/completions, streamed, from a script.
 
 Each turn of the script is what the model says next: {"tool": NAME, "args": {...}}
-for a tool call, {"calls": [{"tool", "args"}, ...]} for several at once, {"text": "..."}, or {"cut": "..."} for a reply cut off at the
+for a tool call (with "text" too, said before it), {"calls": [{"tool", "args"}, ...]} for several at once,
+{"text": "..."}, or {"cut": "..."} for a reply cut off at the
 output limit (finish_reason "length"). The turn is picked by how many assistant
 messages the request already has, so the conversation drives it; a request
 with no tools gets a plain reply (`side`, a string or a turn) and does not advance it. In string
@@ -76,6 +77,8 @@ def make_handler(script: list[dict[str, Any]], requests: list[dict[str, Any]],
 
             if "tool" in step or "calls" in step:
                 calls = step.get("calls") or [step]
+                if step.get("text"):
+                    send({"choices": [{"delta": {"content": _fill(step["text"], last_tool)}}]})
                 send({"choices": [{"delta": {"tool_calls": [{
                     "index": n, "id": f"call-{turn}-{n}", "type": "function",
                     "function": {"name": call["tool"], "arguments": json.dumps(_fill(call.get("args", {}), last_tool))},
