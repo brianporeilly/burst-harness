@@ -318,6 +318,9 @@ class HarnessConfig:
     # files the repo has, at its root. Empty: none read.
     repo_instructions: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md")
     repo_instructions_max_bytes: int = 16384
+    # Where a headless burst starts from (handover.py): "repo", a fresh conversation given the task document
+    # and git as they are now; or "snapshot", the previous burst's conversation restored. `chat` restores it.
+    resume_from: str = "repo"
 
     # --- context / tokens ---
     offload_max_result_tokens: int = 2500
@@ -461,7 +464,7 @@ REPO_SETTABLE = frozenset({
     "model_id", "max_tokens", "effort", "thinking", "context_window_limit",
     "base_branch", "branch_prefix", "protected_branches", "remote", "pr_draft",
     "git_user_name", "git_user_email", "auto_push",
-    "docs_dir", "doc_max_bytes", "skills_dir", "repo_instructions", "repo_instructions_max_bytes",
+    "docs_dir", "doc_max_bytes", "skills_dir", "repo_instructions", "repo_instructions_max_bytes", "resume_from",
     "offload_max_result_tokens", "offload_preview_tokens", "window_size", "pin_first",
     "proactive_compression", "cache_ttl",
     "max_fixup_attempts", "require_clean_tree", "check_command", "check_timeout",

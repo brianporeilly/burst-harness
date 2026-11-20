@@ -198,7 +198,10 @@ def test_a_new_branch_of_a_task_merged_before_is_its_next_round(origin, tmp_path
     cli.cmd_run(args)
     prompt = (argv := fake_claude()[0])[argv.index("-p") + 1]
     assert "merged into main" in prompt and "harness/t-2" in prompt and "do phase 2, and keep it small" in prompt
-    assert "build the thing in phases" not in prompt  # not started over from the first prompt
+    # Not started over from the first prompt: the goal is there only in the task document it is given.
+    assert prompt.count("build the thing in phases") == 1
+    assert "build the thing in phases" in prompt.split("<task-document", 1)[1].split("</task-document>", 1)[0]
+    assert "from earlier rounds, already merged" in prompt
     assert "harness/t-2" in sh_git(origin, "branch", "--list", "harness/t-2")
     doc = sh_git(origin, "show", "harness/t-2:docs/tasks/t.md")
     assert "## Goal\n\nbuild the thing in phases" in doc  # the document carried on, its goal kept

@@ -793,3 +793,15 @@ def test_a_prs_state_is_asked_of_github_with_gh(monkeypatch):
     assert "a-token" not in str(err.value)
     with pytest.raises(git.GitError, match="not a PR"):
         git.pr_state("https://github.com/me/proj/pull/8 --repo x")
+
+
+def test_a_task_can_keep_each_bursts_conversation(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "build it", "slug": "kept", "keep_conversation": True})
+    runner.create({"repo": "me/proj", "prompt": "build it", "slug": "fresh"})
+    runner.create({"prompt": "what is new?", "slug": "q", "keep_conversation": True})  # a question has no bursts to carry
+    tasks = {slug: runner.task(slug) for slug in ("kept", "fresh", "q")}
+    assert [tasks[slug]["keep_conversation"] for slug in ("kept", "fresh", "q")] == [True, False, False]
+    envs = {slug: runner._model_env(record) for slug, record in tasks.items()}  # what each one's bursts are given
+    assert envs["kept"]["HARNESS_RESUME_FROM"] == "snapshot" and harness.started[0][1].env["HARNESS_RESUME_FROM"] == "snapshot"
+    assert "HARNESS_RESUME_FROM" not in envs["fresh"] and "HARNESS_RESUME_FROM" not in envs["q"]

@@ -23,6 +23,7 @@ from . import (
     containers,
     egress,
     git,
+    handover,
     job,
     loops,
     mcp,
@@ -64,6 +65,17 @@ RESUME_PROMPT = """Resume this task. Call read_task_doc first and continue from 
 # A run on a new branch of a task whose document is already in the base: its earlier work was merged.
 NEXT_ROUND_PROMPT = """This task's earlier work was merged into {base}. You are on {branch}, a fresh branch from it, for the task's next round, which ends in a PR of its own. Call read_task_doc first; do not redo what it records as done. {instruction}"""
 NEXT_STEP = "Continue from its Next step."
+# resume_from = "repo" (handover.py): a fresh conversation, given the task document and git as they are now.
+FROM_THE_REPO = """This is a fresh conversation: earlier bursts' messages are not here, and nothing needs them. The repo is the record of this task. Its task document, the branch's commits and anything uncommitted, as they are now, are below: they stand in for a first read_task_doc. Do not re-read the codebase to rebuild what they record.
+
+{where}"""
+REPO_RESUME_PROMPT = "Resume this task. " + FROM_THE_REPO + "\n\n{instruction}"
+REPO_NEXT_ROUND_PROMPT = ("""This task's earlier work was merged into {base}. You are on {branch}, a fresh branch from it, for the task's next round, which ends in a PR of its own. """ + FROM_THE_REPO + """
+
+The document's Done and Decisions are from earlier rounds, already merged: do not redo that work, and where a decision says something was left for later, that was then. This round starts from its Next step. Record this round's progress in it as you go.
+
+{instruction}""")
+ANSWERED = "The last burst ended by asking:\n{asks}\n\nThe answer: {answer}"
 # A branch named with --branch: what git takes, and nothing an option could be read from.
 BRANCH_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}")
 
@@ -131,6 +143,8 @@ def _turns(agent: Any, ctx: HarnessContext, prompt: Any, *, interactive: bool) -
                     print(f"\n[agent needs input] {ask}")
                 ctx.said = {"asks": asks}
                 ctx.handoffs += len(asks)
+                # For the burst that brings the answer, which starts from the repo, not this conversation.
+                handover.keep_asks(ctx.cfg.resolve_state_dir(ctx.state_key), ctx.slug, asks)
                 print("\nRe-run with `chat` to answer, or `resume --message '...'`.")
                 ctx.waiting = True
                 return result
@@ -265,6 +279,8 @@ def _open(args: argparse.Namespace) -> HarnessContext:
     cfg = HarnessConfig.load(None, overrides)
     if cfg.engine not in ENGINES:
         raise SystemExit(f"Unknown engine {cfg.engine!r}. Use {' or '.join(ENGINES)}.")
+    if cfg.resume_from not in handover.RESUME_FROM:
+        raise SystemExit(f"Unknown resume_from {cfg.resume_from!r}. Use {' or '.join(handover.RESUME_FROM)}.")
     try:
         agents.check_providers(cfg)  # before a sandbox starts, not when a delegate is first called
         mcp.check_keys(cfg)  # a server's key that cannot be used, before anything starts
@@ -491,8 +507,11 @@ def _drive(ctx: HarnessContext, prompt: str, *, resume: bool) -> str | None:
         finally:
             engine.cleanup()
         return engine.report()
+    state_dir = ctx.cfg.resolve_state_dir(ctx.state_key)
+    if ctx.cfg.resume_from == "repo" and handover.set_aside(state_dir, ctx.slug):
+        print("Starting a fresh conversation from the repo; the last burst's is set aside (resume_from = repo).")
     agent, _ = build_agent(ctx)
-    if resume:
+    if resume and ctx.cfg.resume_from == "snapshot":
         restored = len(agent.messages)
         print(
             f"Restored {restored} message(s) from snapshot."
@@ -518,6 +537,10 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | 
         # The task's document came with the base: its earlier work was merged (and its branch is gone, or
         # this round has a branch of its own). Carry on from the document rather than start over.
         print(f"{state.doc_relpath(ctx.cfg, ctx.slug)} is in {ctx.cfg.base_branch}: the task's next round.")
+        if ctx.cfg.resume_from == "repo":
+            return _drive(ctx, REPO_NEXT_ROUND_PROMPT.format(base=ctx.cfg.base_branch, branch=ctx.branch,
+                                                             where=handover.where_you_are(ctx),
+                                                             instruction=message or NEXT_STEP), resume=False)
         return _drive(ctx, NEXT_ROUND_PROMPT.format(base=ctx.cfg.base_branch, branch=ctx.branch,
                                                     instruction=message or NEXT_STEP), resume=False)
     state.write(ctx.target, ctx.cfg, state.merge(state.read(ctx.target, ctx.cfg, ctx.slug), goal=task))
@@ -526,7 +549,15 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None) -> str | 
 
 def _resume(ctx: HarnessContext, message: str | None) -> str | None:
     print(git.sync_branch(ctx.target, ctx.branch, remote=ctx.cfg.remote, auth=ctx.auth))
-    return _drive(ctx, message or RESUME_PROMPT, resume=True)
+    asks = handover.take_asks(ctx.cfg.resolve_state_dir(ctx.state_key), ctx.slug)
+    if ctx.cfg.resume_from == "snapshot":  # the question is in the restored conversation
+        return _drive(ctx, message or RESUME_PROMPT, resume=True)
+    if asks and message:
+        instruction = ANSWERED.format(asks="\n".join(f"- {ask}" for ask in asks), answer=message)
+    else:
+        instruction = message or NEXT_STEP
+    return _drive(ctx, REPO_RESUME_PROMPT.format(where=handover.where_you_are(ctx), instruction=instruction),
+                  resume=True)
 
 
 def _branch_exists(ctx: HarnessContext) -> bool:
