@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.46.0 (2026-11-20)
+
+### Bug Fixes
+
+- **harness**: A smoke test and replay of a whole burst; checks always say how many failed
+  ([#48](https://github.com/brianporeilly/burst-harness/pull/48),
+  [`006be91`](https://github.com/brianporeilly/burst-harness/commit/006be9144ff67d500b8e07b8ef5e298e8d44051a))
+
+### Features
+
+- **harness**: Every burst starts from the task document and git, not the last burst's conversation
+  ([#49](https://github.com/brianporeilly/burst-harness/pull/49),
+  [`78ceb42`](https://github.com/brianporeilly/burst-harness/commit/78ceb42525a5ba25f34be1bfc6317d80abf79822))
+
+
 ## v0.45.2 (2026-11-20)
 
 ### Bug Fixes
