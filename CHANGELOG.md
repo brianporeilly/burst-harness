@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.48.0 (2026-11-20)
+
+### Features
+
+- **harness**: Notice replies that keep restating the same summary, and tell the model it is settled
+  ([#51](https://github.com/brianporeilly/burst-harness/pull/51),
+  [`6cda975`](https://github.com/brianporeilly/burst-harness/commit/6cda975b9f20dd94e86e2ca05d8c687b4532345b))
+
+
 ## v0.47.0 (2026-11-20)
 
 ### Features
