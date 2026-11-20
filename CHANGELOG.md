@@ -5,6 +5,16 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.50.0 (2026-11-20)
+
+### Features
+
+- **harness**: A project's milestones: criteria ticked with evidence, the plan amended on the
+  record, finishing checked, the PR written from the record
+  ([#54](https://github.com/brianporeilly/burst-harness/pull/54),
+  [`5832058`](https://github.com/brianporeilly/burst-harness/commit/5832058bd856a77e161f1f5bfa2e83417a90862a))
+
+
 ## v0.49.0 (2026-11-20)
 
 ### Documentation
