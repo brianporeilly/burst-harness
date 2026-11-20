@@ -13,6 +13,7 @@
   cut_off              replies that ended at the output limit (and were discarded)
   window_drops         messages the sliding window dropped (each drop breaks the prompt cache's prefix)
   window_cuts          how many times it cut (a note says so where it did: agent.ChunkedWindow)
+  repeats              replies that restated what recent ones said, the model told so (loops.Repeats)
   model_retries        model calls retried (a timeout, throttling); lost_server those of them for a server gone
   cost_usd             approximate, from PRICES; 0 for a local llama.cpp model; null when the price is not known.
                        In `metrics` it is the lead's and its delegates' together, null if any of them is not known
@@ -52,7 +53,7 @@ FREE = frozenset(("llamacpp",))  # a model run locally costs nothing per token
 # (llama.cpp, OpenAI, Gemini) count the cached prefix in the prompt's tokens.
 CACHE_OUTSIDE_INPUT = frozenset(("anthropic", "bedrock"))
 
-COUNTERS = ("cut_off", "window_drops", "window_cuts", "model_retries", "lost_server")
+COUNTERS = ("cut_off", "window_drops", "window_cuts", "repeats", "model_retries", "lost_server")
 
 # What the harness counts itself, by agent, alongside Strands' own metrics.
 _counted: "weakref.WeakKeyDictionary[Any, dict[str, int]]" = weakref.WeakKeyDictionary()
@@ -203,5 +204,5 @@ SHAPING = frozenset({
     "window_size", "pin_first", "proactive_compression", "cache_ttl", "max_fixup_attempts", "require_clean_tree",
     "check_command", "check_timeout", "setup_command", "setup_timeout",
     "review_with", "review_max_minutes", "review_max_calls",
-    "loop_warn", "loop_stop",
+    "loop_warn", "loop_stop", "repeat_notice",
 })

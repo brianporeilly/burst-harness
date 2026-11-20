@@ -81,6 +81,8 @@ scrape from the log:
 - `cut_off`: replies that hit the output limit.
 - `window_drops`: messages the sliding window dropped, and `window_cuts` how
   many times it cut. Where it cut, the model is told so (below).
+- `repeats`: replies that restated what recent ones said, the model told so
+  (`repeat_notice`, below).
 - `model_retries` and `lost_server`: model calls that were retried.
 - `cost_usd`: approximate. It is 0 for a local llama.cpp model, and null if
   the price of any model used, the lead's or a delegate's, isn't known.
@@ -341,6 +343,15 @@ on rather than start over or restate the situation. A task's lead also gets the
 task document and git as they are now, since any copy read earlier may be out
 of date. Only the latest cut's note is kept. The transcript's `cuts` lists each
 one: when, for which agent, and how many messages it dropped.
+
+**Replies that repeat themselves.** Besides the same failing tool call
+(`loop_warn`, `loop_stop`), a model can loop with every call working: each reply
+restates the same summary ("the picture is now clear: X is done, this session's
+job is Y"), and each restatement primes the next. When two replies close together
+each share most of their opening content words with two of the six replies
+before them, the next tool result tells the model the summary is settled and to
+take the next step. `repeat_notice = false` turns it off. Checked against 350
+earlier runs, it fired in 11, nearly all of them stuck that way.
 
 **The repo's instructions for agents.** On the Strands engine, the agent's
 prompt includes the repo's `AGENTS.md`, or its `CLAUDE.md` if there is no

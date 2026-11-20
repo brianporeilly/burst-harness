@@ -344,6 +344,8 @@ class HarnessConfig:
     # (a burst paused for review) at loop_stop. 0 turns either off.
     loop_warn: int = 3
     loop_stop: int = 5
+    # Replies that keep restating the same thing (loops.Repeats): the model is told it is settled.
+    repeat_notice: bool = True
     max_fixup_attempts: int = 3
     require_clean_tree: bool = True
     # Each burst's transcript (transcript.py) is written to the driver's state directory; the newest this many

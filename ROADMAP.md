@@ -733,8 +733,10 @@ each run and judges nothing, so there is one set of numbers.
        went, and for a task's lead the same document and git state, since the
        copy read earlier may be stale. `metrics.window_cuts`, and the
        transcript's `cuts`.
-    3. Repeated replies noticed: three that open with the same recap are
-       told it is settled and to take the next step (`metrics.repeats`).
+    3. Repeated replies noticed: built (2026-11-20). Replies whose opening
+       content words overlap two of the six before, twice close together,
+       are told it is settled and to take the next step (`metrics.repeats`,
+       `repeat_notice`). Fired in 11 of 350 earlier runs, nearly all loops.
     4. The document kept current: the preamble asks for milestones in Done
        and no restated situation; a nudge after many tool calls without an
        update; a burst that ends without updating it is sent back once.
