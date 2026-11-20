@@ -79,7 +79,8 @@ scrape from the log:
 - `peak_prompt_tokens`: the largest single prompt, which shows how close the
   run got to the context limit.
 - `cut_off`: replies that hit the output limit.
-- `window_drops`: messages the sliding window dropped.
+- `window_drops`: messages the sliding window dropped, and `window_cuts` how
+  many times it cut. Where it cut, the model is told so (below).
 - `model_retries` and `lost_server`: model calls that were retried.
 - `cost_usd`: approximate. It is 0 for a local llama.cpp model, and null if
   the price of any model used, the lead's or a delegate's, isn't known.
@@ -332,6 +333,14 @@ aside (`session/<slug>.previous`), and its transcript has every message.
 `resume_from = "snapshot"` (or `HARNESS_RESUME_FROM`, or "Carry each burst's
 conversation into the next" on a task in the orchestrator) restores it instead,
 as before. `chat` always restores it.
+
+**A note where the window was cut.** Past `window_size` messages, the window
+cuts the conversation back to half. Where it cut, a note on the first message it
+kept says how many messages went, that their work is in the repo, and to carry
+on rather than start over or restate the situation. A task's lead also gets the
+task document and git as they are now, since any copy read earlier may be out
+of date. Only the latest cut's note is kept. The transcript's `cuts` lists each
+one: when, for which agent, and how many messages it dropped.
 
 **The repo's instructions for agents.** On the Strands engine, the agent's
 prompt includes the repo's `AGENTS.md`, or its `CLAUDE.md` if there is no

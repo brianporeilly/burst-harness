@@ -10,7 +10,8 @@ dropped is missing.
      "agents": [{"name": "lead" | a delegate's profile, "task": a delegate's brief, "format", "system",
                  "messages": [{"role", "content", "at"}, ...]}],
      "tools":  [{"agent", "id", "name", "at", "seconds", "status"}],
-     "models": [{"agent", "at", "seconds", "error"?}]}
+     "models": [{"agent", "at", "seconds", "error"?}],
+     "cuts":   [{"agent", "at", "dropped", "before"}]}   the window cutting `dropped` of `before` messages
 
 `at` is seconds since the burst started. `format` says whose message shape it is: "strands" (Bedrock-style
 content blocks: text, toolUse, toolResult, reasoningContent, the session snapshot's) or "claude-code" (the
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import json
 import time
+import weakref
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +38,7 @@ class Transcript:
         self.models: list[dict[str, Any]] = []
         self._claude: dict[str, Any] | None = None  # the Claude Code lead's entry
         self._claude_tools: dict[str, dict[str, Any]] = {}
+        self.cuts: list[dict[str, Any]] = []
 
     def _at(self) -> float:
         return round(time.time() - self.started, 2)
@@ -56,6 +59,7 @@ class Transcript:
         )
 
         entry = self._entry(name, "strands", task)
+        _watched[agent] = (self, name)
         if isinstance(getattr(agent, "system_prompt", None), str):
             entry["system"] = agent.system_prompt
         running: dict[str, dict[str, Any]] = {}
@@ -133,6 +137,7 @@ class Transcript:
                        for entry in self.agents],
             "tools": sorted(self.tools, key=lambda call: call["at"]),
             "models": self.models,
+            "cuts": self.cuts,
         }
 
     def write(self, ctx: Any, state: str, result: dict[str, Any]) -> Path | None:
@@ -149,6 +154,20 @@ class Transcript:
         for old in sorted(folder.glob("*.json"))[:-kept]:
             old.unlink(missing_ok=True)
         return path
+
+
+# Each agent watched, with its transcript and its name in it: for the window, which knows only the agent.
+_watched: "weakref.WeakKeyDictionary[Any, tuple[Transcript, str]]" = weakref.WeakKeyDictionary()
+
+
+def cut(agent: Any, dropped: int, before: int) -> None:
+    """The window cut `dropped` of `before` messages from a watched agent's conversation."""
+    try:
+        record, name = _watched.get(agent) or (None, "")
+    except TypeError:  # not weakly referenceable (a test's stand-in)
+        return
+    if record is not None:
+        record.cuts.append({"agent": name, "at": record._at(), "dropped": dropped, "before": before})
 
 
 def of(ctx: Any) -> Transcript:

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from strands import Agent, tool
 from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.agent.conversation_manager.compression.pin_message import is_pinned
 from strands.hooks import AfterToolsEvent
 from strands.session import SnapshotSessionManager
 from strands.storage import LocalFileStorage
@@ -26,7 +27,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import agents, budget, loops, mcp, metrics, repo_rules, resources, terminal, transcript
+from . import agents, budget, handover, loops, mcp, metrics, repo_rules, resources, terminal, transcript
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
 from .guardrails import GitGuardrails
@@ -125,6 +126,11 @@ class ChunkedWindow(SlidingWindowConversationManager):
     overflow (`e` set) is left to upstream, which truncates tool results first.
     """
 
+    def __init__(self, *args: Any, on_cut: Callable[[], str] | None = None, **kwargs: Any) -> None:
+        """on_cut: more for the note left where the conversation was cut (a task's document and git)."""
+        super().__init__(*args, **kwargs)
+        self.on_cut = on_cut
+
     def reduce_context(self, agent: Agent, e: Exception | None = None, **kwargs: Any) -> None:
         before = len(agent.messages)
         try:
@@ -140,6 +146,41 @@ class ChunkedWindow(SlidingWindowConversationManager):
         finally:
             if (dropped := before - len(agent.messages)) > 0:
                 metrics.count(agent, "window_drops", dropped)
+                metrics.count(agent, "window_cuts")
+                transcript.cut(agent, dropped, before)
+                self._note(agent, dropped)
+
+    def _note(self, agent: Agent, dropped: int) -> None:
+        """Say where the conversation was cut, on the first message after the pinned ones that the model's
+        side didn't write. Without it a model finds its own earlier work gone without being told, and, seeing
+        the task's first prompt again at the top, takes it that it is starting over. Only the latest cut's note
+        is kept. Every cut breaks the prompt cache's prefix anyway, so the note costs nothing more."""
+        messages = agent.messages
+        for message in messages:
+            message["content"][:] = [block for block in message["content"] if not _is_cut_note(block)]
+        at = next((i for i, message in enumerate(messages)
+                   if message["role"] == "user" and not is_pinned(messages, i) and i > 0), None)
+        if at is None:
+            return
+        more = ""
+        if self.on_cut is not None:
+            try:
+                more = self.on_cut()
+            except Exception as err:  # noqa: BLE001 -- the note is a help; the cut stands either way
+                logger.warning("Could not add to the note at a window cut: %s", err)
+        messages[at]["content"].append({"text": CUT_NOTE.format(dropped=dropped) + (f"\n\n{more}" if more else "")})
+
+
+CUT_NOTE = ("[harness] The conversation was cut here to stay within its window: {dropped} earlier messages were "
+            "removed. The work they did is not lost: it is in the repo. Carry on from where the messages below leave "
+            "off. Don't start over, and don't restate the situation: take the next step.")
+# A task's lead is also given the task document and git as they are now (handover.where_you_are).
+CUT_WHERE = ("Any copy of the task document earlier in this conversation may be out of date. As they are now:\n\n"
+             "{where}")
+
+
+def _is_cut_note(block: Any) -> bool:
+    return isinstance(block, dict) and str(block.get("text", "")).startswith(CUT_NOTE[:40])
 
 
 # How many replies in a row may be cut off at the output limit before the run gives up.
@@ -429,10 +470,10 @@ def _add_usage(usage: dict[str, dict[str, Any]], name: str, cfg: HarnessConfig, 
         entry["metrics"] = metrics.add(entry.get("metrics"), numbers)
 
 
-def conversation_manager(cfg: HarnessConfig) -> ChunkedWindow:
+def conversation_manager(cfg: HarnessConfig, on_cut: Callable[[], str] | None = None) -> ChunkedWindow:
     """The one conversation manager, for tasks and jobs alike."""
     return ChunkedWindow(window_size=cfg.window_size, per_turn=True, pin_first=cfg.pin_first,
-                         proactive_compression=cfg.proactive_compression)
+                         proactive_compression=cfg.proactive_compression, on_cut=on_cut)
 
 
 def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
@@ -487,7 +528,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
         tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else [])],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
-        conversation_manager=conversation_manager(cfg),
+        conversation_manager=conversation_manager(cfg, lambda: CUT_WHERE.format(where=handover.where_you_are(ctx))),
     )
     limits.watch(agent, cfg, lead=True)
     loops.of(ctx).watch(agent)
