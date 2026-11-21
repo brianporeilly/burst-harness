@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.55.1 (2026-11-21)
+
+### Bug Fixes
+
+- **orchestrator**: A task's auto-continue and Slack boxes showed ticked when they were off
+  ([#61](https://github.com/brianporeilly/burst-harness/pull/61),
+  [`35ba6ba`](https://github.com/brianporeilly/burst-harness/commit/35ba6bab44099b6e856b9be1101fcf917c8747e7))
+
+
 ## v0.55.0 (2026-11-21)
 
 ### Features
