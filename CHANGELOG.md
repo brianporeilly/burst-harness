@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.56.4 (2026-11-21)
+
+### Bug Fixes
+
+- **orchestrator**: Each forge's token is a chip of its own at the top of the page, not one reading
+  undefined ([#66](https://github.com/brianporeilly/burst-harness/pull/66),
+  [`d4c1371`](https://github.com/brianporeilly/burst-harness/commit/d4c13715d03b0e2b419aa4fb1343080080cd465e))
+
+
 ## v0.56.3 (2026-11-21)
 
 ### Bug Fixes
