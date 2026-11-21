@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.56.3 (2026-11-21)
+
+### Bug Fixes
+
+- **orchestrator**: The New task form's Slack box is sent as ticked when it is, and is ticked by
+  default each time ([#65](https://github.com/brianporeilly/burst-harness/pull/65),
+  [`ff8e49d`](https://github.com/brianporeilly/burst-harness/commit/ff8e49d9dc62eaa4298d91eb8cf0bbc1f54a68be))
+
+
 ## v0.56.2 (2026-11-21)
 
 ### Bug Fixes
