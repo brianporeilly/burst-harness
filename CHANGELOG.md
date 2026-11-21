@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.58.1 (2026-11-21)
+
+### Bug Fixes
+
+- **orchestrator**: A burst's metrics list shows its names and values, not [object HTMLElement]
+  ([#69](https://github.com/brianporeilly/burst-harness/pull/69),
+  [`cc2bbd8`](https://github.com/brianporeilly/burst-harness/commit/cc2bbd8059bfa5e0d2866d55609bf4fbf99e9140))
+
+
 ## v0.58.0 (2026-11-21)
 
 ### Features
