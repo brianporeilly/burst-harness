@@ -19,7 +19,8 @@ on:
 # Two merges close together used to fail the first run: main had moved by the time it pushed its version
 # commit. Now a run whose commit is no longer main's head stands down, leaving it to the newer merge's run
 # (queued behind it), and one that fails because a merge landed while it was releasing is not a failure
-# either, for the same reason. A failure with nothing newer on main is still one.
+# either, for the same reason. A failure with nothing newer on main is still one, except
+# a refused tag after the version commit landed, which is tried once more (below).
 concurrency:
   group: release
   cancel-in-progress: false
@@ -31,8 +32,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     outputs:
-      released: ${{ steps.release.outputs.released }}
-      version: ${{ steps.release.outputs.version }}
+      released: ${{ steps.again.outputs.released || steps.release.outputs.released }}
+      version: ${{ steps.again.outputs.version || steps.release.outputs.version }}
     steps:
       - id: app
         if: vars.RELEASE_APP_ID != ''
@@ -59,9 +60,30 @@ jobs:
         uses: python-semantic-release/python-semantic-release@v10.7.0
         with:
           github_token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
+      # Its version commit was pushed but its tag was refused (GitHub once answered a tag push with a bare
+      # "failed"): main's head is this run's release commit and its tag isn't on GitHub. A second go, after
+      # the local tag is dropped, tags that commit and makes the release, with no new commit.
+      - id: untagged
+        if: steps.release.outcome == 'failure'
+        run: |
+          git fetch -q origin "${GITHUB_REF_NAME}"
+          tag=$(git log -1 --format=%s "origin/${GITHUB_REF_NAME}" | sed -n 's/^chore(release): \(v[0-9][^ ]*\).*/\1/p')
+          if [ -n "$tag" ] && [ "$(git rev-parse "origin/${GITHUB_REF_NAME}")" = "$(git rev-parse HEAD)" ] \
+             && ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::warning::$tag's commit is on ${GITHUB_REF_NAME} but the tag was refused: trying again."
+            git tag -d "$tag" 2>/dev/null || true
+            sleep 30
+            echo "retry=true" >> "$GITHUB_OUTPUT"
+          fi
+      - id: again
+        if: steps.untagged.outputs.retry == 'true'
+        continue-on-error: true
+        uses: python-semantic-release/python-semantic-release@v10.7.0
+        with:
+          github_token: ${{ steps.app.outputs.token || secrets.GITHUB_TOKEN }}
       # Failed because a merge landed meanwhile (its push refused): that merge's run releases both. Anything
       # else, including a failure after this run's own version commit was pushed, fails the run.
-      - if: steps.release.outcome == 'failure'
+      - if: steps.release.outcome == 'failure' && steps.again.outcome != 'success'
         run: |
           git fetch -q origin "${GITHUB_REF_NAME}"
           newer=$(git log --format=%s "$GITHUB_SHA..origin/${GITHUB_REF_NAME}" | grep -v '^chore(release): ' || true)
