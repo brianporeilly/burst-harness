@@ -399,7 +399,9 @@ linker setting to the repo for it.
 **Screenshots.** The sandbox image has two tools for seeing what a program
 draws. `web-shot` loads a page, or serves a built web app's directory, in headless
 Chromium (WebGL on SwiftShader) and prints WebGL2's renderer, the console and
-uncaught errors. `window-shot -- COMMAND` runs a native program on Xvfb. Both
+uncaught errors. `window-shot -- COMMAND` runs a native program on Xvfb; with
+`--until-exit` it waits for a program that saves its own screenshot and exits,
+and exits with its status. Both
 send input steps first (`tap:X,Y`, `key:NAME`, `wait:SECONDS`, `shot:FILE`) and
 save PNGs. In a sandbox that has them the agent is told so, and that frame rates
 measured on software rendering mean nothing. Claude Code is told to open the

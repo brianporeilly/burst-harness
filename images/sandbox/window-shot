@@ -3,11 +3,16 @@
 
   window-shot --wait 20 -- ./target/debug/my-game
   window-shot --size 720x1280 --wait 20 --step key:space --step wait:2 --step shot:after.png -- cargo run -q
+  window-shot --until-exit -- ./target/debug/my-game --ticks 600 --shot out.png
 
 The program's own output passes through. Exit status 1 when it exited before the last screenshot (its status is
-printed). Rendering is Mesa's, in software (llvmpipe for OpenGL, lavapipe for Vulkan): what it draws is right, but
-how fast it draws says nothing about a real device. Wait long enough for a first frame: a software renderer, and a
-first run that compiles shaders, are slow.
+printed). With --until-exit, for a program that saves its own screenshot and exits: window-shot takes none of its
+own (shot: steps aside), waits for the program to exit, at most --timeout seconds, and exits with its status; one
+still running then is screenshotted into --out, to show where it was, stopped, and exit status 1.
+
+Rendering is Mesa's, in software (llvmpipe for OpenGL, lavapipe for Vulkan): what it draws is right, but how
+fast it draws says nothing about a real device. Wait long enough for a first frame: a software renderer, and a first
+run that compiles shaders, are slow.
 """
 
 import argparse
@@ -57,6 +62,9 @@ def main() -> int:
     parser.add_argument("--wait", type=float, default=15, help="seconds after the program starts, before the steps")
     parser.add_argument("--size", default="1280x720", help="the display, WxH")
     parser.add_argument("--step", action="append", default=[], help="input, a pause or a screenshot; see below")
+    parser.add_argument("--until-exit", action="store_true",
+                        help="wait for the program to exit and exit with its status, taking no screenshot of its own")
+    parser.add_argument("--timeout", type=float, default=300, help="with --until-exit, seconds it may run (default 300)")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- the program and its arguments")
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
@@ -88,11 +96,24 @@ def main() -> int:
         print(f"Saved {path}.", flush=True)
         return True
 
+    deadline = started + args.timeout if args.until_exit else float("inf")
+
+    def pause(seconds: float) -> bool:
+        """Sleep, ending early if the program exits (or, with --until-exit, at its timeout); whether it is still
+        running."""
+        end = min(time.monotonic() + seconds, deadline)
+        while program.poll() is None and (left := end - time.monotonic()) > 0:
+            time.sleep(min(0.1, left))
+        return program.poll() is None
+
     ok = True
     try:
-        time.sleep(args.wait)
-        x("xdotool", "mousemove", str(width // 2), str(height // 2))  # keys go to the window under the pointer
+        running = pause(args.wait)
+        if running:
+            x("xdotool", "mousemove", str(width // 2), str(height // 2))  # keys go to the window under the pointer
         for kind, *values in steps:
+            if not running and args.until_exit:
+                break  # it finished on its own: what is left was for a program still running
             if kind == "tap":
                 x("xdotool", "mousemove", values[0], values[1], "click", "1")
             elif kind == "key":
@@ -100,11 +121,22 @@ def main() -> int:
             elif kind == "type":
                 x("xdotool", "type", "--delay", "50", values[0])
             elif kind == "wait":
-                time.sleep(float(values[0]))
+                running = pause(float(values[0]))
             elif kind == "shot":
                 ok = shot(values[0]) and ok
             if kind in ("tap", "key", "type"):
-                time.sleep(0.2)  # the frame after the input
+                running = pause(0.2)  # the frame after the input
+        if args.until_exit:
+            try:
+                program.wait(max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                x("magick", "import", "-window", "root", args.out)
+                print(f"The program was still running after {args.timeout:.0f}s: stopped. What was on the screen: "
+                      f"{args.out}.", file=sys.stderr)
+                return 1
+            print(f"The program exited (status {program.returncode}) after {time.monotonic() - started:.0f}s.",
+                  flush=True)
+            return program.returncode if ok else (program.returncode or 1)
         ok = shot(args.out) and ok
     finally:
         stop(program)
