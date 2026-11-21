@@ -123,6 +123,23 @@ def test_the_setup_prs_summary_names_the_milestone_progress_is_at(tmp_path):
     assert "the next round starts M1." in setup_round.summary(ctx)  # a project carried over, part built
 
 
+def test_after_the_setup_round_a_round_needs_no_prompt_of_its_own(tmp_path, origin, llama, capsys):  # noqa: F811
+    _origin_with(tmp_path, origin, {"PLAN.md": PLAN, "PROGRESS.md": PROGRESS})
+    url, requests = llama([{"tool": "pause_for_review", "args": {"summary": "s", "next_step": "n"}}, {"text": "."}])
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "-q", str(origin), str(work))
+    cli.main(["--provider", "llamacpp", "--base-url", url, "--repo", str(work), "run", "orbit"])
+    prompt = fake_llama._text(requests[0]["messages"][1]["content"])
+    assert prompt.endswith("Carry on with the current milestone.") and "M0 — Bootstrap" in prompt
+    capsys.readouterr()
+    plain = tmp_path / "plain"
+    git(tmp_path, "clone", "-q", str(origin), str(plain))
+    (plain / "PLAN.md").unlink()
+    git(plain, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qam", "no plan")
+    with pytest.raises(SystemExit, match="--task is needed"):  # not a project: nothing says what to do
+        cli.main(["--provider", "llamacpp", "--base-url", url, "--repo", str(plain), "run", "other"])
+
+
 def test_claude_code_is_told_its_setup_round(tmp_path):
     from harness.claude_code import ClaudeCodeEngine
 
@@ -139,6 +156,8 @@ def test_the_orchestrator_asks_for_the_setup_round_until_its_pr_is_merged(tmp_pa
     assert "--setup" in runner._argv(runner._read("p"))
     record = runner._read("p")
     record["rounds"] = [{"branch": "harness/p", "pr": "https://github.com/me/proj/pull/1", "pr_state": "merged"}]
-    assert "--setup" not in runner._argv(record)  # the plan is approved: later rounds build it
+    argv = runner._argv(record)
+    assert "--setup" not in argv  # the plan is approved: later rounds build it
+    assert "--task" not in argv and "a roguelike" not in argv  # the setup prompt is done with: the plan is the task
     runner.create({"prompt": "what is new?", "slug": "q", "setup": True})
     assert runner.task("q")["setup"] is False  # a question has no repo to set up

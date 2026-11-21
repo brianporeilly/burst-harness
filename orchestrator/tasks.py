@@ -727,9 +727,13 @@ class TaskRunner:
             argv += ["--base-branch", record["base_branch"]]
         if record.get("sandbox"):
             argv += shlex.split(record["sandbox"])  # the sandbox the last burst kept, after --target to win
-        argv += ["run", record["slug"], "--task", record["prompt"]]
+        argv += ["run", record["slug"]]
         if record.get("setup") and not record.get("rounds"):
-            argv.append("--setup")  # until the plan's PR is merged: then the rounds that build it
+            argv += ["--task", record["prompt"], "--setup"]  # until the plan's PR is merged: then the rounds that build it
+        elif not record.get("setup"):
+            argv += ["--task", record["prompt"]]
+        # A setup task's prompt was how to write the plan, so once that is merged it is left out: the plan is the
+        # task, and each round carries on with its current milestone (or the message, if there is one).
         if record.get("rounds"):
             argv += ["--branch", record["branch"]]  # a later round's own branch, which the harness starts from the base
         if record.get("message"):

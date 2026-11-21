@@ -707,7 +707,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         if _branch_exists(ctx):
             print(f"{ctx.branch} exists; resuming.")
             return _resume(ctx, args.message, setup=args.setup, task=args.task or "")
-        if not args.task and not args.setup:
+        if not args.task and not args.setup and not project.is_project(ctx.target):
+            # A project's plan is the task: a round with nothing more to say carries on with its milestone.
             raise SystemExit(f"{ctx.branch} does not exist yet, so --task is needed to start it.")
         return _start(ctx, args.task or "", args.message, setup=args.setup)
 
