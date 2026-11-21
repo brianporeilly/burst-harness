@@ -15,7 +15,9 @@
 # seconds. For Bevy and other games, the system libraries its default features
 # build against (alsa, udev, wayland, xkbcommon, X11, Vulkan), with Mesa's
 # software drivers, Xvfb, and xkbcommon's X11 library (which winit loads to open
-# a window on X11), so a windowed build also runs headless. numpy, for the
+# a window on X11), so a windowed build also runs headless. Screenshots for the
+# agent to look at: web-shot (headless Chromium through Playwright) and
+# window-shot (Xvfb, xdotool, ImageMagick), below. numpy, for the
 # throwaway numeric scripts agents write to check a simulation.
 #
 # Rust links with mold: /.cargo/config.toml (cargo reads it for every directory
@@ -45,6 +47,7 @@ RUN dnf -y install --setopt=install_weak_deps=False \
       alsa-lib-devel systemd-devel wayland-devel libxkbcommon-devel \
       libX11-devel libXcursor-devel libXi-devel libXrandr-devel vulkan-loader-devel \
       mesa-dri-drivers mesa-vulkan-drivers xorg-x11-server-Xvfb libxkbcommon-x11 \
+      chromium xdotool ImageMagick \
  && dnf clean all \
  && cargo --version && test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown" \
  && cargo clippy --version && cargo fmt --version && wasm-opt --version && just --version \
@@ -56,6 +59,25 @@ COPY cargo-config.toml /.cargo/config.toml
 RUN cd /tmp && cargo new -q --vcs none linkcheck && cd linkcheck && cargo build -q \
  && readelf -p .comment target/debug/linkcheck | grep -q mold \
  && cd / && rm -rf /tmp/linkcheck /root/.cargo
+
+# Screenshots, so an agent can see what a page or a native window draws:
+# web-shot loads a page (or serves a built directory) in headless Chromium,
+# Fedora's, with WebGL on SwiftShader; window-shot runs a program on Xvfb. Both
+# send input steps first (taps, keys) and print what went wrong. Playwright is
+# pinned and told not to fetch browsers: it drives the system Chromium. The
+# check: a WebGL2 page comes out red, and a window-shot of a running program is
+# saved.
+ARG PLAYWRIGHT_VERSION=1.64.1
+RUN PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 python3 -m pip install --no-cache-dir --root-user-action=ignore \
+      "playwright==${PLAYWRIGHT_VERSION}"
+COPY shot_steps.py shot-check.html /usr/local/lib/burst-harness/
+COPY web-shot window-shot /usr/local/bin/
+RUN cd /tmp && { web-shot file:///usr/local/lib/burst-harness/shot-check.html --wait 1 --out web.png > web.log; \
+      ran=$?; cat web.log; test "$ran" = 0; } \
+ && grep -q '^WebGL2: .*(software rendering)$' web.log && grep -q '^\[console.log\] drawn$' web.log \
+ && test "$(magick web.png -format '%[fx:int(255*p{10,10}.r)],%[fx:int(255*p{10,10}.g)],%[fx:int(255*p{10,10}.b)]' info:)" = "255,0,0" \
+ && window-shot --wait 1 --out window.png -- sleep 30 && test -s window.png \
+ && rm -rf /tmp/web.png /tmp/web.log /tmp/window.png /root/.cache /root/.pki
 
 # UID 1000 matches the SandboxTemplate's runAsUser; a real HOME avoids tools
 # writing config to / (the OpenHands UID/HOME class of bug).

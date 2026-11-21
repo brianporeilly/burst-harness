@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""web-shot: load a page in headless Chromium, take its screenshot, and print what it said.
+
+  web-shot dist/ --out shot.png --wait 10
+  web-shot http://127.0.0.1:8080/ --size 720x1280 --touch --step tap:360,900 --step wait:2 --step shot:after-tap.png
+
+A directory is served on a free localhost port first (a built web app: dist/, build/). Printed: whether the page has
+WebGL2 and its renderer, the console's messages, the page's uncaught errors (a WASM panic shows here) and requests
+that failed. Exit status 1 when the page didn't load or threw an uncaught error.
+
+The rendering is software (SwiftShader, no GPU): what it draws is right, but how fast it draws says nothing about a
+real device.
+"""
+
+import argparse
+import functools
+import http.server
+import re
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, "/usr/local/lib/burst-harness")
+import shot_steps  # noqa: E402
+
+CHROMIUM = "/usr/bin/chromium-browser"
+# WebGL with no GPU: ANGLE on SwiftShader, Chromium's own software renderer. /dev/shm is small in a pod.
+ARGS = ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist", "--disable-dev-shm-usage"]
+WEBGL2 = """() => { const gl = document.createElement("canvas").getContext("webgl2"); if (!gl) return null;
+  const info = gl.getExtension("WEBGL_debug_renderer_info");
+  return gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER); }"""
+
+
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map, ".wasm": "application/wasm",
+                      ".js": "text/javascript", ".mjs": "text/javascript"}
+
+    def log_message(self, *args):
+        pass
+
+
+def serve(directory: Path) -> str:
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(directory)))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_address[1]}/"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=shot_steps.__doc__)
+    parser.add_argument("target", help="a URL, or a directory to serve")
+    parser.add_argument("--out", default="shot.png", help="the last screenshot (default shot.png)")
+    parser.add_argument("--wait", type=float, default=10, help="seconds after the page loads, before the steps")
+    parser.add_argument("--size", default="1280x720", help="the viewport, WxH (a phone: 720x1280 with --touch)")
+    parser.add_argument("--touch", action="store_true", help="a touch screen and a mobile browser: taps, not clicks")
+    parser.add_argument("--step", action="append", default=[], help="input, a pause or a screenshot; see below")
+    parser.add_argument("--timeout", type=float, default=60, help="seconds for the page to load")
+    args = parser.parse_args()
+    try:
+        steps = [shot_steps.parse(step) for step in args.step]
+    except ValueError as err:
+        parser.error(str(err))
+    if not re.fullmatch(r"\d+x\d+", args.size.lower()):
+        parser.error(f"--size {args.size!r} is not WxH.")
+    width, height = (int(n) for n in args.size.lower().split("x"))
+    url = serve(Path(args.target)) if Path(args.target).is_dir() else args.target
+
+    from playwright.sync_api import Error, sync_playwright
+
+    errors = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=CHROMIUM, args=ARGS)
+        page = browser.new_page(viewport={"width": width, "height": height}, has_touch=args.touch,
+                                is_mobile=args.touch)
+        page.on("console", lambda m: print(f"[console.{m.type}] {m.text}", flush=True))
+        page.on("pageerror", lambda e: (errors.append(e), print(f"[page error] {e}", flush=True)))
+        page.on("requestfailed", lambda r: print(f"[request failed] {r.url}: {r.failure}", flush=True))
+        try:
+            response = page.goto(url, timeout=args.timeout * 1000)
+        except Error as err:
+            print(f"The page didn't load: {err}", file=sys.stderr)
+            return 1
+        if response is not None and not response.ok:
+            print(f"The page answered {response.status} {response.status_text}.", file=sys.stderr)
+            return 1
+        renderer = page.evaluate(WEBGL2)
+        print(f"WebGL2: {renderer} (software rendering)" if renderer else "WebGL2: not available", flush=True)
+        page.wait_for_timeout(args.wait * 1000)
+        for kind, *values in steps:
+            if kind == "tap":
+                x, y = int(values[0]), int(values[1])
+                page.touchscreen.tap(x, y) if args.touch else page.mouse.click(x, y)
+            elif kind == "key":
+                page.keyboard.press(values[0])
+            elif kind == "type":
+                page.keyboard.type(values[0], delay=50)
+            elif kind == "wait":
+                page.wait_for_timeout(float(values[0]) * 1000)
+            elif kind == "shot":
+                page.screenshot(path=values[0])
+                print(f"Saved {values[0]}.", flush=True)
+            if kind in ("tap", "key", "type"):
+                time.sleep(0.2)  # the frame after the input
+        page.screenshot(path=args.out)
+        print(f"Saved {args.out}.")
+        browser.close()
+    if errors:
+        print(f"The page threw {len(errors)} uncaught error(s).", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -396,6 +396,16 @@ image links Rust with mold, set in `/.cargo/config.toml` outside the repo (a Bev
 relink measured about a quarter faster); the agent is told so, and not to add a
 linker setting to the repo for it.
 
+**Screenshots.** The sandbox image has two tools for seeing what a program
+draws. `web-shot` loads a page, or serves a built web app's directory, in headless
+Chromium (WebGL on SwiftShader) and prints WebGL2's renderer, the console and
+uncaught errors. `window-shot -- COMMAND` runs a native program on Xvfb. Both
+send input steps first (`tap:X,Y`, `key:NAME`, `wait:SECONDS`, `shot:FILE`) and
+save PNGs. In a sandbox that has them the agent is told so, and that frame rates
+measured on software rendering mean nothing. Claude Code is told to open the
+PNGs with Read; the Strands engine can't view images, so it goes by what the
+tools print.
+
 **Keeping the record and the docs current.** The record (a project's
 `PROGRESS.md` and `DECISIONS.md`, or the task document) is all the next session
 has, so after `record_nudge_calls` tool calls (40; 0 for never) with nothing
@@ -753,7 +763,8 @@ and mold, `wasm-opt`, `just`, and `cargo-binstall` (for a project's own
 `wasm-bindgen-cli` version, from its release downloads). For Bevy and other
 games it has the system libraries their default features need (alsa, udev,
 wayland, xkbcommon, X11, Vulkan), plus Mesa's software drivers and Xvfb to run a
-windowed build headless. Claude Code's telemetry and error reports are off, and
+windowed build headless, and Chromium, Playwright, xdotool and ImageMagick
+for the screenshot tools (`web-shot`, `window-shot`). Claude Code's telemetry and error reports are off, and
 its commands may run for up to an hour. No credentials, no `gh`.
 `--egress-inject` additionally needs `burst-sandbox-trust` (see that script for
 what an image of your own has to provide).

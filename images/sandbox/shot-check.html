@@ -1,0 +1,9 @@
+<!doctype html>
+<!-- The image build's check that web-shot draws WebGL2: the whole page red, from a WebGL2 clear. -->
+<html><body style="margin:0"><canvas id="c" style="display:block;width:100vw;height:100vh"></canvas><script>
+const canvas = document.getElementById("c");
+canvas.width = innerWidth; canvas.height = innerHeight;
+const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true });
+gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+console.log("drawn");
+</script></body></html>
