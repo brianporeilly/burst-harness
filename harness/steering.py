@@ -3,8 +3,8 @@
 The record (a project's PROGRESS.md and DECISIONS.md, or the task document) is all the next session has, so:
 
   record_nudge_calls  (40)  that many tool calls with nothing recorded: the next tool result says so
-  NOTHING_RECORDED          a burst that ends (pause, finish) after MIN_WORK tool calls having recorded nothing is
-                            sent back once to record where it stands
+  record_send_back  (true)  a burst that ends (pause, finish) after MIN_WORK tool calls having recorded nothing is
+                            sent back once to record where it stands (NOTHING_RECORDED)
 
 Documentation is steered, not checked hard. `docs_style` picks the guidance in the prompt: "diataxis" (the
 default), "none", or a path to a file in the repo describing the project's own. At finish, a change to code with no
@@ -90,7 +90,7 @@ class Watch:
 def recorded_nothing(ctx: Any, end: str) -> str | None:
     """Why the burst should record before it ends, the first time it would end having recorded nothing after real
     work; else None. `end` names the tool, for the message."""
-    if getattr(ctx, "setup_round", False) or ctx.told_to_record or ctx.tool_calls < MIN_WORK or ctx.records or ctx.since_record < ctx.tool_calls:
+    if not ctx.cfg.record_send_back or getattr(ctx, "setup_round", False) or ctx.told_to_record or ctx.tool_calls < MIN_WORK or ctx.records or ctx.since_record < ctx.tool_calls:
         return None
     ctx.told_to_record = True
     return NOTHING_RECORDED.format(tools=tools_named(ctx.project), end=end)

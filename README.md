@@ -392,7 +392,7 @@ earlier runs, it fired in 11, nearly all of them stuck that way.
 has, so after `record_nudge_calls` tool calls (40; 0 for never) with nothing
 recorded, the next tool result says to record. A burst that pauses or finishes
 after 10 or more tool calls without recording anything is sent back once to do
-it. Documentation is steered, not checked hard: `docs_style` puts guidance in
+it (`record_send_back = false` turns that off). Documentation is steered, not checked hard: `docs_style` puts guidance in
 the prompt, `diataxis` (the default: tutorials, how-to guides, reference and
 explanation under `docs/`, and a README that says how to start), `none`, or the
 path of a file in the repo describing the project's own style. A finish whose
