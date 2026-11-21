@@ -1030,7 +1030,8 @@ function metricsList(m) {
     ["Cost", m.cost_usd != null ? `~$${m.cost_usd.toFixed(2)}` : null],
     ["Plan used", plan],
   ].filter(([, value]) => value);
-  return rows.length ? el("dl", { class: "metrics" }, rows.map(([name, value]) => [el("dt", {}, name), el("dd", {}, value)])) : null;
+  // flatMap: el() flattens its children one level only, and a pair left nested is appended as text.
+  return rows.length ? el("dl", { class: "metrics" }, rows.flatMap(([name, value]) => [el("dt", {}, name), el("dd", {}, value)])) : null;
 }
 
 async function renderTask() {
