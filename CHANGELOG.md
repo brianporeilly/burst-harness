@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.56.1 (2026-11-21)
+
+### Bug Fixes
+
+- **project**: Open items under a finished milestone survive PROGRESS.md writes, and the setup PR
+  names the milestone it starts ([#63](https://github.com/brianporeilly/burst-harness/pull/63),
+  [`e3c8bcf`](https://github.com/brianporeilly/burst-harness/commit/e3c8bcff1b2e2808ae2bc5fa3f0608e02b48f46a))
+
+
 ## v0.56.0 (2026-11-21)
 
 ### Features
