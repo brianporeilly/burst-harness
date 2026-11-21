@@ -5,7 +5,8 @@
 so a one-off task in a repo with a stray brief isn't made a project. The round writes PLAN.md (the template in
 plan_template.md), PROGRESS.md, DECISIONS.md, BACKLOG.md, the repo's AGENTS.md and .harness.toml, and puts a banner
 on the foundation document; it builds nothing else. Finishing runs the plan check, and is refused until it passes.
-The PR is the plan for review: merging it approves the plan, and the next round starts M0.
+The PR is the plan for review: merging it approves the plan, and the next round starts the milestone PROGRESS.md
+names as current (M0 in a new project).
 """
 
 from __future__ import annotations
@@ -110,11 +111,13 @@ def prompt(ctx: HarnessContext, task: str, message: str | None, date: str) -> st
 
 def summary(ctx: HarnessContext) -> str:
     """The top of the setup round's PR: what the plan is, and how approving it works."""
-    plan = project.Record(ctx.target).plan()
+    record = project.Record(ctx.target)
+    plan = record.plan()
+    start = record.current() or (plan.milestones[0] if plan.milestones else None)
     items = sum(len([i for i in m.items if not i.struck]) for m in plan.milestones)
     lines = [f"## The plan: {len(plan.milestones)} milestones, {items} Accept items",
              "", *(f"- {m.id} — {m.title}" for m in plan.milestones), "",
              "This PR sets the repo up as a project (docs/project-layout.md in burst-harness). Merging it approves "
-             f"the plan; the next round starts {plan.milestones[0].id if plan.milestones else 'M0'}. To change it "
+             f"the plan; the next round starts {start.id if start else 'M0'}. To change it "
              "first, comment and continue the task, or edit PLAN.md on this branch."]
     return "\n".join(lines)

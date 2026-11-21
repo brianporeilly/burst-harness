@@ -115,6 +115,14 @@ def test_a_plan_that_doesnt_pass_is_reworked_and_one_that_does_is_left_alone(tmp
                   "--task", "Again."])
 
 
+def test_the_setup_prs_summary_names_the_milestone_progress_is_at(tmp_path):
+    (tmp_path / "PLAN.md").write_text(PLAN)
+    ctx = HarnessContext(target=LocalTarget(repo=str(tmp_path)), cfg=HarnessConfig(), slug="t", branch="b", state_key="k")
+    assert "the next round starts M0." in setup_round.summary(ctx)  # a new project: no PROGRESS.md yet
+    (tmp_path / "PROGRESS.md").write_text(PROGRESS.replace("M0 — Bootstrap", "M1 — Simulation core"))
+    assert "the next round starts M1." in setup_round.summary(ctx)  # a project carried over, part built
+
+
 def test_claude_code_is_told_its_setup_round(tmp_path):
     from harness.claude_code import ClaudeCodeEngine
 

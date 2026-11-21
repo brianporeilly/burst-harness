@@ -165,3 +165,17 @@ def test_a_burst_ticks_its_milestone_and_says_so(tmp_path, origin, llama, capsys
     out = capsys.readouterr().out
     assert "The last milestone was merged: on to M2." in out
     assert "Current milestone: M2 — Flight toy" in json.dumps(requests[0]["messages"], ensure_ascii=False)
+
+
+def test_another_milestones_open_items_are_kept_and_its_ticked_ones_folded(record):
+    progress = record.read("PROGRESS.md").replace(
+        "- [x] M0 — Bootstrap (merged #1)",
+        "- [x] M0 — Bootstrap (merged #1)\n  - [ ] M0.1 `just check` passes in CI. — Actions has never run\n"
+        "  - [x] M0.2 The title screen renders in a headless test. — `just check` (2026-11-14)")
+    assert "  - [ ] M0.1" in progress  # the fixture's M0 line is replaced, not missing
+    record.target.write_file("PROGRESS.md", progress)
+    record.tick("M1.3", "`just test-wasm`")  # any write of PROGRESS.md
+    written = record.read("PROGRESS.md")
+    assert "- [x] M0 — Bootstrap (merged #1)\n  - [ ] M0.1 `just check` passes in CI. — Actions has never run\n" \
+           "- [ ] M1 — Simulation core" in written  # still owed, so kept; M0.2 is done, folded into M0's line
+    assert "M0.2" not in written

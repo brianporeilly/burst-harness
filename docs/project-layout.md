@@ -114,7 +114,10 @@ Current: M3 — Readouts and feel
 Next: ...
 ```
 
-The harness writes this file through its tools, so its shape holds. A person may edit it; the parser
+The harness writes this file through its tools, so its shape holds. Under `## Milestones` it keeps a line
+per milestone, the current one's Accept items, and any other milestone's items that are written there and
+still open (a milestone merged before its CI could run, say). Ticked items of other milestones fold into their
+milestone's line: their evidence is in the log and the merged PRs. A person may edit it; the parser
 tolerates hand edits that keep the headings.
 
 ### DECISIONS.md
