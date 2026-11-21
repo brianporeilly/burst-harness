@@ -89,3 +89,6 @@ def test_a_bursts_metrics_open_from_its_row_and_the_tasks_from_its_total():
     assert named <= documented, named - documented
     assert 'el("summary", {}, line || "Metrics"), metricsList(b.metrics)' in text
     assert "metricsList(sumMetrics(t.bursts))" in text
+    # el() flattens its children one level: each name-value pair nested in a list was appended as text
+    # ("[object HTMLElement],[object HTMLElement]").
+    assert 'rows.flatMap(([name, value]) => [el("dt"' in shown
