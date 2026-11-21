@@ -96,3 +96,10 @@ def test_claude_code_is_told_the_style_too(tmp_path):
     ctx = HarnessContext(target=LocalTarget(repo=str(tmp_path)), cfg=HarnessConfig(), slug="t", branch="b",
                          state_key="k")
     assert "It follows Diátaxis" in ClaudeCodeEngine(ctx).rules()
+
+
+def test_the_send_back_can_be_turned_off(tmp_path, origin, llama, capsys, monkeypatch):  # noqa: F811
+    monkeypatch.setenv("HARNESS_RECORD_SEND_BACK", "false")
+    url, requests = llama([*[SHELL] * steering.MIN_WORK, PAUSE, {"text": "Paused."}])
+    _run(tmp_path, origin, url)
+    assert "Not yet" not in json.dumps(requests) and _result(capsys.readouterr().out)["state"] == "paused"

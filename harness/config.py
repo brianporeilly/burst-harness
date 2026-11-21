@@ -348,6 +348,8 @@ class HarnessConfig:
     repeat_notice: bool = True
     # This many tool calls with nothing recorded (steering.py): the next tool result says to record. 0: never.
     record_nudge_calls: int = 40
+    # A burst that ends after real work having recorded nothing is sent back once to record (steering.py).
+    record_send_back: bool = True
     # The documentation guidance in the prompt (steering.py): "diataxis", "none", or a path to a file in the repo
     # describing the project's own style.
     docs_style: str = "diataxis"
@@ -475,5 +477,5 @@ REPO_SETTABLE = frozenset({
     "offload_max_result_tokens", "offload_preview_tokens", "window_size", "pin_first",
     "proactive_compression", "cache_ttl",
     "max_fixup_attempts", "require_clean_tree", "check_command", "check_timeout",
-    "setup_command", "setup_timeout", "record_nudge_calls", "docs_style",
+    "setup_command", "setup_timeout", "record_nudge_calls", "record_send_back", "docs_style",
 })
