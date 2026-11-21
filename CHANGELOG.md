@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.57.0 (2026-11-21)
+
+### Features
+
+- **project**: Claude Code keeps a project's record through the harness's project tool, as the
+  Strands tools do ([#67](https://github.com/brianporeilly/burst-harness/pull/67),
+  [`322d8d5`](https://github.com/brianporeilly/burst-harness/commit/322d8d517bcda9d5e854000aa1fe26a84ac36395))
+
+
 ## v0.56.4 (2026-11-21)
 
 ### Bug Fixes
