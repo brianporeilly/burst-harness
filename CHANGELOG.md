@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.56.2 (2026-11-21)
+
+### Bug Fixes
+
+- **tasks**: After a setup task's plan is merged, its rounds build the plan instead of being given
+  the setup prompt again ([#64](https://github.com/brianporeilly/burst-harness/pull/64),
+  [`d565806`](https://github.com/brianporeilly/burst-harness/commit/d56580689efd57b4951676fa78bcc531d6c23890))
+
+
 ## v0.56.1 (2026-11-21)
 
 ### Bug Fixes
