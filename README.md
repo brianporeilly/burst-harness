@@ -1223,6 +1223,12 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   task keeps its earlier rounds' branches and PRs (`rounds` in
   `GET /api/tasks/SLUG`). So a multi-step piece of work is one task: merge, then
   Continue.
+- **Cloning.** A task's Clone opens New task filled from it: its repo, prompt,
+  model and settings, delegates, MCP servers, network, runner and options, to
+  change before creating. The clone is a new task with a branch of its own, so it
+  starts from the repo alone, nothing of the old one's bursts, sandbox or PR.
+  `GET /api/tasks/SLUG/clone` gives what it would be created with;
+  `POST /api/tasks/SLUG/clone` creates it, with what the body gives changed.
 - **Reviewing.** Comment on a task's open PR (comments, a review, comments on
   lines) and press Continue: the next burst's first prompt has what was said
   since its last commit, bots left out, and finishing again updates the same PR.

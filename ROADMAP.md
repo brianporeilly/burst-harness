@@ -741,7 +741,8 @@ each run and judges nothing, so there is one set of numbers.
        and no restated situation; a nudge after many tool calls without an
        update; a burst that ends without updating it is sent back once.
     5. Clone a task in the orchestrator: a new task from an old one, its
-       prompt and settings changed, starting from the repo alone.
+       prompt and settings changed, starting from the repo alone. Built
+       (2026-11-22).
     Measured in local-llm-benchmark: riftwardens' second round, before and
     after, the model fixed.
     Steps 4 and 5 grew into a design (2026-11-20): `docs/project-layout.md`.
