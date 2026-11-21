@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.56.0 (2026-11-21)
+
+### Features
+
+- **sandbox**: Rust links with mold, and the agent is told not to put it in the repo
+  ([#62](https://github.com/brianporeilly/burst-harness/pull/62),
+  [`651afcc`](https://github.com/brianporeilly/burst-harness/commit/651afcc3b030956e8f7b33c710d276919bc532f3))
+
+
 ## v0.55.1 (2026-11-21)
 
 ### Bug Fixes
