@@ -77,7 +77,10 @@ RUN cd /tmp && { web-shot file:///usr/local/lib/burst-harness/shot-check.html --
  && grep -q '^WebGL2: .*(software rendering)$' web.log && grep -q '^\[console.log\] drawn$' web.log \
  && test "$(magick web.png -format '%[fx:int(255*p{10,10}.r)],%[fx:int(255*p{10,10}.g)],%[fx:int(255*p{10,10}.b)]' info:)" = "255,0,0" \
  && window-shot --wait 1 --out window.png -- sleep 30 && test -s window.png \
- && rm -rf /tmp/web.png /tmp/web.log /tmp/window.png /root/.cache /root/.pki
+ && window-shot --until-exit -- sh -c 'sleep 1; magick import -window root own.png' && test -s own.png \
+ && { window-shot --until-exit -- sh -c 'exit 3'; test $? = 3; } \
+ && { window-shot --until-exit --timeout 2 --out stuck.png -- sleep 30; test $? = 1 && test -s stuck.png; } \
+ && rm -rf /tmp/web.png /tmp/web.log /tmp/window.png /tmp/own.png /tmp/stuck.png /root/.cache /root/.pki
 
 # UID 1000 matches the SandboxTemplate's runAsUser; a real HOME avoids tools
 # writing config to / (the OpenHands UID/HOME class of bug).

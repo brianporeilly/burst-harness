@@ -34,6 +34,7 @@ def test_the_tools_say_how_to_use_them_and_refuse_wrong_arguments():
     for tool in ("web-shot", "window-shot"):
         helped = _run(tool, "--help")
         assert helped.returncode == 0 and "tap:X,Y" in helped.stdout and "software" in helped.stdout
+    assert "--until-exit" in _run("window-shot", "--help").stdout
     wrong = _run("web-shot", "dist", "--step", "click:1,2")
     assert wrong.returncode == 2 and "'click:1,2' is not a step" in wrong.stderr
     assert "is not WxH" in _run("window-shot", "--size", "big", "--", "true").stderr
@@ -46,3 +47,18 @@ def test_window_shot_saves_the_display_and_says_when_the_program_exited_first(tm
     assert taken.returncode == 0 and (tmp_path / "a.png").stat().st_size > 0, taken.stderr
     gone = _run("window-shot", "--wait", "1", "--", "sh", "-c", "exit 3", cwd=tmp_path)
     assert gone.returncode == 1 and "The program exited (status 3)" in gone.stderr
+
+
+@pytest.mark.skipif(not all(shutil.which(c) for c in ("Xvfb", "xdotool", "magick")), reason="no Xvfb, xdotool, magick")
+def test_until_exit_waits_for_a_program_that_saves_its_own_screenshot(tmp_path):
+    """graveyard-orbit's `just shot`: the game saves its own PNG and exits, which without --until-exit is a
+    failure (it exited before window-shot's screenshot)."""
+    own = _run("window-shot", "--until-exit", "--", "sh", "-c", "sleep 1; magick import -window root own.png",
+               cwd=tmp_path)
+    assert own.returncode == 0 and (tmp_path / "own.png").is_file() and not (tmp_path / "shot.png").exists()
+    assert "The program exited (status 0)" in own.stdout
+    assert _run("window-shot", "--until-exit", "--", "sh", "-c", "exit 3", cwd=tmp_path).returncode == 3
+    stuck = _run("window-shot", "--until-exit", "--timeout", "2", "--out", "stuck.png", "--", "sleep", "30",
+                 cwd=tmp_path)
+    assert stuck.returncode == 1 and "still running after 2s: stopped" in stuck.stderr
+    assert (tmp_path / "stuck.png").stat().st_size > 0
