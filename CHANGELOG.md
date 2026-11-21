@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.60.1 (2026-11-21)
+
+### Bug Fixes
+
+- **sandbox**: Window-shot --until-exit, for a program that saves its own screenshot and exits
+  ([#74](https://github.com/brianporeilly/burst-harness/pull/74),
+  [`51a3dd8`](https://github.com/brianporeilly/burst-harness/commit/51a3dd81b243fd18308ab971d46fab6921606d02))
+
+
 ## v0.60.0 (2026-11-21)
 
 ### Continuous Integration
