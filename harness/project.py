@@ -202,18 +202,17 @@ def new_progress(plan: Plan, current: str | None = None) -> str:
 
 
 def sync_milestones(progress: Progress, plan: Plan) -> None:
-    """The Milestones section from the plan, keeping each tick and its evidence: a line per milestone, and under
-    the current one a line per Accept item (struck items left out)."""
+    """The Milestones section from the plan, keeping each tick and its evidence: a line per milestone, under the
+    current one a line per Accept item (struck items left out), and under any other the items written there that
+    are still open (a milestone done but for CI, say), so what is owed isn't dropped."""
     held = ticks("## Milestones\n" + progress.section("Milestones"))
     current = current_id(progress.head)
     lines = []
     for milestone in plan.milestones:
         done, rest = held.get(milestone.id, (False, ""))
         lines.append(f"- [{'x' if done else ' '}] {milestone.id} — {_after_title(rest, milestone.title)}")
-        if milestone.id != current:
-            continue
         for item in milestone.items:
-            if item.struck:
+            if item.struck or (milestone.id != current and (item.id not in held or held[item.id][0])):
                 continue
             ticked, evidence = held.get(item.id, (False, ""))
             lines.append(f"  - [{'x' if ticked else ' '}] {item.id} {_after_title(evidence, item.text)}")
