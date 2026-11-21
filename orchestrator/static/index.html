@@ -448,7 +448,10 @@ const el = (tag, attrs = {}, ...children) => {
   for (const [key, value] of Object.entries(attrs)) {
     if (key === "class") node.className = value;
     else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
-    else node.setAttribute(key, value);
+    // A boolean attribute is on by being there at all: checked="false" is checked. So false (or nothing)
+    // leaves it out, and true puts it in.
+    else if (value === false || value == null) continue;
+    else node.setAttribute(key, value === true ? "" : value);
   }
   for (const child of children.flat()) if (child != null) node.append(child);
   return node;
