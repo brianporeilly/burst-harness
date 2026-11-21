@@ -87,6 +87,35 @@ def toolchain_note(target: Any) -> str:
     return _toolchains[where]
 
 
+SHOTS_PROBE = "command -v web-shot >/dev/null 2>&1 && command -v window-shot >/dev/null 2>&1 && echo SHOTS"
+SHOTS_NOTE = ("To see what a program draws, this sandbox has screenshot tools. `web-shot` loads a page, or serves a built "
+              "web app's directory (dist/), in headless Chromium, saves a screenshot and prints whether WebGL2 works, "
+              "the console's messages and the page's uncaught errors (a WASM panic shows there). `window-shot -- "
+              "COMMAND` runs a native program on a virtual display and saves a screenshot of it. Both send input first "
+              "if asked (`--step tap:X,Y`, `key:NAME`, `wait:SECONDS`, `shot:FILE`); `--help` says more. For a game, "
+              "input it replays and screenshots it takes itself (a debug flag, a replay file) are steadier than input "
+              "sent from outside. Rendering here is in software, with no GPU: what is drawn is right, but frame rates "
+              "and timings measured here say nothing about a real device, so don't tune performance by them.")
+SEE_NOTE = " The screenshots are PNG files: open one with Read to look at it."
+UNSEEN_NOTE = " You can't view images here: go by the tools' exit status and what they print."
+_shots: dict[str, bool] = {}
+
+
+def shots_note(target: Any, *, see: bool) -> str:
+    """The line for the agent's instructions when the sandbox has web-shot and window-shot, or "". `see`: the agent
+    can look at an image file (Claude Code's Read)."""
+    if isinstance(target, LocalTarget) or not hasattr(target, "run_shell"):
+        return ""
+    where = target.describe()
+    if where not in _shots:
+        try:
+            found = target.run_shell(SHOTS_PROBE, check=False, cwd="/")
+            _shots[where] = found.returncode == 0 and "SHOTS" in found.stdout
+        except Exception:  # noqa: BLE001 -- a note the agent goes without, never a failed run
+            _shots[where] = False
+    return SHOTS_NOTE + (SEE_NOTE if see else UNSEEN_NOTE) if _shots[where] else ""
+
+
 CACHE_NOTE = """Builds here keep their output between bursts: {settings} {are} set for you, on a volume \
 that outlives this sandbox. Don't set {them} to anything else, in a command or in the task document: a build \
 anywhere else starts from nothing in every burst, and a large one takes many minutes each time."""

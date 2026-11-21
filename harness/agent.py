@@ -90,8 +90,8 @@ Never leave uncommitted changes behind. If you are unsure which state applies, u
 
 def _limits(target: Any) -> str:
     """The sandbox's memory limit and its build cache, for the prompt (resources.py): paragraphs, or ""."""
-    lines = [line for line in (resources.note(target), resources.cache_note(target), resources.toolchain_note(target))
-             if line]
+    lines = [line for line in (resources.note(target), resources.cache_note(target), resources.toolchain_note(target),
+                               resources.shots_note(target, see=False)) if line]
     return "".join(f"\n\n{line}" for line in lines)
 
 
