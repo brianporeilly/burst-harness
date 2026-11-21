@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.58.2 (2026-11-21)
+
+### Bug Fixes
+
+- **check**: The check and setup commands build in the build cache, as the agent's commands do
+  ([#70](https://github.com/brianporeilly/burst-harness/pull/70),
+  [`5d803d0`](https://github.com/brianporeilly/burst-harness/commit/5d803d08a68645160f3f5e101d9eeb5d3c901bf4))
+
+
 ## v0.58.1 (2026-11-21)
 
 ### Bug Fixes
