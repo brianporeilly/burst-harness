@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.58.0 (2026-11-21)
+
+### Features
+
+- **orchestrator**: A task's bursts open on their metrics, and its total on all of them
+  ([#68](https://github.com/brianporeilly/burst-harness/pull/68),
+  [`59a35e3`](https://github.com/brianporeilly/burst-harness/commit/59a35e34fe666b18e6334e946dd61a072efd27f3))
+
+
 ## v0.57.0 (2026-11-21)
 
 ### Features
