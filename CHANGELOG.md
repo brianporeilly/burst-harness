@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.54.0 (2026-11-21)
+
+### Features
+
+- **orchestrator**: Clone a task: a new one like it, its prompt and settings changed first, starting
+  from the repo alone ([#59](https://github.com/brianporeilly/burst-harness/pull/59),
+  [`b553b07`](https://github.com/brianporeilly/burst-harness/commit/b553b0777ccf74a0a951181e198fb8d43c6976af))
+
+
 ## v0.53.0 (2026-11-20)
 
 ### Features
