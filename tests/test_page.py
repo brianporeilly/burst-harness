@@ -48,3 +48,11 @@ def test_the_check_finds_a_null_child_and_lets_nested_ones_by():
     nested = 'box.replaceChildren(el("p", {}, t.pr ? el("a", {}, ")") : null));'
     assert null_children(shown) == [1]
     assert null_children(nested) == []
+
+
+def test_a_false_boolean_attribute_is_left_out():
+    """el() set every attribute, and a checkbox drawn with checked: false showed ticked (checked="false" is
+    checked): a task's auto-continue and Slack boxes looked on whatever they were."""
+    text = PAGE.read_text()
+    helper = text[text.index("const el = (tag"):text.index("for (const child of children.flat())")]
+    assert "value === false || value == null) continue" in helper and 'value === true ? "" : value' in helper
