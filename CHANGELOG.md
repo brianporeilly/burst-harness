@@ -5,6 +5,21 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.60.0 (2026-11-21)
+
+### Continuous Integration
+
+- **release**: A refused tag push after the version commit landed is tried once more
+  ([#72](https://github.com/brianporeilly/burst-harness/pull/72),
+  [`a9d46f4`](https://github.com/brianporeilly/burst-harness/commit/a9d46f40511e977358954275d7cbd6d9e7cc5e53))
+
+### Features
+
+- **agent**: View_image for the Strands engine, when its model takes images
+  ([#73](https://github.com/brianporeilly/burst-harness/pull/73),
+  [`eba48bd`](https://github.com/brianporeilly/burst-harness/commit/eba48bdc345c6a1879470e41e9cb0dbdb36700c2))
+
+
 ## v0.59.0 (2026-11-21)
 
 ### Features
