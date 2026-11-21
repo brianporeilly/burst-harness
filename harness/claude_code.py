@@ -64,8 +64,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from . import (agents, budget, credentials, git, git_policy, mcp, models, resources, state, steering, terminal,
-               transcript)
+from . import (agents, budget, credentials, git, git_policy, mcp, models, project, project_tool, resources, state,
+               steering, terminal, transcript)
 from .agent_sandbox import label_value
 from .claude_usage import ClaudeUsage
 from .containers import MODEL_CREDENTIALS
@@ -100,16 +100,21 @@ When you stop, write {outcome} -- a JSON object in exactly one of these shapes -
 If unsure which applies, pause. You may commit as you go; anything left uncommitted is committed for you."""
 
 # The setup round (setup_round.py): the plan is what this round writes.
-SETUP_RECORD = """Task document: none. This round sets the repo up as a project: your first prompt says what to write, and in what layout. Write no product code: the next rounds build it. Finishing is refused until PLAN.md and PROGRESS.md pass the harness's plan check, with what is wrong."""
+SETUP_RECORD = """Task document: none. This round sets the repo up as a project: your first prompt says what to write, and in what layout. Write no product code: the next rounds build it. Run the harness's plan check, `python3 {tool} check` from the repo, until it passes: finishing runs it too, and is refused until it does."""
 
 # In a project (project.py) the record is the repo's PLAN.md and PROGRESS.md, in place of the task document.
 PROJECT_RECORD = """Task document: none. This repo is a project with a plan, and these files are the record instead: the next session has only them and git.
-- PLAN.md is the contract: the goal, the design, and a roadmap of milestones (`### M3 — Title`), each with Accept items (`- M3.1 ...`). Work through the current milestone's (PROGRESS.md's `Current:` line) in order, each with its tests. Read the rest of the plan only where an item needs it.
-- When an Accept item is met, tick it in PROGRESS.md's `## Milestones`, on its line under the current milestone: `  - [x] M3.1 <its text> — <evidence: the test or command, and its result> (<date>)`. Finishing checks the ticks: the PR lists each item as met or not.
-- If the work shows the plan is wrong, change PLAN.md in its layout: keep items' ids, strike an item through (`- ~~M3.2 ...~~`) rather than deleting it, and give a new item the next number. Record each change in DECISIONS.md as `## D-NNN — Plan change: <title> (<milestone>, <date>)` with what the plan said before and why.
-- PROGRESS.md: keep its headings. Under `## Log`, add to one entry for this session (`### <date> — <milestone> · {branch}`): what was done, as terse outcomes, and `Next: ...`. Add blockers under `## Blockers`, and measurements as rows of the `## Measured` table.
-- DECISIONS.md: append-only. A choice or a deviation from the plan is `## D-NNN — Title (<milestone>, <date>)`, the next number, with What, Why and Alternatives.
-- BACKLOG.md: anything outside the plan goes here (under `## Ideas`), never into code.
+- PLAN.md is the contract: the goal, the design, and a roadmap of milestones (`### M3 — Title`), each with Accept items (`- M3.1 ...`). Work through the current milestone's in order, each with its tests. Read the rest of the plan only where an item needs it.
+- Keep the record with the harness's project tool, which writes each file in the format the harness reads: `python3 {tool} <command>`, run from the repo (`--help` lists them). Where a text argument is `-`, it is read from stdin.
+  - `status`: the current milestone, its Accept items, blockers, and the last log entry. Start here.
+  - `plan <a heading, or M3>`: one part of PLAN.md, when an item needs it.
+  - `tick M3.1 "<evidence: the test or command, and its result>"`: an Accept item met. Finishing checks the ticks, and the PR lists each item as met or not.
+  - `log --done "<outcomes, one a line>" --next "<the next step>"`: this session's log entry, added to as you go.
+  - `blocker "<text>"`, `resolve "<a few of its words>"`, `measure "<what>" "<value>" [--target "<target>"]`.
+  - `decide "<title>" --what ... --why ... [--alternatives ...]`: a choice or a deviation from the plan, numbered for you.
+  - `backlog "<idea>"`: anything outside the plan goes here, never into code.
+  - `amend <M3 | "after M3" | a heading> --text - --title ... --why ...`: when the work shows the plan is wrong. Keep items' ids, strike an item through (`- ~~M3.2 ...~~`) rather than deleting it, and give a new item the next number. It is recorded as a decision; a change to the roadmap makes the next round wait for a person.
+- Don't edit PLAN.md, PROGRESS.md, DECISIONS.md or BACKLOG.md by hand where the tool does it.
 - FEEDBACK.md, if present, is the person's steering: read it first, and never edit it.
 - Don't restate the situation in your replies: say only what is new."""
 
@@ -208,6 +213,10 @@ class ClaudeCodeEngine:
         # is written and its turn is over, or when the burst's time is up.
         self.pid_file = f"{self.dir}/claude-{uuid.uuid4().hex[:12]}.pid"
         self.ended = False
+        # The project tool (project_tool.py), in a project or its setup round: where it is put, and whether it was.
+        self.project_dir = f"{self.dir}/project" if self.remote else str(self.state_dir() / "project")
+        self.project_tool = f"{self.project_dir}/project_tool.py"
+        self.has_project_tool = False
 
     # --- setup -----------------------------------------------------------
 
@@ -226,6 +235,8 @@ class ClaudeCodeEngine:
                 "(the burst-harness-sandbox image has both)."
             )
         self._exclude_outcome()
+        if getattr(self.ctx, "project", False) or getattr(self.ctx, "setup_round", False):
+            self._install_project_tool()
         mcp.check_keys(cfg)
         if mcp.direct(cfg):
             # No gateway to add the servers' keys: Claude Code sends them, from a file only its user can read.
@@ -309,6 +320,32 @@ class ClaudeCodeEngine:
             self.target.run_shell(shlex.join(["burst-sandbox-init", *seeds]), cwd="/")
             print("Applied your Claude Code config to the target.")
 
+    def _install_project_tool(self) -> None:
+        """project_tool.py and the project.py it runs, beside each other in the target, with what only the harness
+        knows: this burst's log heading (or, before there is a plan, when it started and its branch)."""
+        self.target.run_shell(f"rm -rf {shlex.quote(self.project_dir)}", check=False, cwd="/")
+        for module in (project, project_tool):
+            self._upload(f"{self.project_dir}/{Path(module.__file__).name}", Path(module.__file__).read_text())
+        settings = ({"heading": terminal.log_heading(self.ctx)} if getattr(self.ctx, "project", False)
+                    else {"started": self.ctx.started, "branch": self.ctx.branch})
+        self._upload(f"{self.project_dir}/project_tool.json", json.dumps(settings))
+        self.has_project_tool = True
+
+    def _count_project_records(self) -> None:
+        """What Claude recorded through the project tool, into the burst's metrics (and a plan change it made)."""
+        found = self.target.run_shell(f"cat {shlex.quote(self.project_dir + '/records.jsonl')} 2>/dev/null",
+                                      check=False, cwd="/")
+        for line in (found.stdout or "").splitlines():
+            try:
+                said = json.loads(line)
+            except ValueError:
+                continue
+            kind = str(said.get("kind") or "")
+            if kind:
+                self.ctx.records[kind] = self.ctx.records.get(kind, 0) + 1
+            if (change := said.get("plan_change")) and (change == "roadmap" or not self.ctx.plan_change):
+                self.ctx.plan_change = change
+
     def _exclude_outcome(self) -> None:
         # The outcome file is Claude's message to the harness, never a commit.
         self.target.run_shell(
@@ -330,6 +367,10 @@ class ClaudeCodeEngine:
             self.target.run_shell(f"rm -f {shlex.quote(self.mcp_file)}", check=False, cwd="/")
             self.mcp_file = ""
         self.target.run_shell(f"rm -f {shlex.quote(self.pid_file)}", check=False, cwd="/")
+        if self.has_project_tool:
+            self._count_project_records()
+            self.target.run_shell(f"rm -rf {shlex.quote(self.project_dir)}", check=False, cwd="/")
+            self.has_project_tool = False
 
     def state_dir(self) -> Path:
         """The driver's state for this run: where a delegate keeps what it offloads, for a local target."""
@@ -352,9 +393,9 @@ class ClaudeCodeEngine:
         )
         task_doc = next(line for line in rules.splitlines() if line.startswith("Task document:"))
         if getattr(self.ctx, "setup_round", False):
-            rules = rules.replace(task_doc, SETUP_RECORD)
+            rules = rules.replace(task_doc, SETUP_RECORD.format(tool=self.project_tool))
         elif getattr(self.ctx, "project", False):
-            rules = rules.replace(task_doc, PROJECT_RECORD.format(branch=self.ctx.branch))
+            rules = rules.replace(task_doc, PROJECT_RECORD.format(tool=self.project_tool))
         return (rules + (f"\n\n{limits}" if limits else "") + terminal.check_note(cfg)
                 + steering.docs_note(cfg, self.target))
 

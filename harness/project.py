@@ -18,8 +18,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from .exec_target import ExecTarget
+if TYPE_CHECKING:  # only for its type: this file also runs alone, beside project_tool.py in a sandbox
+    from .exec_target import ExecTarget
 
 PLAN, PROGRESS, DECISIONS, BACKLOG, FEEDBACK = "PLAN.md", "PROGRESS.md", "DECISIONS.md", "BACKLOG.md", "FEEDBACK.md"
 
@@ -152,6 +154,35 @@ def check_plan(plan_text: str, progress_text: str | None = None) -> list[str]:
 
 
 # --- PROGRESS.md -------------------------------------------------------------
+
+
+def check_summary(plan_text: str | None, progress_text: str | None) -> tuple[bool, str]:
+    """The plan check as said to the agent: whether it passes, and what is wrong or what the plan holds."""
+    problems = [f"There is no {PLAN}."] if plan_text is None else check_plan(plan_text, progress_text or "")
+    if problems:
+        return False, "Not yet:\n" + "\n".join(f"- {problem}" for problem in problems)
+    plan = parse_plan(plan_text or "")
+    items = sum(len([i for i in m.items if not i.struck]) for m in plan.milestones)
+    return True, f"PLAN.md passes: {len(plan.milestones)} milestones, {items} Accept items."
+
+
+def plan_part(plan_text: str, section: str) -> str:
+    """One part of PLAN.md: a `##` section by its heading (or a word of it), running on through its `###` parts, or
+    a milestone by its id (M3). Else the headings there are."""
+    wanted = section.strip().lower()
+    parts = re.split(r"(?=^#{2,3}\s)", plan_text, flags=re.M)
+    headings = [part.splitlines()[0] for part in parts if part.startswith("#")]
+    level = "###" if re.fullmatch(r"m\d+[a-z]?", wanted) else "##"
+    for at, part in enumerate(parts):
+        heading = part.splitlines()[0] if part.startswith("#") else ""
+        if not (heading.startswith(level + " ") and wanted in heading.lower()):
+            continue
+        if level == "###":
+            return part.strip()
+        rest = parts[at + 1:]
+        stop = next((i for i, later in enumerate(rest) if later.startswith("## ")), len(rest))
+        return (part + "".join(rest[:stop])).strip()
+    return "No such part of PLAN.md. Its headings:\n" + "\n".join(headings)
 
 
 def current_id(progress_text: str) -> str | None:

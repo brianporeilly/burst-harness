@@ -215,7 +215,7 @@ def test_claude_codes_rules_in_a_project_name_the_files_not_a_task_document(tmp_
                          state_key="k", project=True)
     rules = ClaudeCodeEngine(ctx).rules()
     assert "Task document: none. This repo is a project" in rules and "docs/tasks" not in rules
-    assert "### <date> — <milestone> · harness/t" in rules
+    assert "project_tool.py <command>" in rules and "`log --done" in rules  # the tool writes the log's heading
     ctx.project = False
     assert "Task document: docs/tasks/t.md" in ClaudeCodeEngine(ctx).rules()
 

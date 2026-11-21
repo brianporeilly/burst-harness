@@ -299,12 +299,15 @@ Each is one PR, with its tests, README and ROADMAP:
    - milestone progress on the task card and in Slack.
 6. **Cloning a task** in the orchestrator (ROADMAP). Built.
 7. **Migrations** of graveyard-orbit and riftwardens, in their repos.
+8. **Claude Code keeps the record through the same code.** At first it got the layout only as instructions and
+   wrote the files by hand, and its setup round had no plan check, so it wrote a script of its own. Now the
+   engine copies `project_tool.py` and `project.py` into the target for the burst, and Claude runs
+   `python3 <dir>/project_tool.py <command>` from the repo: `status`, `plan`, `check`, `tick`, `log`, `blocker`,
+   `resolve`, `measure`, `decide`, `backlog`, `amend`, the Strands tools' counterparts with the same formats and
+   refusals. What it records is counted into `metrics.records` as the tools' is, and a plan change it makes into
+   `project.plan_change`. Built.
 
 ## Open
 
-- Claude Code tasks get the layout as instructions: they tick items and amend the plan by editing the files in
-  their format, and the harness sees a plan change from git against the base, as it does for any hand edit.
-  The tools through the harness's MCP server (as `delegate` reaches it) are left until instructions prove not
-  enough.
 - Whether `tick_criterion` should run the evidence's command itself, when it is one. Probably not at first: the
   check and the review cover it.

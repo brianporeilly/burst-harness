@@ -8,9 +8,7 @@ from collections.abc import Callable
 from strands import tool
 from strands.types.tools import ToolContext
 
-import re
-
-from . import project, setup_round, state, terminal
+from . import project, state, terminal
 from .context import HarnessContext
 
 # In request_state: a tool stopped the loop (stop_loop). Strands keeps a deferred cancel to itself, so this is
@@ -145,12 +143,7 @@ def make_tools(ctx: HarnessContext) -> list:
         def check_plan() -> str:
             """Check PLAN.md and PROGRESS.md against the layout the harness reads: what is wrong, or that they pass.
             Finishing runs it too, and is refused until it passes."""
-            problems = setup_round.ready(ctx)
-            if problems:
-                return "Not yet:\n" + "\n".join(f"- {problem}" for problem in problems)
-            plan = project.Record(target).plan()
-            items = sum(len([i for i in m.items if not i.struck]) for m in plan.milestones)
-            return f"PLAN.md passes: {len(plan.milestones)} milestones, {items} Accept items."
+            return project.check_summary(target.read_file(project.PLAN), target.read_file(project.PROGRESS))[1]
 
         return [check_plan, *terminals]
     if ctx.project:
@@ -225,21 +218,7 @@ def project_tools(ctx: HarnessContext) -> list:
         Args:
             section: The heading, a word of it, or a milestone id.
         """
-        text = record.read(project.PLAN) or ""
-        wanted = section.strip().lower()
-        parts = re.split(r"(?=^#{2,3}\s)", text, flags=re.M)
-        headings = [part.splitlines()[0] for part in parts if part.startswith("#")]
-        level = "###" if re.fullmatch(r"m\d+[a-z]?", wanted) else "##"
-        for at, part in enumerate(parts):
-            heading = part.splitlines()[0] if part.startswith("#") else ""
-            if not (heading.startswith(level + " ") and wanted in heading.lower()):
-                continue
-            if level == "###":
-                return part.strip()
-            rest = parts[at + 1:]  # a `##` section runs on through its `###` parts
-            stop = next((i for i, later in enumerate(rest) if later.startswith("## ")), len(rest))
-            return (part + "".join(rest[:stop])).strip()
-        return "No such part of PLAN.md. Its headings:\n" + "\n".join(headings)
+        return project.plan_part(record.read(project.PLAN) or "", section)
 
     @tool
     def record_progress(done: str | None = None, next_step: str | None = None, blocker: str | None = None,
