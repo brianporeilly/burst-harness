@@ -65,3 +65,12 @@ def test_what_is_hidden_stays_hidden_and_the_slack_box_is_asked_about_afresh():
     assert "[hidden] { display: none !important; }" in text
     form = text[text.index("async function openTaskForm(spec)"):text.index("if (spec) fillTaskForm(spec);")]
     assert form.index("taskForm.reset()") < form.index("await loadInfo()") < form.index("taskForm.notify.checked =")
+
+
+def test_each_forge_token_is_a_chip_of_its_own():
+    """The credentials the page is given include the forges besides GitHub as {name: set?}, which showed as one
+    chip reading "undefined"."""
+    text = PAGE.read_text()
+    chips = text[text.index('const creds = document.getElementById("creds")'):text.index("if (info.user) creds.append")]
+    assert "const { forges = {}, ...held } = info.credentials" in chips and "`${name} token`" in chips
+    assert "label[key] || key" in chips  # a credential the page has no name for shows as its key, not "undefined"
