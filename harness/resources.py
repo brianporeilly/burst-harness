@@ -12,6 +12,7 @@ machine) gets no note. It is read once per sandbox, for the lead, its delegates 
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .exec_target import LocalTarget
@@ -48,6 +49,38 @@ def note(target: Any) -> str:
         if memory:
             print(f"The agent is told the sandbox's limits: {memory} of memory" + (f", {cpus}." if cpus else "."))
     return _seen[where]
+
+
+# Rust without rustup (the sandbox image's: Fedora's rustc and cargo): its version and installed targets.
+TOOLCHAIN_PROBE = ('command -v rustc >/dev/null 2>&1 && ! command -v rustup >/dev/null 2>&1 && '
+                   'rustc --version && ls "$(rustc --print sysroot)/lib/rustlib"')
+TOOLCHAIN_NOTE = ("Rust here is the system's ({version}), with the targets {targets}. There is no rustup, so a "
+                  "rust-toolchain.toml is not applied and no other toolchain or target can be installed: build with "
+                  "this one. If the repo pins another, don't try to install it or work around it: record it (a "
+                  "blocker or a decision) and carry on with this one.")
+TRIPLE = re.compile(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_.-]+")
+_toolchains: dict[str, str] = {}
+
+
+def toolchain_note(target: Any) -> str:
+    """The line for the agent's instructions when the sandbox has Rust without rustup, or ""."""
+    if isinstance(target, LocalTarget) or not hasattr(target, "run_shell"):
+        return ""
+    where = target.describe()
+    if where not in _toolchains:
+        try:
+            found = target.run_shell(TOOLCHAIN_PROBE, check=False, cwd="/")
+            text = found.stdout.strip().splitlines() if found.returncode == 0 else []
+        except Exception:  # noqa: BLE001 -- a note the agent goes without, never a failed run
+            text = []
+        version = text[0].strip() if text else ""
+        # lib/rustlib holds a directory per target triple, and files and directories of its own (etc, src,
+        # components, manifest-*, rust-installer-version).
+        targets = [name.strip() for name in text[1:] if TRIPLE.fullmatch(name.strip())
+                   and not name.strip().startswith(("manifest-", "rust-installer"))]
+        _toolchains[where] = TOOLCHAIN_NOTE.format(version=version, targets=", ".join(targets) or "of its host") \
+            if version else ""
+    return _toolchains[where]
 
 
 CACHE_NOTE = """Builds here keep their output between bursts: {settings} {are} set for you, on a volume \

@@ -98,3 +98,31 @@ def test_claude_codes_rules_carry_it_too(tmp_path, monkeypatch):
     monkeypatch.setattr(resources, "note", lambda target: "")
     assert "CARGO_TARGET_DIR=/cache/target/k is set for you" in engine.rules()
     assert "Don't set it to anything else" in engine.rules()
+
+
+def test_rust_without_rustup_is_said_with_its_version_and_targets(monkeypatch):
+    monkeypatch.setattr(resources, "_toolchains", {})
+    listed = ("rustc 1.99.1 (58cf8f9c3 2026-10-13) (Fedora 1.99.1-2.fc44)\ncomponents\netc\nmanifest-rust-std-x86_64\n"
+              "rust-installer-version\nsrc\nwasm32-unknown-unknown\nx86_64-unknown-linux-gnu\n")
+    sandbox = Sandbox(listed)
+    line = resources.toolchain_note(sandbox)
+    assert line.startswith("Rust here is the system's (rustc 1.99.1 (58cf8f9c3 2026-10-13) (Fedora 1.99.1-2.fc44)), "
+                           "with the targets wasm32-unknown-unknown, x86_64-unknown-linux-gnu. There is no rustup")
+    assert "rust-toolchain.toml is not applied" in line and resources.toolchain_note(sandbox) == line
+    assert sandbox.asked == 1  # once per sandbox
+    assert resources.toolchain_note(Sandbox("", where="no rust, or rustup")) == ""  # the probe printed nothing
+    assert resources.toolchain_note(LocalTarget(repo="/tmp")) == ""  # this machine: whatever you have
+
+
+def test_the_toolchain_note_reaches_both_engines(tmp_path, monkeypatch):
+    from harness import agent
+    from harness.claude_code import ClaudeCodeEngine
+    from harness.config import HarnessConfig
+    from harness.context import HarnessContext
+
+    monkeypatch.setattr(resources, "note", lambda target: "")
+    monkeypatch.setattr(resources, "toolchain_note", lambda target: "Rust here is the system's (rustc 1.99.1).")
+    assert "Rust here is the system's" in agent._limits(Sandbox(""))
+    ctx = HarnessContext(target=LocalTarget(repo=str(tmp_path)), cfg=HarnessConfig(), slug="t", branch="b",
+                         state_key="k")
+    assert "Rust here is the system's" in ClaudeCodeEngine(ctx).rules()
