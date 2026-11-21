@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.55.0 (2026-11-21)
+
+### Features
+
+- **sandbox**: Xkbcommon's X11 library and numpy in the image, and the agent told its Rust has no
+  rustup ([#60](https://github.com/brianporeilly/burst-harness/pull/60),
+  [`60ac202`](https://github.com/brianporeilly/burst-harness/commit/60ac202a76acad972bd4b175826ff6eb44c72648))
+
+
 ## v0.54.0 (2026-11-21)
 
 ### Features
