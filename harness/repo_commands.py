@@ -1,5 +1,7 @@
 """The repo's own commands, run by the harness rather than the model: setup_command before a burst's model
-starts, check_command before a PR (terminal.check). Each runs in the repo, where the agent's shell does."""
+starts, check_command before a PR (terminal.check). Each runs in the repo, where the agent's shell does, and with
+what the target gives the agent's commands (its env: build_cache's CARGO_HOME and CARGO_TARGET_DIR), so it builds
+where the agent built."""
 
 from __future__ import annotations
 
@@ -30,8 +32,12 @@ def run(target: ExecTarget, command: str, timeout: int) -> Ran:
     """Run `command` in the repo, stopped after `timeout` seconds (0: never) where coreutils' timeout exists."""
     timed = timeout > 0 and not target.missing_commands(("timeout",))
     started = time.time()
-    result = target.run_shell(f"timeout -k 10 {int(timeout)} sh -c {shlex.quote(command)}" if timed else command,
-                              check=False)
+    shell = f"timeout -k 10 {int(timeout)} sh -c {shlex.quote(command)}" if timed else command
+    # The target's env reaches the agent's shell and Claude Code, but not run_shell: without it a cached build is
+    # built again from nothing, in the repo, and a large one runs out of time.
+    if env := tuple(getattr(target, "env", ()) or ()):
+        shell = "export " + " ".join(f"{name}={shlex.quote(value)}" for name, value in env) + " && " + shell
+    result = target.run_shell(shell, check=False)
     output = (result.stdout + ("\n" if result.stdout and result.stderr else "") + result.stderr).strip()
     if len(output) > OUTPUT_CHARS:
         output = "[...]\n" + output[-OUTPUT_CHARS:]

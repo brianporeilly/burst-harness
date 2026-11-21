@@ -88,6 +88,20 @@ def test_a_slow_check_times_out_and_long_output_is_cut_to_its_end(repo):
     assert ctx.checks == {}
 
 
+def test_the_check_and_setup_build_where_the_agent_builds(repo):
+    """build_cache's CARGO_HOME and CARGO_TARGET_DIR are the target's env, which the agent's commands get. The
+    harness's own run of check_command and setup_command didn't, so a cached build started again from nothing
+    in the repo, and a large one ran out of time."""
+    from harness import repo_commands
+
+    target = replace(LocalTarget(repo=str(repo)), env=(("CARGO_HOME", "/cache/cargo"),
+                                                       ("CARGO_TARGET_DIR", "/cache/target/it's")))
+    for timeout in (60, 0):  # under coreutils' timeout, and not
+        ran = repo_commands.run(target, 'echo "$CARGO_HOME $CARGO_TARGET_DIR" && echo two', timeout)
+        assert ran.code == 0 and ran.output == "/cache/cargo /cache/target/it's\ntwo"  # the whole command has it
+    assert repo_commands.run(LocalTarget(repo=str(repo)), 'echo "[$CARGO_TARGET_DIR]"', 60).output == "[]"
+
+
 def test_claude_codes_finish_outcome_is_refused_with_the_checks_output(repo):
     ctx = _ctx(repo, check_command="echo 'tests: 1 failed'; exit 1")
     engine = ClaudeCodeEngine(ctx)
