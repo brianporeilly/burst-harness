@@ -61,4 +61,5 @@ def test_until_exit_waits_for_a_program_that_saves_its_own_screenshot(tmp_path):
     stuck = _run("window-shot", "--until-exit", "--timeout", "2", "--out", "stuck.png", "--", "sleep", "30",
                  cwd=tmp_path)
     assert stuck.returncode == 1 and "still running after 2s: stopped" in stuck.stderr
+    # (stopped at 2s, not after the default --wait of 15s: the timeout caps the waits too)
     assert (tmp_path / "stuck.png").stat().st_size > 0

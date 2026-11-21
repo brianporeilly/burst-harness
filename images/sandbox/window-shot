@@ -96,9 +96,12 @@ def main() -> int:
         print(f"Saved {path}.", flush=True)
         return True
 
+    deadline = started + args.timeout if args.until_exit else float("inf")
+
     def pause(seconds: float) -> bool:
-        """Sleep, ending early if the program exits; whether it is still running."""
-        end = time.monotonic() + seconds
+        """Sleep, ending early if the program exits (or, with --until-exit, at its timeout); whether it is still
+        running."""
+        end = min(time.monotonic() + seconds, deadline)
         while program.poll() is None and (left := end - time.monotonic()) > 0:
             time.sleep(min(0.1, left))
         return program.poll() is None
@@ -125,7 +128,7 @@ def main() -> int:
                 running = pause(0.2)  # the frame after the input
         if args.until_exit:
             try:
-                program.wait(max(0.0, args.timeout - (time.monotonic() - started)))
+                program.wait(max(0.0, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
                 x("magick", "import", "-window", "root", args.out)
                 print(f"The program was still running after {args.timeout:.0f}s: stopped. What was on the screen: "
