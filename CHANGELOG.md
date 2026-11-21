@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.59.0 (2026-11-21)
+
+### Features
+
+- **sandbox**: Web-shot and window-shot, so an agent can see what a page or a game window draws
+  ([#71](https://github.com/brianporeilly/burst-harness/pull/71),
+  [`68dc527`](https://github.com/brianporeilly/burst-harness/commit/68dc527d51dbf84a2abcadb3c1ab648359c76325))
+
+
 ## v0.58.2 (2026-11-21)
 
 ### Bug Fixes
