@@ -14,7 +14,13 @@
 # --version X` fetches the release matching a project's wasm-bindgen in
 # seconds. For Bevy and other games, the system libraries its default features
 # build against (alsa, udev, wayland, xkbcommon, X11, Vulkan), with Mesa's
-# software drivers and Xvfb, so a windowed build also runs headless.
+# software drivers, Xvfb, and xkbcommon's X11 library (which winit loads to open
+# a window on X11), so a windowed build also runs headless. numpy, for the
+# throwaway numeric scripts agents write to check a simulation.
+#
+# No rustup: it would fetch toolchains from the network into every fresh
+# sandbox. Rust is Fedora's, updated with the image; the harness tells the agent
+# so, and that a rust-toolchain.toml is not applied.
 #
 # Also provides tmux (sessions that survive a dropped exec), Claude Code, and
 # opencode and zellij (`harness session`).
@@ -27,16 +33,17 @@ FROM registry.fedoraproject.org/fedora:44
 RUN dnf -y install --setopt=install_weak_deps=False \
       git-core coreutils findutils grep sed gawk diffutils patch which procps-ng \
       tar gzip unzip jq ripgrep tmux socat \
-      python3 python3-pip nodejs npm make gcc gcc-c++ pkgconf-pkg-config \
+      python3 python3-pip python3-numpy nodejs npm make gcc gcc-c++ pkgconf-pkg-config \
       rust cargo rust-std-static-wasm32-unknown-unknown clippy rustfmt \
       clang lld mold binaryen just \
       alsa-lib-devel systemd-devel wayland-devel libxkbcommon-devel \
       libX11-devel libXcursor-devel libXi-devel libXrandr-devel vulkan-loader-devel \
-      mesa-dri-drivers mesa-vulkan-drivers xorg-x11-server-Xvfb \
+      mesa-dri-drivers mesa-vulkan-drivers xorg-x11-server-Xvfb libxkbcommon-x11 \
  && dnf clean all \
  && cargo --version && test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-unknown-unknown" \
  && cargo clippy --version && cargo fmt --version && wasm-opt --version && just --version \
- && pkg-config --exists alsa libudev wayland-client xkbcommon x11 vulkan
+ && pkg-config --exists alsa libudev wayland-client xkbcommon x11 vulkan \
+ && ldconfig -p | grep -q 'libxkbcommon-x11\.so\.0 ' && python3 -c 'import numpy'
 
 # UID 1000 matches the SandboxTemplate's runAsUser; a real HOME avoids tools
 # writing config to / (the OpenHands UID/HOME class of bug).
