@@ -61,6 +61,8 @@
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   td, th { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
   .error { color: var(--bad); white-space: pre-wrap; overflow-wrap: anywhere; }
+  dl.metrics { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0 2px; font-size: 12px; }
+  dl.metrics dt { color: var(--muted); } dl.metrics dd { margin: 0; overflow-wrap: anywhere; }
   .pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   .hidden { display: none !important; }
   details summary { cursor: pointer; color: var(--muted); }
@@ -971,6 +973,66 @@ function spentLine(bursts) {
   return time + calls + (priced ? ` · ~$${sum("cost_usd").toFixed(2)}` : "") + (plan ? ` · plan ${plan}` : "");
 }
 
+// Several bursts' metrics as one: counts summed, the largest prompt the largest, the Accept items the last
+// burst's, and the cost only when every burst's is known.
+function sumMetrics(bursts) {
+  const known = bursts.map((b) => b.metrics).filter(Boolean);
+  if (!known.length) return null;
+  const total = {};
+  const add = (into, from) => {
+    for (const [key, value] of Object.entries(from || {})) {
+      if (typeof value === "number") into[key] = key === "peak_prompt_tokens" || key === "context_window"
+        ? Math.max(into[key] || 0, value) : (into[key] || 0) + value;
+      else if (["tokens", "records"].includes(key) && value) add(into[key] = into[key] || {}, value);
+    }
+  };
+  for (const m of known) add(total, m);
+  total.criteria = known[known.length - 1].criteria || null;
+  if (known.length !== bursts.length || known.some((m) => m.cost_usd == null)) total.cost_usd = null;
+  for (const key of ["tool_seconds", "model_seconds"]) if (known.some((m) => m[key] == null)) total[key] = null;
+  return total;
+}
+
+// A burst's metrics (harness/metrics.py) as a list of what it took and did: what isn't known, or is nothing, left out.
+function metricsList(m) {
+  if (!m) return null;
+  const n = (value) => value == null ? null : Number(value).toLocaleString();
+  const secs = (value) => value == null ? null : value >= 3600 ? `${Math.floor(value / 3600)}h ${Math.floor(value % 3600 / 60)}m`
+    : value >= 60 ? `${Math.floor(value / 60)}m ${Math.floor(value % 60)}s` : `${Math.round(value)}s`;
+  const some = (value) => value ? n(value) : null;
+  const join = (...parts) => parts.filter(Boolean).join(" · ");
+  const tokens = m.tokens || {};
+  const records = m.records || {};
+  const recorded = Object.entries({ ticks: "ticks", progress: "progress", decisions: "decisions",
+    plan_changes: "plan changes", backlog: "backlog" }).filter(([key]) => records[key])
+    .map(([key, name]) => `${records[key]} ${name}`).join(", ");
+  const plan = m.plan ? Object.entries(m.plan).filter(([name, w]) => name !== "overage" && w && w.end != null)
+    .map(([name, w]) => `${{ five_hour: "5h", seven_day: "7d" }[name] || name} ${w.start != null && w.start !== w.end ? `${w.start}→` : ""}${w.end}%`).join(", ") : "";
+  const rows = [
+    ["Time", join(secs(m.seconds), m.model_seconds != null ? `model ${secs(m.model_seconds)}` : null,
+      m.tool_seconds != null ? `tools ${secs(m.tool_seconds)}` : null)],
+    ["Model calls", join(n(m.model_calls), m.model_retries ? `${n(m.model_retries)} retried` : null,
+      m.lost_server ? `${n(m.lost_server)} for a lost server` : null)],
+    ["Tool calls", m.tool_calls == null ? null : join(n(m.tool_calls), m.tool_errors ? `${n(m.tool_errors)} failed` : null)],
+    ["Tokens", join(tokens.input != null ? `${n(tokens.input)} in` : null, tokens.output != null ? `${n(tokens.output)} out` : null,
+      tokens.cache_read ? `${n(tokens.cache_read)} cache read` : null, tokens.cache_write ? `${n(tokens.cache_write)} cache write` : null)],
+    ["Largest prompt", m.peak_prompt_tokens ? n(m.peak_prompt_tokens) + (m.context_window
+      ? ` of ${n(m.context_window)} (${Math.round(100 * m.peak_prompt_tokens / m.context_window)}%)` : "") : null],
+    ["Window", join(m.window_cuts ? `${n(m.window_cuts)} cuts` : null, m.window_drops ? `${n(m.window_drops)} messages dropped` : null)],
+    ["Repeated replies", some(m.repeats)],
+    ["Replies cut off", some(m.cut_off)],
+    ["Accept items", m.criteria ? `${m.criteria.ticked} of ${m.criteria.total} met` : null],
+    ["Recorded", recorded],
+    ["Check", m.checks ? `${n(m.checks.run)} run, ${m.checks.failed ? `${n(m.checks.failed)} failed` : "passed"}` : null],
+    ["Setup", m.setup ? `exit ${m.setup.exit}, ${secs(m.setup.seconds)}` : null],
+    ["Review", m.review ? `${m.review.by}: ${m.review.outcome}` : null],
+    ["Sent back", join(m.fixups ? `${n(m.fixups)} for uncommitted work` : null, m.handoffs ? `${n(m.handoffs)} questions to you` : null)],
+    ["Cost", m.cost_usd != null ? `~$${m.cost_usd.toFixed(2)}` : null],
+    ["Plan used", plan],
+  ].filter(([, value]) => value);
+  return rows.length ? el("dl", { class: "metrics" }, rows.map(([name, value]) => [el("dt", {}, name), el("dd", {}, value)])) : null;
+}
+
 async function renderTask() {
   const box = document.getElementById("task-detail");
   let t;
@@ -1010,8 +1072,9 @@ async function renderTask() {
     el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
     el("td", { class: "muted" }, (rounds.length > 1 && b.branch ? `round ${rounds.findIndex((r) => r.branch === b.branch) + 1}: ` : "")
       + (b.message || (b.by_merge ? "next round, started when the PR was merged" : i ? (asking ? "asked again" : "carry on") : "the prompt"))),
-    el("td", { class: "muted" }, spentLine([b]) + (b.fallback
-      ? `${spentLine([b]) ? " · " : ""}on ${b.fallback.to}: ${b.fallback.from} couldn't be reached` : ""))));
+    el("td", { class: "muted" }, ((line) => b.metrics
+      ? el("details", {}, el("summary", {}, line || "Metrics"), metricsList(b.metrics)) : line)(spentLine([b]) + (b.fallback
+      ? `${spentLine([b]) ? " · " : ""}on ${b.fallback.to}: ${b.fallback.from} couldn't be reached` : "")))));
   // A question's conversation: what each burst asked, and its answer.
   const answers = asking ? t.bursts.filter((b) => b.ended).map((b, i) => el("div", {},
     el("p", { class: "muted" }, b.message ? `Follow-up: ${b.message}` : i ? "Asked again:" : "The prompt:"),
@@ -1055,7 +1118,8 @@ async function renderTask() {
     asking ? el("h3", {}, "Answers") : null,
     ...answers,
     el("h3", {}, "Bursts"),
-    t.bursts.length > 1 && spentLine(t.bursts) ? el("p", { class: "muted" }, `All its bursts: ${spentLine(t.bursts)}.`) : null,
+    t.bursts.length > 1 && spentLine(t.bursts) ? el("details", { class: "muted" },
+      el("summary", {}, `All its bursts: ${spentLine(t.bursts)}.`), metricsList(sumMetrics(t.bursts))) : null,
     bursts.length ? el("table", {}, bursts) : el("p", { class: "muted" },
       t.state !== "queued" ? "None." : t.wait ? `Waiting for ${t.wait}.` : "Starting."),
     t.repo ? el("div", { "data-network": "" }) : null,

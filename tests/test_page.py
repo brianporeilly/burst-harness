@@ -74,3 +74,18 @@ def test_each_forge_token_is_a_chip_of_its_own():
     chips = text[text.index('const creds = document.getElementById("creds")'):text.index("if (info.user) creds.append")]
     assert "const { forges = {}, ...held } = info.credentials" in chips and "`${name} token`" in chips
     assert "label[key] || key" in chips  # a credential the page has no name for shows as its key, not "undefined"
+
+
+def test_a_bursts_metrics_open_from_its_row_and_the_tasks_from_its_total():
+    """Each burst's line in a task's Bursts table opens on its metrics (harness/metrics.py), and the task's total on
+    all its bursts' summed. Every field metricsList names is one the harness reports."""
+    text = PAGE.read_text()
+    shown = text[text.index("function metricsList(m)"):text.index("async function renderTask()")]
+    from harness import metrics
+
+    named = set(re.findall(r"\bm\.(\w+)", shown))
+    documented = set(re.findall(r"^  (\w+)", metrics.__doc__, flags=re.M)) | {"plan", "context_window", "tool_errors",
+                                                                               "lost_server", "handoffs"}
+    assert named <= documented, named - documented
+    assert 'el("summary", {}, line || "Metrics"), metricsList(b.metrics)' in text
+    assert "metricsList(sumMetrics(t.bursts))" in text
