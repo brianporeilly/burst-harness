@@ -805,3 +805,45 @@ def test_a_task_can_keep_each_bursts_conversation(tmp_path, harness):
     envs = {slug: runner._model_env(record) for slug, record in tasks.items()}  # what each one's bursts are given
     assert envs["kept"]["HARNESS_RESUME_FROM"] == "snapshot" and harness.started[0][1].env["HARNESS_RESUME_FROM"] == "snapshot"
     assert "HARNESS_RESUME_FROM" not in envs["fresh"] and "HARNESS_RESUME_FROM" not in envs["q"]
+
+
+def test_a_task_is_cloned_with_its_prompt_and_settings_to_change(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "build it in phases", "slug": "orig", "engine": "strands",
+                   "provider": "anthropic", "model": "claude-sonnet-5", "effort": "high", "thinking": True,
+                   "max_tokens": 8000, "allow": "docs.example.com", "base_branch": "dev", "draft": True,
+                   "auto_continue": True, "keep_conversation": True, "setup": True})
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "orig", "pr")
+
+    spec = runner.clone_spec("orig")
+    assert spec["from"] == "orig" and spec["prompt"] == "build it in phases"
+    assert spec["repo"] == "https://github.com/me/proj.git" and spec["base_branch"] == "dev"
+    assert (spec["provider"], spec["model"], spec["effort"], spec["thinking"], spec["max_tokens"]) == \
+        ("anthropic", "claude-sonnet-5", "high", True, 8000)
+    assert spec["allow"] == ["docs.example.com"]
+    assert all(spec[key] is True for key in ("draft", "auto_continue", "keep_conversation", "setup"))
+    assert not {"pr", "branch", "bursts", "sandbox", "rounds", "slug", "state"} & set(spec)  # none of its history
+
+    copy = runner.clone("orig", {"prompt": "build it in one go", "effort": "low", "setup": False, "from": "x"})
+    record = runner.task(copy["slug"])
+    assert copy["slug"] != "orig" and record["prompt"] == "build it in one go"
+    assert record["settings"] == {"effort": "low", "thinking": True, "max_tokens": 8000}
+    assert (record["base_branch"], record["draft"], record["setup"], record["pr"]) == ("dev", True, False, None)
+    assert record["branch"] == f"harness/{copy['slug']}"  # a branch of its own, from the base: the repo alone
+
+    with pytest.raises(TasksError, match="No task named 'gone'"):
+        runner.clone_spec("gone")
+
+
+def test_cloning_over_the_api(tmp_path, harness):
+    runner = _runner(tmp_path)
+    client = TestClient(create_app(FakeBackend(), tasks=runner), base_url="http://127.0.0.1:8700")
+    runner.create({"repo": "me/proj", "prompt": "fix the flaky test", "slug": "flaky"})
+    spec = client.get("/api/tasks/flaky/clone").json()
+    assert spec["from"] == "flaky" and spec["prompt"] == "fix the flaky test"
+    assert client.post("/api/tasks/flaky/clone", json={}).status_code == 403  # a change: the page's header needed
+    made = client.post("/api/tasks/flaky/clone", json={"slug": "flaky-2", "prompt": "fix it properly"}, headers=CHANGE)
+    assert made.status_code == 202 and made.json()["slug"] == "flaky-2"
+    assert runner.task("flaky-2")["prompt"] == "fix it properly"
+    assert client.get("/api/tasks/gone/clone").status_code == 400

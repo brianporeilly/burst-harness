@@ -90,7 +90,7 @@
     <p class="muted">Choose a task, or start one.</p>
   </section>
   <section class="panel hidden" id="task-create">
-    <div class="row spread"><h2>New task</h2><button id="task-cancel">Cancel</button></div>
+    <div class="row spread"><h2 id="task-create-title">New task</h2><button id="task-cancel">Cancel</button></div>
     <form id="task-form" autocomplete="off">
       <label>Repository <input type="text" name="repo" placeholder="owner/repo, or https://host/owner/repo.git; empty to ask a question"></label>
       <label>What to do <textarea name="prompt" required style="min-height:140px" placeholder="Fix the flaky test in tests/test_api.py and open a PR."></textarea></label>
@@ -993,6 +993,8 @@ async function renderTask() {
   const actions = [
     !idle ? el("button", { class: "danger", onclick: () => taskAct("Cancel", () =>
       api(`/api/tasks/${t.slug}/cancel`, { method: "POST" })) }, t.state === "queued" ? "Cancel" : "Stop") : null,
+    el("button", { title: "A new task like this one, its prompt and settings to change first. It starts from the repo alone.",
+      onclick: async () => { try { openTaskForm(await api(`/api/tasks/${t.slug}/clone`)); } catch (err) { alert(err.message); } } }, "Clone"),
     idle ? el("button", { class: "danger", onclick: () => confirm(asking ? `Remove ${t.slug} and its answers?` : `Remove ${t.slug}? Its branch and PR stay.`) &&
       taskAct("Remove", () => api(`/api/tasks/${t.slug}`, { method: "DELETE" })) }, "Remove") : null,
   ];
@@ -1089,15 +1091,51 @@ async function renderNetwork(t, box) {
   ].filter((child) => child != null));
 }
 
-document.getElementById("new-task").onclick = () => {
+// The New task form, empty, or filled from a task to clone (GET /api/tasks/SLUG/clone) to change before creating.
+async function openTaskForm(spec) {
   selectedTask = null;
-  taskDelegates();
-  mcpPicker(document.getElementById("task-mcp"));
-  taskRunners();
+  taskForm.reset();
+  document.getElementById("task-form-error").textContent = "";
+  document.getElementById("task-create-title").textContent = spec ? `New task, like ${spec.from}` : "New task";
+  await Promise.all([taskDelegates(), mcpPicker(document.getElementById("task-mcp")), taskRunners()]);
+  if (spec) fillTaskForm(spec);
+  taskModelFields();  // the fields for its provider: settings set after, as changing provider clears them
+  if (spec) fillTaskSettings(spec);
   document.getElementById("task-detail").classList.add("hidden");
   document.getElementById("task-create").classList.remove("hidden");
+  taskForm.prompt.focus();
   refreshTasks();
-};
+}
+
+function fillTaskForm(spec) {
+  const set = (name, value) => { if (taskForm[name] && value != null && value !== "") taskForm[name].value = value; };
+  for (const name of ["repo", "prompt", "engine", "provider", "base_url", "model", "base_branch", "egress"])
+    set(name, spec[name]);
+  if (spec.context_window) set("context_window", spec.context_window);
+  if (spec.allow && spec.allow.length) set("allow", spec.allow.join(", "));
+  if (spec.runner) set("runner", spec.runner);
+  for (const name of ["draft", "auto_continue", "keep_conversation", "setup", "notify"])
+    if (taskForm[name]) taskForm[name].checked = !!spec[name];
+  if (spec.delegate_to) for (const box of document.querySelectorAll("#task-delegates [data-boxes] input"))
+    box.checked = spec.delegate_to.includes(box.value);
+  if (spec.mcp) {  // the servers it had: Settings' ticked, the others typed in
+    const boxes = [...document.querySelectorAll("#task-mcp [data-mcp-boxes] input")];
+    const names = spec.mcp.map((entry) => entry.split("=")[0]);
+    for (const box of boxes) box.checked = names.includes(box.value);
+    taskForm.mcp_other.value = spec.mcp.filter((entry) => !boxes.some((box) => box.value === entry.split("=")[0]))
+      .join("\n");
+  }
+}
+
+// Its model settings, once the fields are those of its provider (taskModelFields).
+function fillTaskSettings(spec) {
+  if (spec.effort) taskForm.effort.value = spec.effort;
+  if (spec.thinking != null) taskForm.thinking.value = spec.thinking ? "on" : "off";
+  if (spec.max_tokens) taskForm.max_tokens.value = spec.max_tokens;
+  if (spec.model_params) taskForm.model_params.value = JSON.stringify(spec.model_params, null, 2);
+}
+
+document.getElementById("new-task").onclick = () => openTaskForm(null);
 document.getElementById("task-cancel").onclick = () => {
   document.getElementById("task-create").classList.add("hidden");
   document.getElementById("task-detail").classList.remove("hidden");
@@ -1272,6 +1310,7 @@ taskForm.onsubmit = async (event) => {
   try {
     const created = await api("/api/tasks", { method: "POST", body: JSON.stringify(data) });
     taskForm.reset();
+    document.getElementById("task-create-title").textContent = "New task";
     mcpPicker(document.getElementById("task-mcp"));
     taskRunners();
     document.getElementById("task-probe-note").textContent = "";

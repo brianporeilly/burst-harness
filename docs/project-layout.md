@@ -294,7 +294,7 @@ Each is one PR, with its tests, README and ROADMAP:
    - PR review comments into the next burst;
    - roadmap changes holding auto-continue;
    - milestone progress on the task card and in Slack.
-6. **Cloning a task** in the orchestrator (ROADMAP).
+6. **Cloning a task** in the orchestrator (ROADMAP). Built.
 7. **Migrations** of graveyard-orbit and riftwardens, in their repos.
 
 ## Open

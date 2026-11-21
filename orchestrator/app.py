@@ -288,6 +288,16 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         raw = await body(request)
         return await run_in_threadpool(task_runner().notify, slug, raw.get("on") is True)
 
+    @app.get("/api/tasks/{slug}/clone")
+    def clone_spec(slug: str) -> dict[str, Any]:
+        """What a new task like this one would be created with: for the page's Clone, to change before creating."""
+        return task_runner().clone_spec(slug)
+
+    @app.post("/api/tasks/{slug}/clone", status_code=202)
+    async def clone_task(slug: str, request: Request) -> dict[str, Any]:
+        """A new task like this one, with what the body gives changed (prompt, model, settings, slug...)."""
+        return await run_in_threadpool(task_runner().clone, slug, await body(request), user=request.state.user)
+
     @app.post("/api/tasks/{slug}/auto-continue")
     async def auto_continue_task(slug: str, request: Request) -> dict[str, Any]:
         raw = await body(request)

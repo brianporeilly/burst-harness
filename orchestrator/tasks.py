@@ -325,6 +325,27 @@ class TaskRunner:
         self.dispatch()
         return _summary(self._read(slug))
 
+    def clone_spec(self, slug: str) -> dict[str, Any]:
+        """What a task was created with, as create() takes it: for a new task like it, its prompt and settings
+        changed as wanted. The clone starts from the repo alone (its document, or its project's record and git):
+        nothing of the old task's bursts, sandbox, branch or PR comes with it."""
+        record = self._read(slug)
+        spec: dict[str, Any] = {
+            key: record.get(key) for key in (
+                "repo", "prompt", "engine", "provider", "base_url", "model", "delegate_to", "mcp", "egress", "allow",
+                "runner", "base_branch")}
+        spec["context_window"] = record.get("context_window") or 0
+        spec.update(record.get("settings") or {})  # effort, thinking, max_tokens, model_params
+        for key in ("draft", "auto_continue", "keep_conversation", "setup", "notify"):
+            spec[key] = bool(record.get(key))
+        spec["from"] = slug
+        return spec
+
+    def clone(self, slug: str, changes: dict[str, Any], *, user: str = "") -> dict[str, Any]:
+        """A new task like `slug`, with `changes` over its spec (a new prompt, model, settings, name...)."""
+        spec = {key: value for key, value in self.clone_spec(slug).items() if key != "from"}
+        return self.create({**spec, **{key: value for key, value in changes.items() if key != "from"}}, user=user)
+
     def _runner(self, name: str) -> runner.Runner:
         try:
             return self.runners.find(name) if self.runners is not None else runner.find(self.base, name)
