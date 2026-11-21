@@ -1,0 +1,7 @@
+# Installed as /.cargo/config.toml: cargo reads it for every directory under /, after
+# a project's own config, so a project's linker setting wins over this one.
+[target.x86_64-unknown-linux-gnu]
+linker = "cc-mold"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "cc-mold"

@@ -391,7 +391,10 @@ earlier runs, it fired in 11, nearly all of them stuck that way.
 image, with the wasm32-unknown-unknown target. There is no rustup, since it would
 fetch toolchains into every fresh sandbox. In a sandbox with Rust and no rustup,
 the agent is told the version and the targets, that a `rust-toolchain.toml` is
-not applied, and to record a different pin rather than work around it.
+not applied, and to record a different pin rather than work around it. The
+image links Rust with mold, set in `/.cargo/config.toml` outside the repo (a Bevy
+relink measured about a quarter faster); the agent is told so, and not to add a
+linker setting to the repo for it.
 
 **Keeping the record and the docs current.** The record (a project's
 `PROGRESS.md` and `DECISIONS.md`, or the task document) is all the next session

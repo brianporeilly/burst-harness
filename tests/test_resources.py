@@ -110,6 +110,12 @@ def test_rust_without_rustup_is_said_with_its_version_and_targets(monkeypatch):
                            "with the targets wasm32-unknown-unknown, x86_64-unknown-linux-gnu. There is no rustup")
     assert "rust-toolchain.toml is not applied" in line and resources.toolchain_note(sandbox) == line
     assert sandbox.asked == 1  # once per sandbox
+    assert "mold" not in line
+    monkeypatch.setattr(resources, "_toolchains", {})
+    linked = resources.toolchain_note(Sandbox(listed + "LINKER mold\n"))
+    assert linked.startswith(line) and linked.endswith("It links with mold, set outside the repo (/.cargo/config.toml): "
+                                                       "don't add a linker setting to the repo for it, since CI and "
+                                                       "other machines may not have mold.")
     assert resources.toolchain_note(Sandbox("", where="no rust, or rustup")) == ""  # the probe printed nothing
     assert resources.toolchain_note(LocalTarget(repo="/tmp")) == ""  # this machine: whatever you have
 

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Rust's linker in this image (/.cargo/config.toml): the C compiler, linking with mold.
+exec cc -fuse-ld=mold "$@"

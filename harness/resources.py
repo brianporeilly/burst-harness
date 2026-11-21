@@ -53,11 +53,14 @@ def note(target: Any) -> str:
 
 # Rust without rustup (the sandbox image's: Fedora's rustc and cargo): its version and installed targets.
 TOOLCHAIN_PROBE = ('command -v rustc >/dev/null 2>&1 && ! command -v rustup >/dev/null 2>&1 && '
-                   'rustc --version && ls "$(rustc --print sysroot)/lib/rustlib"')
+                   'rustc --version && ls "$(rustc --print sysroot)/lib/rustlib" && '
+                   '{ grep -qs cc-mold /.cargo/config.toml && echo "LINKER mold" || true; }')
 TOOLCHAIN_NOTE = ("Rust here is the system's ({version}), with the targets {targets}. There is no rustup, so a "
                   "rust-toolchain.toml is not applied and no other toolchain or target can be installed: build with "
                   "this one. If the repo pins another, don't try to install it or work around it: record it (a "
                   "blocker or a decision) and carry on with this one.")
+MOLD_NOTE = (" It links with mold, set outside the repo (/.cargo/config.toml): don't add a linker setting to the repo "
+             "for it, since CI and other machines may not have mold.")
 TRIPLE = re.compile(r"[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_.-]+")
 _toolchains: dict[str, str] = {}
 
@@ -78,8 +81,9 @@ def toolchain_note(target: Any) -> str:
         # components, manifest-*, rust-installer-version).
         targets = [name.strip() for name in text[1:] if TRIPLE.fullmatch(name.strip())
                    and not name.strip().startswith(("manifest-", "rust-installer"))]
+        mold = MOLD_NOTE if "LINKER mold" in (name.strip() for name in text) else ""
         _toolchains[where] = TOOLCHAIN_NOTE.format(version=version, targets=", ".join(targets) or "of its host") \
-            if version else ""
+            + mold if version else ""
     return _toolchains[where]
 
 
