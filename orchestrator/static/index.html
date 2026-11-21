@@ -43,6 +43,7 @@
   form { display: grid; gap: 10px; }
   label { display: grid; gap: 3px; font-size: 13px; }
   label.inline { display: flex; gap: 6px; align-items: center; }
+  [hidden] { display: none !important; }  /* or a rule like label.inline's shows what is hidden */
   input[type=text], input[type=number], select, textarea {
     font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 6px 8px; width: 100%; }
@@ -504,8 +505,7 @@ async function loadInfo() {
   document.getElementById("slack-status").textContent = info.slack ? `Slack: ${info.slack}.` : "";
   const notify = document.getElementById("task-notify");
   const slackOn = String(info.slack || "").startsWith("connected");
-  if (notify.hidden && slackOn) taskForm.notify.checked = true;  // on by default, once, where Slack is connected
-  notify.hidden = !slackOn;
+  notify.hidden = !slackOn;  // openTaskForm ticks it for a new task
   taskModelFields();
   mcpPicker(document.getElementById("session-mcp"));
   document.getElementById("defaults").textContent =
@@ -1098,6 +1098,10 @@ async function renderNetwork(t, box) {
 async function openTaskForm(spec) {
   selectedTask = null;
   taskForm.reset();
+  // Slack may have connected since the page loaded: whether to offer telling you there is asked again.
+  await loadInfo().catch(() => {});
+  // On by default where Slack is connected (reset() clears a box ticked from script); a clone's is its task's.
+  taskForm.notify.checked = !document.getElementById("task-notify").hidden;
   document.getElementById("task-form-error").textContent = "";
   document.getElementById("task-create-title").textContent = spec ? `New task, like ${spec.from}` : "New task";
   await Promise.all([taskDelegates(), mcpPicker(document.getElementById("task-mcp")), taskRunners()]);

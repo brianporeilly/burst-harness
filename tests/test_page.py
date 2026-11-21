@@ -56,3 +56,12 @@ def test_a_false_boolean_attribute_is_left_out():
     text = PAGE.read_text()
     helper = text[text.index("const el = (tag"):text.index("for (const child of children.flat())")]
     assert "value === false || value == null) continue" in helper and 'value === true ? "" : value' in helper
+
+
+def test_what_is_hidden_stays_hidden_and_the_slack_box_is_asked_about_afresh():
+    """label.inline's display: flex beat the hidden attribute, so the New task form's Slack box showed while the
+    page took Slack as off (it was checked before Slack connected), and a tick in it was sent as no."""
+    text = PAGE.read_text()
+    assert "[hidden] { display: none !important; }" in text
+    form = text[text.index("async function openTaskForm(spec)"):text.index("if (spec) fillTaskForm(spec);")]
+    assert form.index("taskForm.reset()") < form.index("await loadInfo()") < form.index("taskForm.notify.checked =")
