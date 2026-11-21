@@ -143,19 +143,20 @@ def test_the_screenshot_tools_are_told_with_how_to_look_at_them(tmp_path, monkey
     monkeypatch.setattr(resources, "_shots", {})
     monkeypatch.setattr(resources, "_seen", {})
     sandbox = Sandbox("SHOTS\n")
-    line = resources.shots_note(sandbox, see=False)
+    line = resources.shots_note(sandbox, see="")
     assert line.startswith("To see what a program draws, this sandbox has screenshot tools. `web-shot` loads a page")
     assert "say nothing about a real device" in line and line.endswith("You can't view images here: go by the tools' "
                                                                        "exit status and what they print.")
-    assert resources.shots_note(sandbox, see=True).endswith("open one with Read to look at it.")
+    assert resources.shots_note(sandbox, see="Read").endswith("open one with Read to look at it.")
     assert sandbox.asked == 1  # once per sandbox
-    assert line in agent._limits(sandbox)  # the Strands prompt: no way to see an image
+    assert line in agent._limits(sandbox)  # the Strands prompt, its model taking no images
+    assert "open one with view_image to look at it." in agent._limits(sandbox, sees=True)
 
     ctx = HarnessContext(target=LocalTarget(repo=str(tmp_path)), cfg=HarnessConfig(), slug="t", branch="b",
                          state_key="k")
     engine = ClaudeCodeEngine(ctx)
     engine.target = sandbox
-    assert resources.shots_note(sandbox, see=True) in engine.rules()
+    assert resources.shots_note(sandbox, see="Read") in engine.rules()
 
-    assert resources.shots_note(Sandbox("", where="an older image"), see=True) == ""
-    assert resources.shots_note(LocalTarget(repo="/tmp"), see=True) == ""
+    assert resources.shots_note(Sandbox("", where="an older image"), see="Read") == ""
+    assert resources.shots_note(LocalTarget(repo="/tmp"), see="Read") == ""

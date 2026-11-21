@@ -150,7 +150,7 @@ class Transcript:
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.fromtimestamp(self.started, UTC).strftime("%Y%m%dT%H%M%SZ")
         path = folder / f"{stamp}-{ctx.slug}.json"
-        path.write_text(json.dumps(self.data(ctx, state, result), default=str))
+        path.write_text(json.dumps(self.data(ctx, state, result), default=_unwritable))
         for old in sorted(folder.glob("*.json"))[:-kept]:
             old.unlink(missing_ok=True)
         return path
@@ -175,3 +175,8 @@ def of(ctx: Any) -> Transcript:
     if ctx.transcript is None:
         ctx.transcript = Transcript()
     return ctx.transcript
+
+
+def _unwritable(value: Any) -> str:
+    """What JSON can't hold, as text: an image's bytes (view_image's) by their size, not as themselves."""
+    return f"<{len(value)} bytes>" if isinstance(value, bytes | bytearray) else str(value)

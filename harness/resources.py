@@ -96,14 +96,14 @@ SHOTS_NOTE = ("To see what a program draws, this sandbox has screenshot tools. `
               "input it replays and screenshots it takes itself (a debug flag, a replay file) are steadier than input "
               "sent from outside. Rendering here is in software, with no GPU: what is drawn is right, but frame rates "
               "and timings measured here say nothing about a real device, so don't tune performance by them.")
-SEE_NOTE = " The screenshots are PNG files: open one with Read to look at it."
+SEE_NOTE = " The screenshots are PNG files: open one with {tool} to look at it."
 UNSEEN_NOTE = " You can't view images here: go by the tools' exit status and what they print."
 _shots: dict[str, bool] = {}
 
 
-def shots_note(target: Any, *, see: bool) -> str:
-    """The line for the agent's instructions when the sandbox has web-shot and window-shot, or "". `see`: the agent
-    can look at an image file (Claude Code's Read)."""
+def shots_note(target: Any, *, see: str) -> str:
+    """The line for the agent's instructions when the sandbox has web-shot and window-shot, or "". `see`: the tool
+    the agent looks at an image file with (Claude Code's Read, the Strands engine's view_image), or "" for none."""
     if isinstance(target, LocalTarget) or not hasattr(target, "run_shell"):
         return ""
     where = target.describe()
@@ -113,7 +113,7 @@ def shots_note(target: Any, *, see: bool) -> str:
             _shots[where] = found.returncode == 0 and "SHOTS" in found.stdout
         except Exception:  # noqa: BLE001 -- a note the agent goes without, never a failed run
             _shots[where] = False
-    return SHOTS_NOTE + (SEE_NOTE if see else UNSEEN_NOTE) if _shots[where] else ""
+    return SHOTS_NOTE + (SEE_NOTE.format(tool=see) if see else UNSEEN_NOTE) if _shots[where] else ""
 
 
 CACHE_NOTE = """Builds here keep their output between bursts: {settings} {are} set for you, on a volume \

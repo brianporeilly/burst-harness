@@ -27,7 +27,7 @@ from strands.vended_plugins.context_offloader import ContextOffloader
 from strands.vended_plugins.skills import AgentSkills
 from strands.vended_tools import handoff_to_user, shell
 
-from . import (agents, budget, handover, loops, mcp, metrics, repo_rules, resources, setup_round, steering, terminal,
+from . import (agents, budget, handover, images, loops, mcp, metrics, repo_rules, resources, setup_round, steering, terminal,
                transcript)
 from .exec_sandbox import WRITING, file_tools
 from .exec_target import ExecTarget, LocalTarget
@@ -88,10 +88,11 @@ End every session in exactly one terminal state:
 
 Never leave uncommitted changes behind. If you are unsure which state applies, use pause_for_review."""
 
-def _limits(target: Any) -> str:
-    """The sandbox's memory limit and its build cache, for the prompt (resources.py): paragraphs, or ""."""
+def _limits(target: Any, sees: bool = False) -> str:
+    """The sandbox's memory limit, its build cache, its toolchain and its screenshot tools, for the prompt
+    (resources.py): paragraphs, or "". `sees`: the agent has view_image."""
     lines = [line for line in (resources.note(target), resources.cache_note(target), resources.toolchain_note(target),
-                               resources.shots_note(target, see=False)) if line]
+                               resources.shots_note(target, see="view_image" if sees else "")) if line]
     return "".join(f"\n\n{line}" for line in lines)
 
 
@@ -433,14 +434,15 @@ def _helper(target: ExecTarget, cfg: HarnessConfig, state_dir: str, *, prompt: s
     if read_only and sandbox.get_tools():
         sandbox = _read_only(sandbox)
     exec_tools = exec_tools_for(sandbox, read_only=read_only)
+    sees = images.sees_images(cfg)
     return Agent(
         model=build_model(cfg),
         retry_strategy=retry_strategy(cfg),
         sandbox=sandbox,
         system_prompt=DELEGATE_PROMPT.format(repo=target.describe()) + (READ_ONLY_PROMPT if read_only else "")
-        + _limits(target) + repo_rules.prompt(target, cfg)
+        + _limits(target, sees) + repo_rules.prompt(target, cfg)
         + (f"\n\n{prompt}" if prompt else ""),
-        tools=[*exec_tools, *mcp.clients(cfg)],
+        tools=[*exec_tools, *mcp.clients(cfg), *([images.view_image_tool(target)] if sees else [])],
         plugins=[ContextOffloader(storage=offload_storage(target, state_dir),
                                   max_result_tokens=cfg.offload_max_result_tokens,
                                   preview_tokens=cfg.offload_preview_tokens)],
@@ -539,6 +541,7 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
     rules = repo_rules.prompt(target, cfg, ctx.context_files) + terminal.check_note(cfg)
     limits = budget.of(ctx)
     delegate = delegate_tool(target, cfg, ctx.delegated, str(state_dir), limits, transcript.of(ctx))
+    sees = images.sees_images(cfg)
     agent = Agent(
         model=model,
         retry_strategy=retry_strategy(cfg),
@@ -553,8 +556,9 @@ def build_agent(ctx: HarnessContext) -> tuple[Agent, SnapshotSessionManager]:
             remote=cfg.remote,
             base=cfg.base_branch,
             doc=doc_rel,
-        ) + _limits(target) + rules + steering.docs_note(cfg, target) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
-        tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else [])],
+        ) + _limits(target, sees) + rules + steering.docs_note(cfg, target) + (LEAD_PROMPT.format(roster=agents.roster(cfg, cfg.delegate_to)) if delegate else ""),
+        tools=[*exec_tools, handoff_to_user, *make_tools(ctx), *mcp.clients(cfg), *([delegate] if delegate else []),
+               *([images.view_image_tool(target)] if sees else [])],
         plugins=plugins,
         interventions=[GitGuardrails(target, cfg)],
         conversation_manager=conversation_manager(cfg, lambda: CUT_WHERE.format(where=handover.where_you_are(ctx))),
