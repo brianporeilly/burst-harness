@@ -380,6 +380,9 @@ def _passing_through(LlamaCppModel: Any) -> Any:
         def client(self, value: Any) -> None:
             self._client, self._client_loop = value, None
 
+        def _format_messages(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            return images_out_of_tool_messages(super()._format_messages(*args, **kwargs))
+
         def _format_request(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
             request = super()._format_request(*args, **kwargs)
             params = self.config.get("params") or {}
@@ -392,6 +395,30 @@ def _passing_through(LlamaCppModel: Any) -> Any:
             return request
 
     return PassThroughLlamaCppModel
+
+
+def images_out_of_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """llama.cpp's messages with a tool result's images (view_image's) moved into a user message after the tool
+    results, as Strands does for OpenAI: a chat template renders a tool message's text, and may drop or refuse
+    anything else in it."""
+    out: list[dict[str, Any]] = []
+    held: list[dict[str, Any]] = []
+    for message in messages:
+        if held and message.get("role") != "tool":
+            out.append({"role": "user", "content": held})
+            held = []
+        content = message.get("content")
+        if message.get("role") == "tool" and isinstance(content, list) and any(
+                isinstance(part, dict) and part.get("type") == "image_url" for part in content):
+            pictures = [part for part in content if isinstance(part, dict) and part.get("type") == "image_url"]
+            rest = [part for part in content if not (isinstance(part, dict) and part.get("type") == "image_url")]
+            note = {"type": "text", "text": f"({len(pictures)} image(s): in the user message after these results.)"}
+            message = {**message, "content": [*rest, note]}
+            held += pictures
+        out.append(message)
+    if held:
+        out.append({"role": "user", "content": held})
+    return out
 
 
 def _ollama(cfg: HarnessConfig) -> "Model":

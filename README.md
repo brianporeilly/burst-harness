@@ -403,8 +403,15 @@ uncaught errors. `window-shot -- COMMAND` runs a native program on Xvfb. Both
 send input steps first (`tap:X,Y`, `key:NAME`, `wait:SECONDS`, `shot:FILE`) and
 save PNGs. In a sandbox that has them the agent is told so, and that frame rates
 measured on software rendering mean nothing. Claude Code is told to open the
-PNGs with Read; the Strands engine can't view images, so it goes by what the
-tools print.
+PNGs with Read. The Strands engine has a `view_image` tool (PNG, JPEG, GIF or
+WebP, up to 4 MiB) when its model takes images. The `vision` setting decides
+that: `"auto"` by default, under which Anthropic's models do and a llama-server
+is asked (its `/props` says so when a vision projector, `--mmproj`, is loaded),
+and other providers are taken not to; `"yes"` or `"no"` overrides it. For
+llama.cpp the image goes in a user message right after the tool results, as
+Strands does for OpenAI, since a chat template renders a tool message's text.
+Without it, the agent goes by what the tools print. A transcript records an
+image by its size.
 
 **Keeping the record and the docs current.** The record (a project's
 `PROGRESS.md` and `DECISIONS.md`, or the task document) is all the next session

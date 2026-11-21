@@ -387,7 +387,7 @@ class ClaudeCodeEngine:
         cfg = self.ctx.cfg
         limits = "\n\n".join(line for line in (resources.note(self.target), resources.cache_note(self.target),
                                                  resources.toolchain_note(self.target),
-                                                 resources.shots_note(self.target, see=True)) if line)
+                                                 resources.shots_note(self.target, see="Read")) if line)
         rules = RULES.format(
             branch=self.ctx.branch, remote=cfg.remote, base=cfg.base_branch,
             doc=state.doc_relpath(cfg, self.ctx.slug), cap=cfg.doc_max_bytes, outcome=OUTCOME_PATH,

@@ -133,6 +133,9 @@ class HarnessConfig:
     # the first). Throttling (429, 503) is retried by Strands' own backoff.
     # Every retry of either kind is logged.
     model_retries: int = 2
+    # Whether the model takes images, for the view_image tool (images.py): "yes", "no", or "auto" (Anthropic's
+    # models do; a llama-server is asked, and does with a vision projector loaded; other providers are taken not to).
+    vision: str = "auto"
     model_id: str = "claude-opus-5-5"
     max_tokens: int = 32000
     effort: str = "high"
