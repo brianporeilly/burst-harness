@@ -635,8 +635,23 @@ Next (2026-11-18):
 - Model settings from Slack.
 - Delegates working in parallel, and other delegation improvements.
 - Sessions on runners; refusals listed for local podman tasks.
-- Checked on the cluster: a Forgejo task end to end, and a second Bevy burst
-  using `/cache`.
+- Checked on the cluster: a Forgejo task end to end. (A second Bevy burst
+  using `/cache`: done, graveyard-orbit's milestones.)
+
+Next (2026-11-21):
+
+- Done this week, besides Phase 10: Claude Code keeps a project's record
+  through a project tool of its own (0.57.0); a task's metrics in the page
+  (0.58.0); the check and setup commands build in the build cache (0.58.2);
+  the sandbox's screenshot tools, `web-shot` and `window-shot` (0.59.0).
+- A release whose tag push is refused tries again by itself (it once needed
+  a manual run).
+- Screenshots for the Strands engine: a tool that shows an image file to a
+  model that takes images.
+- riftwardens moved to the project layout, with a setup round.
+- Committing and opening PRs as a bot rather than as you: a GitHub App or a
+  machine user, a Forgejo bot user, per task or in Settings.
+- Steering's cost, tuned from local-llm-benchmark's steered series.
 
 ### 10. Reliable runs, and knowing a change helped
 
