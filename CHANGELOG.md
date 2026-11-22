@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.63.1 (2026-11-22)
+
+### Bug Fixes
+
+- **project**: A milestone merged with items not met moves on, the items still open under it
+  ([#79](https://github.com/brianporeilly/burst-harness/pull/79),
+  [`270aadc`](https://github.com/brianporeilly/burst-harness/commit/270aadc4e5a08f8a828a48528d0832e9ddcef15a))
+
+
 ## v0.63.0 (2026-11-22)
 
 ### Features
