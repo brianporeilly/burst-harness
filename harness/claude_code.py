@@ -555,7 +555,7 @@ class ClaudeCodeEngine:
         elif kind == "system" and event.get("subtype") == "compact_boundary":
             self.compactions += 1
             said = event.get("compact_metadata") or {}
-            print(f"  (Claude Code compacted its conversation"
+            print("  (Claude Code compacted its conversation"
                   + (f" at {said['pre_tokens']:,} tokens" if isinstance(said.get("pre_tokens"), int) else "") + ")")
         elif kind == "rate_limit_event":
             if isinstance(event.get("rate_limit_info"), dict):
