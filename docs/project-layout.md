@@ -158,7 +158,10 @@ The terminal tools stay, and use these files:
     changes (first, marked for review), this round's decisions, the Checkpoint questions as the
     reviewer's test list, and whether any docs changed. The agent's own body follows.
   - **Advances the milestone.** When every item is ticked, the PR closes the milestone: once it is merged,
-    the next round's `current_milestone` is the next one.
+    the next round's `current_milestone` is the next one. A milestone finished with items not met (the
+    second call) says so on its line in PROGRESS.md, `(finished with M0.1, M0.3 not met)`, and the PR says
+    merging accepts them. Once merged, the next round moves on too, and those items stay open under it
+    (CI that can't run yet, say), rather than every round starting on the same milestone again.
 
 `abandon` is unchanged.
 
