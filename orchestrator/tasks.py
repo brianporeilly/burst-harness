@@ -435,9 +435,16 @@ class TaskRunner:
         record["state"] = record.pop("after", None) or "pr"
         record.pop("review", None), record.pop("review_by", None)
 
-    def resume(self, slug: str, message: str = "", *, merged: bool = False) -> dict[str, Any]:
+    def resume(self, slug: str, message: str = "", *, merged: bool = False, model: str = "") -> dict[str, Any]:
         """Queue another burst: with the user's reply, or to carry on from where it stopped. Once the task's
-        PR is merged, the burst starts the task's next round. `merged`: started by auto_continue, not a person."""
+        PR is merged, the burst starts the task's next round. `merged`: started by auto_continue, not a person.
+        `model`: the task's model from this burst on (its provider and engine stay), "" to keep its own."""
+        model = model.strip()
+        if model:
+            try:
+                check_model("", "", model)
+            except SpecError as err:
+                raise TasksError(str(err)) from err
         self.check_pr(slug, 0, auto=False)  # merged since it was last looked at?
         with self.lock:
             record = self._read(slug)
@@ -448,6 +455,9 @@ class TaskRunner:
             kept = record.get("sandbox") if record["state"] == "merged" else None
             if record["state"] == "merged":
                 self._next_round(record)
+            if model and model != record.get("model"):
+                record.update(model=model, switched_model=model)
+                record.pop("uses", None)  # a profile a router chose: the model chosen now is what works on it
             record.update(state="queued", queued=time.time_ns(), message=message.strip() or None, restarts=0,
                           by_merge=merged)
             self._write(record)
@@ -861,6 +871,8 @@ class TaskRunner:
                                  **({"by_merge": True} if record.get("by_merge") else {}),
                                  **({"review": {**record["review"], "by": record.get("review_by") or ""}}
                                     if record.get("review") else {}),
+                                 **({"model": record.pop("switched_model")}
+                                    if record.get("switched_model") and not record.get("review") else {}),
                                  **({"run": run[job.RUN_ID_ENV]} if run else {"branch": record.get("branch")})})
         record.update(state="running", boot=self.boot, **launched.record())
         self._write(record)

@@ -1097,6 +1097,10 @@ async function renderTask() {
   const reply = el("textarea", { placeholder: asking ? (t.state === "answered" ? "A follow-up question" : "A follow-up, or leave empty to ask again")
     : t.state === "merged" ? "What the next round should do, or leave empty to carry on from the task document's next step"
     : t.state === "pr" ? "Changes to make on the PR's branch" : "Your answer, or leave empty to carry on" });
+  // Continuing on another model: the task's from that burst on, its provider and engine as they are.
+  const switchTo = el("input", { type: "text", list: "continue-models", placeholder: `as now: ${modelLabel(t)}` });
+  const suggested = el("datalist", { id: "continue-models" }, ...(t.engine === "claude-code"
+    ? ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] : []).map((m) => el("option", { value: m })));
   // Its rounds, the merged ones first: a burst ran on the branch of one of them.
   const rounds = [...(t.rounds || []), { branch: t.branch, pr: t.pr, pr_state: t.pr_state }];
   const actions = [
@@ -1112,7 +1116,8 @@ async function renderTask() {
     el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
     b.review ? el("td", { class: "muted" }, reviewCell(b)) :
     el("td", { class: "muted" }, (rounds.length > 1 && b.branch ? `round ${rounds.findIndex((r) => r.branch === b.branch) + 1}: ` : "")
-      + (b.message || (b.by_merge ? "next round, started when the PR was merged" : i ? (asking ? "asked again" : "carry on") : "the prompt"))),
+      + (b.message || (b.by_merge ? "next round, started when the PR was merged" : i ? (asking ? "asked again" : "carry on") : "the prompt"))
+      + (b.model ? ` · now on ${b.model}` : "")),
     el("td", { class: "muted" }, ((line) => b.metrics
       ? el("details", {}, el("summary", {}, line || "Metrics"), metricsList(b.metrics)) : line)(spentLine([b]) + (b.fallback
       ? `${spentLine([b]) ? " · " : ""}on ${b.fallback.to}: ${b.fallback.from} couldn't be reached` : "")))));
@@ -1153,8 +1158,10 @@ async function renderTask() {
     t.runner ? el("p", { class: "muted" }, `Runs on runner ${t.runner}.`) : null,
     el("details", {}, el("summary", {}, "Prompt"), el("pre", { class: "text" }, t.prompt)),
     idle ? el("form", { onsubmit: (event) => { event.preventDefault();
-      taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
+      taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST",
+        body: JSON.stringify({ message: reply.value, model: switchTo.value.trim() }) })); } },
       el("label", {}, "Continue", reply),
+      !asking ? el("label", {}, "On another model, from now on (optional) ", switchTo, suggested) : null,
       el("div", { class: "row" }, el("button", { class: "primary", type: "submit" }, t.state === "merged" ? "Start the next round" : "Continue"))) : null,
     reviewable(t) ? reviewForm(t) : null,
     asking ? el("h3", {}, "Answers") : null,

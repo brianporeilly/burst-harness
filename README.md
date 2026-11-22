@@ -1276,7 +1276,10 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   replies kept hitting the output limit, see llama.cpp below), or a failure. **Continue**
   (`POST /api/tasks/SLUG/continue`, with an optional `{"message": ...}`) is
   another burst, `harness run SLUG --message ...`, from the pushed branch.
-  Continuing a task with a PR adds to the PR.
+  Continuing a task with a PR adds to the PR. `{"model": ...}` (the page's
+  "On another model" field) makes that the task's model from this burst on,
+  its provider and engine as they were, for example a Claude Code task moved
+  from Opus to Sonnet. The burst's row says so, and a clone takes the new model.
 - **Rounds.** While a task is idle, the orchestrator asks GitHub about its PR
   (when its page is open, at most once a minute, and every five minutes in the
   background). Once the PR is merged the task is `merged`, and Continue starts
