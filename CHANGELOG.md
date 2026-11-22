@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.63.0 (2026-11-22)
+
+### Features
+
+- **tasks**: Continue a task on another model, its model from then on
+  ([#78](https://github.com/brianporeilly/burst-harness/pull/78),
+  [`811d603`](https://github.com/brianporeilly/burst-harness/commit/811d6031ecf84f38cd646fb6c25cf556d4b6ec0f))
+
+
 ## v0.62.0 (2026-11-22)
 
 ### Features
