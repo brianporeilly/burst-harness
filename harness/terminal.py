@@ -113,7 +113,8 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         raise ValueError(f"No PR yet: the current milestone's Accept items aren't all ticked:\n{listed}\n"
                          "Meet each one and tick_criterion it with the evidence, then finish again. If one can't be "
                          "met in this round, finish again and say why in the body, for each: the PR lists them as "
-                         "not met.")
+                         "not met, and merging it accepts that (the next round moves on to the next milestone, "
+                         "with them still open).")
     if hasattr(ctx, "docs_reminded") and (why := steering.docs_reminder(ctx, changed_files(ctx), RECORD_FILES)):
         raise ValueError(why)
     try:
@@ -128,6 +129,8 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
     if getattr(ctx, "setup_round", False):
         body = f"{setup_round.summary(ctx)}\n\n---\n\n{body}"
     elif getattr(ctx, "project", False):
+        if unmet := [item.id for item in project.Record(ctx.target).unticked()]:
+            project.Record(ctx.target).finished_unmet(unmet)  # merging the PR accepts them (Record.advance)
         body = f"{project_summary(ctx)}\n\n---\n\n{body}"
     record(ctx, next_step=next_step or "Awaiting PR review.")
     steps = _wrap_up(ctx, title)
@@ -197,7 +200,12 @@ def project_summary(ctx: HarnessContext) -> str:
                 *(f"- {d}" for d in changes)]
     out += ["", "### Met", *(f"- [x] {i.id} {i.text} — {held[i.id][1].split(' — ', 1)[-1]}" for i in met)] if met else []
     if unmet := [i for i in items if i not in met]:
-        out += ["", "### Not met (the reasons are below)", *(f"- [ ] {i.id} {i.text}" for i in unmet)]
+        later = record.plan().milestones
+        after = later[later.index(current) + 1] if current in later and later.index(current) + 1 < len(later) else None
+        out += ["", "### Not met (the reasons are below)", *(f"- [ ] {i.id} {i.text}" for i in unmet),
+                "", "Merging this PR accepts them as not met: " + (f"the next round moves on to {after.id}, "
+                                                                     if after else "the milestone is closed, ")
+                + f"and they stay open under {current.id} in PROGRESS.md."]
     if others := [d for d in decisions if d not in changes]:
         out += ["", "### Decisions", *(f"- {d}" for d in others)]
     if current.checkpoint:

@@ -29,6 +29,8 @@ MILESTONE = re.compile(r"^###\s+(M\d+[a-z]?)\b\s*[—:–-]*\s*(.*?)\s*$")
 ITEM = re.compile(r"^\s*[-*]\s+(~~)?\s*(M\d+[a-z]?\.\d+)\b[.:]?\s*(.*?)\s*(~~)?\s*$")
 LABEL = re.compile(r"^\s*(?:\*\*)?(Build|Accept|Checkpoint)(?:\*\*)?\s*:?(?:\*\*)?\s*:?\s*(.*)$", re.I)
 TICK = re.compile(r"^(\s*)[-*]\s+\[([ xX])\]\s+(M\d+[a-z]?(?:\.\d+)?)\b\s*(.*)$")
+# On a milestone's line: finished with these Accept items not met (terminal.finish). Merging that PR accepts them.
+NOT_MET = re.compile(r"\s*\(finished with ((?:M\d+[a-z]?\.\d+)(?:, M\d+[a-z]?\.\d+)*) not met\)")
 CURRENT = re.compile(r"^Current:\s*(M\d+[a-z]?)\b.*$", re.M)
 DECISION = re.compile(r"^#{2,3}\s+D-(\d+)\b", re.M)
 LOG_HEADINGS = ("Log", "Session log")
@@ -421,9 +423,24 @@ class Record:
         total = len([i for i in current.items if not i.struck])
         return {"ticked": total - len(self.unticked()), "total": total}
 
+    def finished_unmet(self, ids: list[str]) -> None:
+        """Note on the current milestone's line that it was finished with these Accept items not met: once its PR
+        is merged, that is accepted, and the next round moves on (advance), the items still open under it."""
+        progress = self.progress()
+        current = current_id(progress.head)
+        lines = []
+        for line in progress.section("Milestones").splitlines():
+            if (tick := TICK.match(line)) and tick.group(3) == current:
+                line = NOT_MET.sub("", line.rstrip()) + f" (finished with {', '.join(ids)} not met)"
+            lines.append(line)
+        progress.sections["Milestones"] = "\n".join(lines)
+        self.write_progress(progress)
+
     def advance(self, base_progress: str | None) -> str | None:
         """Move on to the next milestone when the current one's Accept items are all ticked in `base_progress`,
-        PROGRESS.md as the base branch has it: its PR was merged. Returns the new milestone's id, if it moved."""
+        PROGRESS.md as the base branch has it: its PR was merged. Or when those that aren't were listed as not met
+        when it finished (finished_unmet): merging that PR accepted them, and they stay open under it. Returns the
+        new milestone's id, if it moved."""
         if not base_progress:
             return None
         plan, progress = self.plan(), self.progress()
@@ -432,7 +449,9 @@ class Record:
         if current is None:
             return None
         held = ticks(base_progress)
-        if any(not item.struck and not held.get(item.id, (0,))[0] for item in current.items):
+        unmet = {item.id for item in current.items if not item.struck and not held.get(item.id, (0,))[0]}
+        accepted = NOT_MET.search(held.get(current.id, (False, ""))[1])
+        if unmet and not (accepted and unmet <= set(accepted.group(1).split(", "))):
             return None
         at = plan.milestones.index(current)
         later = plan.milestones[at + 1] if at + 1 < len(plan.milestones) else None

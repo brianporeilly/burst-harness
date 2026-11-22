@@ -54,6 +54,32 @@ def test_the_next_milestone_is_taken_up_once_the_last_ones_pr_is_merged(record):
     assert record.view().startswith("Every milestone in PLAN.md is done; M2 — Flight toy was the last.")
 
 
+def test_a_milestone_finished_with_items_not_met_moves_on_once_merged(record):
+    """the-sleeper: M0's CI and release couldn't run (no Actions minutes). Its PR was merged with them listed as not
+    met, and every round after started on M0 again, with nothing it could do."""
+    plan = PLAN + "\n### M2 — Flight toy\nAccept:\n- M2.1 A burn changes the orbit.\n"
+    record.target.write_file("PLAN.md", plan)
+    assert record.advance(record.read("PROGRESS.md")) is None  # M1.3 open, and not accepted as not met
+    record.finished_unmet(["M1.3"])
+    record.finished_unmet(["M1.3"])  # finished again: said once
+    merged = record.read("PROGRESS.md")
+    assert merged.count("(finished with M1.3 not met)") == 1
+    assert record.advance(merged) == "M2"
+    progress = record.read("PROGRESS.md")
+    assert "Current: M2 — Flight toy" in progress
+    assert "- [x] M1 — Simulation core (finished with M1.3 not met)" in progress
+    assert "  - [ ] M1.3 Determinism across native and WASM." in progress  # still owed, under M1
+    assert "  - [ ] M2.1 A burn changes the orbit." in progress
+
+
+def test_items_left_open_beyond_those_accepted_hold_the_milestone(record):
+    plan = PLAN.replace("- M1.3 Determinism across native and WASM.",
+                        "- M1.3 Determinism across native and WASM.\n- M1.4 A replay test.")
+    record.target.write_file("PLAN.md", plan + "\n### M2 — Flight toy\nAccept:\n- M2.1 A burn.\n")
+    record.finished_unmet(["M1.3"])  # then M1.4 was added, and isn't met either
+    assert record.advance(record.read("PROGRESS.md")) is None
+
+
 def test_the_plan_is_amended_and_every_change_recorded(record):
     m1 = PLAN.split("### M1 — Simulation core\n", 1)[1]
     reworded = "### M1 — Simulation core\n" + m1.replace("- M1.3 Determinism across native and WASM.",
@@ -130,6 +156,9 @@ def test_finishing_is_checked_against_the_milestone_and_the_pr_written_from_the_
     assert "### For you to try\nDoes a circular orbit look circular?" in body
     assert "Docs changed: `docs/physics.md`" in body and body.endswith("M1.3 needs wasmtime, which the sandbox lacks.")
     assert ctx.plan_change == "item"
+    # Finished with M1.3 not met: its line says so, and the PR that merging it accepts that.
+    assert "- [ ] M1 — Simulation core (finished with M1.3 not met)" in record.read("PROGRESS.md")
+    assert "Merging this PR accepts them as not met: the milestone is closed, and they stay open under M1" in body
 
 
 def test_a_burst_ticks_its_milestone_and_says_so(tmp_path, origin, llama, capsys):  # noqa: F811
