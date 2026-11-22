@@ -5,6 +5,8 @@
   fallback_to          what leads a burst whose llama.cpp server can't be reached as it starts (harness cli
                        _fall_back): "claude-code", a profile's name, or "" for no fallback
   fallback_model       Claude Code's model when it is the fallback; "" for its own default
+  claude_compact_window  how full Claude Code's context gets, in tokens, before it compacts (100000 to
+                       1000000), or 0 for its own (about 967K on a 1M model)
 
 Unset, a task has the orchestrator's configuration's (its config file, or HARNESS_* in its environment, which a
 burst inherits). Set here, a burst is given that HARNESS_* over it: set to "" turns a review or a fallback off,
@@ -26,7 +28,9 @@ from typing import Any
 from harness.config import HarnessConfig
 
 # Each setting, and the type its value has.
-KEYS: dict[str, type] = {"claude_attribution": bool, "review_with": str, "fallback_to": str, "fallback_model": str}
+KEYS: dict[str, type] = {"claude_attribution": bool, "review_with": str, "fallback_to": str, "fallback_model": str,
+                         "claude_compact_window": int}
+COMPACT_WINDOW = (100_000, 1_000_000)
 CLAUDE_CODE = "claude-code"  # fallback_to's value for the Claude Code engine, rather than a profile
 MODEL_CHARS = 100
 
@@ -60,7 +64,7 @@ class TaskSettings:
 
     @staticmethod
     def _here(data: dict[str, Any], key: str) -> bool:
-        return isinstance(data.get(key), KEYS[key])
+        return isinstance(data.get(key), KEYS[key]) and not (KEYS[key] is int and isinstance(data.get(key), bool))
 
     def listing(self) -> dict[str, Any]:
         """Each setting as it stands (set here, else the configuration's), where it comes from, and the
@@ -79,9 +83,12 @@ class TaskSettings:
     def _check(self, key: str, value: Any) -> Any:
         if value is None:
             return None
-        if not isinstance(value, KEYS[key]):
-            kind = "true, false," if KEYS[key] is bool else "text"
+        if not isinstance(value, KEYS[key]) or (KEYS[key] is int and isinstance(value, bool)):
+            kind = {bool: "true, false,", int: "a whole number"}.get(KEYS[key], "text")
             raise TaskSettingsError(f"{key} is {kind} or null for the configuration's.")
+        if key == "claude_compact_window" and value and not COMPACT_WINDOW[0] <= value <= COMPACT_WINDOW[1]:
+            raise TaskSettingsError(f"claude_compact_window is 0 (Claude Code's own) or {COMPACT_WINDOW[0]:,} to "
+                                    f"{COMPACT_WINDOW[1]:,} tokens, not {value:,}.")
         if isinstance(value, str):
             value = value.strip()
         names = self.profiles()

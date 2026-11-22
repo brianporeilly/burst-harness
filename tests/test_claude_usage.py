@@ -65,3 +65,23 @@ def test_on_an_api_key_there_is_no_plan(tmp_path):
     engine._on_line(json.dumps(_result(0.01)))
     engine.report()
     assert ctx.lead_metrics["plan"] is None and ctx.lead_metrics["model_usage"]["claude-haiku-5-5"]["output"] == 4
+
+
+def test_claude_codes_compactions_are_counted_and_its_window_is_set(tmp_path, capsys):
+    ctx = HarnessContext(target=LocalTarget(repo=str(tmp_path)), cfg=HarnessConfig(), slug="t", branch="b",
+                         state_key="k")
+    engine = ClaudeCodeEngine(ctx)
+    assert "export CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 && " in engine.command("-p", "go")
+    for event in (_message(2, 3474, 4242),
+                  {"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "auto",
+                                                                                         "pre_tokens": 201234}},
+                  _result(0.001)):
+        engine._on_line(json.dumps(event))
+    assert "(Claude Code compacted its conversation at 201,234 tokens)" in capsys.readouterr().out
+    engine.report()
+    assert metrics.burst(ctx.lead_metrics, {}, seconds=1, fixups=0, handoffs=0)["window_cuts"] == 1
+
+    from dataclasses import replace
+
+    ctx.cfg = replace(ctx.cfg, claude_compact_window=0)  # Claude Code's own
+    assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in ClaudeCodeEngine(ctx).command("-p", "go")
