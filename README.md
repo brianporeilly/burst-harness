@@ -1047,7 +1047,8 @@ burst that starts from then on, of a new task or a continued one, is given
 `HARNESS_CLAUDE_ATTRIBUTION`. It's kept in `task-settings.json` in the
 orchestrator's state directory. `/api/settings/tasks` is the API (`PUT` takes
 `{"claude_attribution": false}`, or `null` for the configuration's), which API
-tokens can't reach.
+tokens can't reach. The same goes for `claude_compact_window`, how full Claude
+Code's context gets before it compacts (below).
 
 **What each run is handed.** A task's burst and a job's run are subprocesses
 (or, with `--bursts job`, Kubernetes Jobs), and each gets the orchestrator's environment with every credential taken out
@@ -1706,6 +1707,14 @@ commit, push, PR, release — is the same.
   and the PRs it opens. `claude_attribution = false` (or
   `HARNESS_CLAUDE_ATTRIBUTION=false`) leaves it out of both. The orchestrator's
   Settings tab can set it for every task.
+- **Context.** Every model call re-reads the conversation so far, and on a
+  model with a 1M window Claude Code compacts only at about 967K tokens: one
+  project burst re-read 20M tokens that way. `claude_compact_window` (default
+  200000; `HARNESS_CLAUDE_COMPACT_WINDOW`) is how full the context gets before
+  it compacts (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`; at least 100000, 0 for Claude
+  Code's own). The record in the repo carries what a burst needs. Its
+  compactions are counted as the burst's `window_cuts`. The Settings tab can
+  set it for every task.
 - **Credentials.** `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`),
   `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_BASE_URL` are copied
   from the driver's environment into a 0600 file in the target for the run and

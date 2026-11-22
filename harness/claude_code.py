@@ -208,6 +208,7 @@ class ClaudeCodeEngine:
         self.api_ms = 0
         self.tool_calls = 0
         self.tool_errors = 0
+        self.compactions = 0  # Claude Code's own compactions of its conversation (claude_compact_window)
         self.seen = ClaudeUsage()  # the rest of what it says of its usage: per model, the plan, the largest prompt
         # Where the running claude's process id is kept, and whether the harness ended it (_end): once its outcome
         # is written and its turn is over, or when the burst's time is up.
@@ -450,6 +451,8 @@ class ClaudeCodeEngine:
             *yours,
         ]
         env = f"set -a && . {shlex.quote(self.env_file)} && set +a && " if self.has_env_file else ""
+        if cfg.claude_compact_window > 0:
+            env += f"export CLAUDE_CODE_AUTO_COMPACT_WINDOW={int(cfg.claude_compact_window)} && "
         own = (f"mkdir -p {shlex.quote(str(Path(pid_file).parent))} && echo $$ > {shlex.quote(pid_file)} && exec "
                if pid_file else "")
         return env + own + shlex.join(argv)
@@ -549,6 +552,11 @@ class ClaudeCodeEngine:
             self.tool_errors += sum(1 for block in content if isinstance(block, dict)
                                     and block.get("type") == "tool_result" and block.get("is_error")) \
                 if isinstance(content, list) else 0
+        elif kind == "system" and event.get("subtype") == "compact_boundary":
+            self.compactions += 1
+            said = event.get("compact_metadata") or {}
+            print("  (Claude Code compacted its conversation"
+                  + (f" at {said['pre_tokens']:,} tokens" if isinstance(said.get("pre_tokens"), int) else "") + ")")
         elif kind == "rate_limit_event":
             if isinstance(event.get("rate_limit_info"), dict):
                 self.seen.rate_limit(event["rate_limit_info"])
@@ -675,7 +683,7 @@ class ClaudeCodeEngine:
         """The lead's numbers for metrics.burst, as Claude Code reported them: its turns as model calls, the
         time its API calls took, and its own cost (at API list prices), with what claude_usage.py reads besides:
         per model, the plan's utilization, the largest prompt. What it does not report (tool time, cut-off
-        replies, window drops, retries) is None. None when it recorded nothing at all."""
+        replies, window drops, retries) is None; its compactions are window_cuts. None when it recorded nothing at all."""
         if self.result is None:
             return None
         usage = self.usage
@@ -684,7 +692,7 @@ class ClaudeCodeEngine:
                 "tokens": {"input": usage.get("input_tokens", 0), "output": usage.get("output_tokens", 0),
                            "cache_read": usage.get("cache_read_input_tokens", 0),
                            "cache_write": usage.get("cache_creation_input_tokens", 0)},
-                "cut_off": None, "window_drops": None, "model_retries": None,
+                "cut_off": None, "window_drops": None, "window_cuts": self.compactions, "model_retries": None,
                 "lost_server": None, "cost_usd": round(self.cost, 4), **self.seen.numbers()}
 
 

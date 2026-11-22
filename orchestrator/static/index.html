@@ -226,6 +226,14 @@
     <p class="muted" id="claude-attribution-source"></p>
     <div class="row"><button id="claude-attribution-reset">Use the configuration's</button>
       <span class="error" id="claude-attribution-error"></span></div>
+    <label>Claude Code compacts its conversation at <input id="claude-compact-window" type="number" min="0"
+      max="1000000" step="10000" style="width:9em"> tokens</label>
+    <p class="muted">Every model call re-reads the conversation so far: a smaller window costs less of your plan, and
+      the record in the repo carries what a burst needs. 0 for Claude Code's own (about 967K on a 1M model).</p>
+    <p class="muted" id="claude-compact-window-source"></p>
+    <div class="row"><button id="claude-compact-window-save">Save</button>
+      <button id="claude-compact-window-reset">Use the configuration's</button>
+      <span class="error" id="claude-compact-window-error"></span></div>
     <label>A review before each PR, by <select id="review-with"></select></label>
     <p class="muted">A profile reads the change, read-only, once the repo's check passes; its findings go back to
       the task's agent once, then into the PR's body.</p>
@@ -1018,7 +1026,7 @@ function metricsList(m) {
       tokens.cache_read ? `${n(tokens.cache_read)} cache read` : null, tokens.cache_write ? `${n(tokens.cache_write)} cache write` : null)],
     ["Largest prompt", m.peak_prompt_tokens ? n(m.peak_prompt_tokens) + (m.context_window
       ? ` of ${n(m.context_window)} (${Math.round(100 * m.peak_prompt_tokens / m.context_window)}%)` : "") : null],
-    ["Window", join(m.window_cuts ? `${n(m.window_cuts)} cuts` : null, m.window_drops ? `${n(m.window_drops)} messages dropped` : null)],
+    ["Window", join(m.window_cuts ? `${n(m.window_cuts)} cuts or compactions` : null, m.window_drops ? `${n(m.window_drops)} messages dropped` : null)],
     ["Repeated replies", some(m.repeats)],
     ["Replies cut off", some(m.cut_off)],
     ["Accept items", m.criteria ? `${m.criteria.ticked} of ${m.criteria.total} met` : null],
@@ -1755,6 +1763,10 @@ async function refreshTaskSettings() {
     ? `Set here${found.updated ? `, ${when(found.updated)}${found.updated_by ? ` by ${found.updated_by}` : ""}` : ""}.`
     : "The configuration's (claude_attribution).";
   document.getElementById("claude-attribution-reset").disabled = found.claude_attribution_source !== "settings";
+  document.getElementById("claude-compact-window").value = found.claude_compact_window;
+  document.getElementById("claude-compact-window-source").textContent = found.claude_compact_window_source === "settings"
+    ? "Set here." : `The configuration's (claude_compact_window, ${Number(found.configuration.claude_compact_window).toLocaleString()}).`;
+  document.getElementById("claude-compact-window-reset").disabled = found.claude_compact_window_source !== "settings";
   showReviewFallback(found);
 }
 
@@ -1812,6 +1824,18 @@ async function saveAttribution(value) {
   refreshTaskSettings();
 }
 document.getElementById("claude-attribution").onchange = (event) => saveAttribution(event.target.checked);
+async function saveCompactWindow(value) {
+  const error = document.getElementById("claude-compact-window-error");
+  error.textContent = "";
+  try { await api("/api/settings/tasks", { method: "PUT", body: JSON.stringify({ claude_compact_window: value }) }); }
+  catch (err) { error.textContent = err.message; }
+  refreshTaskSettings();
+}
+document.getElementById("claude-compact-window-save").onclick = () => {
+  const value = document.getElementById("claude-compact-window").value.trim();
+  saveCompactWindow(value === "" ? null : Number(value));
+};
+document.getElementById("claude-compact-window-reset").onclick = () => saveCompactWindow(null);
 document.getElementById("claude-attribution-reset").onclick = () => saveAttribution(null);
 
 profileForm.onsubmit = async (event) => {

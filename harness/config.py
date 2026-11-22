@@ -296,6 +296,12 @@ class HarnessConfig:
     # trailer on each commit, a line at the end of a PR's description). false
     # leaves both out.
     claude_attribution: bool = True
+    # How full Claude Code's context gets, in tokens, before it compacts the conversation
+    # (CLAUDE_CODE_AUTO_COMPACT_WINDOW; Claude Code takes 100000 at the least). Its own default, on a model with
+    # a 1M window, is about 967K: every model call re-reads all of that, and one burst of a project read 20M
+    # tokens that way. The record in the repo (PLAN.md, PROGRESS.md, the task document) carries what a burst
+    # needs, not its conversation. 0: Claude Code's own.
+    claude_compact_window: int = 200000
 
     # --- git / PR ---
     base_branch: str = "main"

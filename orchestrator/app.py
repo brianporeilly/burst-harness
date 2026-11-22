@@ -438,6 +438,10 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         if "claude_attribution" in raw:
             said.append("Claude Code " + ("adds" if now["claude_attribution"] else "leaves out")
                         + " its attribution in tasks' commits and PRs")
+        if "claude_compact_window" in raw:
+            window = now["claude_compact_window"]
+            said.append(f"Claude Code compacts its conversation at {window:,} tokens" if window
+                        else "Claude Code compacts its conversation at its own default")
         if "review_with" in raw:
             said.append(f"the {now['review_with']} profile reviews each change before its PR" if now["review_with"]
                         else "no review before a PR")

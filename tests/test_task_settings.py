@@ -137,3 +137,19 @@ def test_the_api_sets_and_says_them(tmp_path):
                                "the local model is down from now on.")
     refused = browser.put("/api/settings/tasks", headers=CHANGE, json={"fallback_to": "gpt"})
     assert refused.status_code == 400 and "fallback_to" in refused.json()["error"]
+
+
+def test_claude_codes_compact_window_is_a_number_of_tokens_in_its_range(tmp_path):
+    store = _store(tmp_path)
+    listed = store.listing()
+    assert listed["claude_compact_window"] == 200000 and listed["claude_compact_window_source"] == "configuration"
+    store.set({"claude_compact_window": 300000})
+    assert store.environment() == {"HARNESS_CLAUDE_COMPACT_WINDOW": "300000"}
+    store.set({"claude_compact_window": 0})  # Claude Code's own
+    assert store.environment() == {"HARNESS_CLAUDE_COMPACT_WINDOW": "0"}
+    for wrong, said in ((50000, "0 \\(Claude Code's own\\) or 100,000 to 1,000,000 tokens, not 50,000"),
+                        (2000000, "not 2,000,000"), (True, "a whole number"), ("200k", "a whole number")):
+        with pytest.raises(TaskSettingsError, match=said):
+            store.set({"claude_compact_window": wrong})
+    store.set({"claude_compact_window": None})
+    assert store.environment() == {}
