@@ -22,11 +22,17 @@ code is not 0. A call that succeeds is never counted, however often it is repeat
 Cycles (`cycle_window`, `cycle_ratio`, `cycle_stop`) are a loop with every call working and every reply different:
 the same few calls over and over (a browser's snapshot, click, fill form, 400 times over, in a run that went on for
 2.5 hours). Neither count above sees it. A call repeats when the same tool was called with the same input before,
-whatever came of it; the harness's own record tools (record_progress...) are left out, so obeying a nudge to
+whatever came of it, a browser's element references aside (each snapshot renumbers them: e16, then f96e16, f97e16); the harness's own record tools (record_progress...) are left out, so obeying a nudge to
 record doesn't hide the cycle. When at least cycle_ratio of the last cycle_window calls repeat, the model is told
 to step back, and the window starts afresh; at the cycle_stop-th time, the agent is stopped as for a loop. A window
-rather than "since anything new": a cycle with one call that differs each time (a fresh element reference) is still
-a cycle, and reading a long file a chunk at a time is not one. Off unless cycle_window is set.
+rather than "since anything new": a cycle with one call that differs each time (a CAPTCHA answer guessed afresh) is
+still a cycle, and reading a long file a chunk at a time is not one.
+
+Replayed over 422 local-llm-benchmark runs (21,488 tool calls), window 50, ratio 0.6, stop at the 3rd: it stopped
+6 runs, all stuck (the same `ls` 380 times, `pytest -v` 72 times, finish_with_pr with one body 44 times, a tracker
+down on purpose, two CAPTCHA loops; the 150-minute one at call 204 of 1,255), and no good run. It warned some good
+ones (browser runs re-snapshotting, finish_with_pr retried until it went through) and they went on. One notch
+looser (ratio 0.5, window 30) stopped good runs, as did stopping at the 2nd warning.
 
 Repeats (`repeat_notice`) are the other kind of loop: every call succeeds and differs, but the replies keep
 restating the same thing ("the picture is now clear: X is done, this session's job is Y..."), each restatement
@@ -64,6 +70,21 @@ CYCLING = ("\n[harness] Of your last {window} tool calls, {repeated} repeated ca
 CYCLING_DELEGATE = ("\n[harness] Of your last {window} tool calls, {repeated} repeated calls you had already made, "
                     "with the same input: you are going round in a cycle. Try something different, or stop and "
                     "report what is blocking you.")
+# A browser's element references, renumbered by each snapshot: the same button is e16, then f96e16, f97e16.
+ELEMENT_REF = re.compile(r"^(f\d+)?e\d+$")
+REF_FIELDS = frozenset({"ref", "target"})
+
+
+def _unref(value: Any) -> Any:
+    """A tool's input with a browser's element references (in "ref" and "target") as "#"."""
+    if isinstance(value, dict):
+        return {k: "#" if k in REF_FIELDS and isinstance(v, str) and ELEMENT_REF.match(v) else _unref(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unref(v) for v in value]
+    return value
+
+
 # The harness's own record tools: called again and again by design (and when nudged), so they neither make nor
 # break a cycle.
 RECORD_TOOLS = frozenset({"read_task_doc", "update_task_doc", "record_progress", "record_decision", "add_backlog",
@@ -145,7 +166,7 @@ class Cycles:
         """Count a call. The how-many-th cycle this call completes (the model should be told), or 0."""
         if not self.window or name in RECORD_TOOLS:
             return 0
-        call = _key(name, tool_input)
+        call = _key(name, _unref(tool_input))
         self.recent.append(call in self.made)
         self.made.add(call)
         del self.recent[:-self.window]

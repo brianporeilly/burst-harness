@@ -161,21 +161,25 @@ def _ok():
 def test_calls_going_round_in_a_cycle_are_found_though_each_works():
     """local-llm-benchmark's gen-11 run: snapshot, click, fill form, about 400 times over, every call working, the
     click's element reference changing now and then, record_progress called whenever nudged."""
-    cfg = HarnessConfig(cycle_window=12, cycle_ratio=0.8, cycle_stop=2)
-    watch = loops.Loops(cfg)
-    found = []
-    for n in range(40):
-        watch.note("browser_snapshot", {}, _ok())
-        watch.note("browser_click", {"ref": f"e{n % 4}"}, _ok())  # four refs, then the same again
-        found.append(watch.cycled)
-        watch.note("browser_fill_form", {"fields": [{"name": "captcha", "value": "x7"}]}, _ok())
-        found.append(watch.cycled)
-        if n % 5 == 0:
+    watch = loops.Loops(HarnessConfig())  # the defaults: window 50, ratio 0.6, stopped at the 3rd
+    calls = 0
+    for n in range(400):
+        for name, tool_input in (("browser_snapshot", {}),
+                                 ("browser_click", {"target": f"f{96 + n}e16"}),  # renumbered by each snapshot
+                                 ("browser_fill_form", {"fields": [{"ref": f"f{96 + n}e21", "value": f"guess{n}"}]})):
+            watch.note(name, tool_input, _ok())
+            calls += 1
+            if watch.reason:
+                break
+        if n % 10 == 0:
             watch.note("record_progress", {"done": f"tried again ({n})"}, _ok())  # neither makes nor breaks it
             assert watch.cycled == 0
-    assert [times for times in found if times][:2] == [1, 2]  # (only counted here: nothing stops it)
-    assert watch.reason.startswith("going round in a cycle: 2 times, at least 80% of 12 tool calls in a row")
-    assert watch.cycles.repeated >= 10
+        if watch.reason:
+            break
+    assert watch.reason.startswith("going round in a cycle: 3 times, at least 60% of 50 tool calls in a row")
+    assert calls < 200 and watch.cycles.repeated >= 30
+    assert loops._unref({"fields": [{"ref": "f97e16", "name": "e-mail"}], "target": "button"}) == {
+        "fields": [{"ref": "#", "name": "e-mail"}], "target": "button"}  # only what looks like a reference
 
 
 def test_work_that_moves_on_is_not_a_cycle():
@@ -192,8 +196,8 @@ def test_work_that_moves_on_is_not_a_cycle():
     assert chunks.reason == edits.reason == ""
 
 
-def test_cycles_are_off_unless_set():
-    watch = loops.Loops(HarnessConfig())
+def test_cycles_can_be_turned_off():
+    watch = loops.Loops(HarnessConfig(cycle_window=0))
     for _ in range(500):
         watch.note("shell", {"command": "kubectl get pods"}, _ok())
         assert watch.cycled == 0
@@ -205,6 +209,7 @@ def test_the_model_is_told_of_a_cycle_then_stopped(tmp_path, origin, monkeypatch
     server, requests = fake_llama.serve(cycle * 10 + [{"text": "done"}])
     monkeypatch.setenv("HARNESS_CYCLE_WINDOW", "6")
     monkeypatch.setenv("HARNESS_CYCLE_STOP", "2")
+    monkeypatch.setenv("HARNESS_CYCLE_RATIO", "0.8")
     try:
         work = tmp_path / "work"
         git(tmp_path, "clone", "-q", str(origin), str(work))
