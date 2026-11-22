@@ -1020,6 +1020,7 @@ function metricsList(m) {
       ? ` of ${n(m.context_window)} (${Math.round(100 * m.peak_prompt_tokens / m.context_window)}%)` : "") : null],
     ["Window", join(m.window_cuts ? `${n(m.window_cuts)} cuts` : null, m.window_drops ? `${n(m.window_drops)} messages dropped` : null)],
     ["Repeated replies", some(m.repeats)],
+    ["Cycles of calls", some(m.cycles)],
     ["Replies cut off", some(m.cut_off)],
     ["Accept items", m.criteria ? `${m.criteria.ticked} of ${m.criteria.total} met` : null],
     ["Recorded", recorded],

@@ -152,3 +152,72 @@ def test_the_model_is_told_in_its_next_tool_result(tmp_path, origin, monkeypatch
     monkeypatch.setenv("HARNESS_REPEAT_NOTICE", "false")
     requests, result = run("t2")
     assert "keep restating" not in json.dumps(requests) and result["metrics"]["repeats"] == 0
+
+
+def _ok():
+    return {"status": "success", "content": [{"text": "ok"}]}
+
+
+def test_calls_going_round_in_a_cycle_are_found_though_each_works():
+    """local-llm-benchmark's gen-11 run: snapshot, click, fill form, about 400 times over, every call working, the
+    click's element reference changing now and then, record_progress called whenever nudged."""
+    cfg = HarnessConfig(cycle_window=12, cycle_ratio=0.8, cycle_stop=2)
+    watch = loops.Loops(cfg)
+    found = []
+    for n in range(40):
+        watch.note("browser_snapshot", {}, _ok())
+        watch.note("browser_click", {"ref": f"e{n % 4}"}, _ok())  # four refs, then the same again
+        found.append(watch.cycled)
+        watch.note("browser_fill_form", {"fields": [{"name": "captcha", "value": "x7"}]}, _ok())
+        found.append(watch.cycled)
+        if n % 5 == 0:
+            watch.note("record_progress", {"done": f"tried again ({n})"}, _ok())  # neither makes nor breaks it
+            assert watch.cycled == 0
+    assert [times for times in found if times][:2] == [1, 2]  # (only counted here: nothing stops it)
+    assert watch.reason.startswith("going round in a cycle: 2 times, at least 80% of 12 tool calls in a row")
+    assert watch.cycles.repeated >= 10
+
+
+def test_work_that_moves_on_is_not_a_cycle():
+    cfg = HarnessConfig(cycle_window=12, cycle_ratio=0.8, cycle_stop=2)
+    chunks = loops.Loops(cfg)  # reading a long file a chunk at a time
+    for n in range(100):
+        chunks.note("shell", {"command": f"sed -n {n * 50 + 1},{n * 50 + 50}p src/sim.rs"}, _ok())
+        assert chunks.cycled == 0
+    edits = loops.Loops(cfg)  # an edit, then the same test run, again and again: half of it new
+    for n in range(100):
+        edits.note("edit", {"path": "src/sim.rs", "old": f"v{n}", "new": f"v{n + 1}"}, _ok())
+        edits.note("shell", {"command": "cargo test -q"}, _ok())
+        assert edits.cycled == 0
+    assert chunks.reason == edits.reason == ""
+
+
+def test_cycles_are_off_unless_set():
+    watch = loops.Loops(HarnessConfig())
+    for _ in range(500):
+        watch.note("shell", {"command": "kubectl get pods"}, _ok())
+        assert watch.cycled == 0
+    assert watch.reason == ""
+
+
+def test_the_model_is_told_of_a_cycle_then_stopped(tmp_path, origin, monkeypatch, capsys):
+    cycle = [{"tool": "shell", "args": {"command": f"echo {step}"}} for step in ("snapshot", "click", "fill")]
+    server, requests = fake_llama.serve(cycle * 10 + [{"text": "done"}])
+    monkeypatch.setenv("HARNESS_CYCLE_WINDOW", "6")
+    monkeypatch.setenv("HARNESS_CYCLE_STOP", "2")
+    try:
+        work = tmp_path / "work"
+        git(tmp_path, "clone", "-q", str(origin), str(work))
+        cli.main(["--provider", "llamacpp", "--base-url", f"http://127.0.0.1:{server.server_port}",
+                  "--repo", str(work), "start", "t1", "--task", "Sign up."])
+        result = _result(capsys.readouterr().out)
+    finally:
+        server.shutdown()
+    told = [i for i, request in enumerate(requests) if "going round in a cycle" in json.dumps(request)]
+    assert told and told[0] == 8  # the eighth call completed the first: its result, in the request after it
+    assert "Of your last 6 tool calls, 5 repeated calls you had already made" in json.dumps(requests[8])
+    assert result["state"] == "paused" and result["said"]["loop"].startswith("going round in a cycle: 2 times")
+    assert result["metrics"]["cycles"] == 2 and len(requests) == 14
+    # Paused, though 14 calls recorded nothing: the harness stopped it, so the send-back to record (which once
+    # refused this pause, leaving the burst "none") is not for it.
+    assert "Stopped in a loop: going round in a cycle" in (work / "docs" / "tasks" / "t1.md").read_text()

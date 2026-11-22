@@ -19,6 +19,15 @@ well, nearly all retrying a service the task had down on purpose.
 0 turns either off. A call counts as failed when its tool raised or returned an error, or when a shell's exit
 code is not 0. A call that succeeds is never counted, however often it is repeated.
 
+Cycles (`cycle_window`, `cycle_ratio`, `cycle_stop`) are a loop with every call working and every reply different:
+the same few calls over and over (a browser's snapshot, click, fill form, 400 times over, in a run that went on for
+2.5 hours). Neither count above sees it. A call repeats when the same tool was called with the same input before,
+whatever came of it; the harness's own record tools (record_progress...) are left out, so obeying a nudge to
+record doesn't hide the cycle. When at least cycle_ratio of the last cycle_window calls repeat, the model is told
+to step back, and the window starts afresh; at the cycle_stop-th time, the agent is stopped as for a loop. A window
+rather than "since anything new": a cycle with one call that differs each time (a fresh element reference) is still
+a cycle, and reading a long file a chunk at a time is not one. Off unless cycle_window is set.
+
 Repeats (`repeat_notice`) are the other kind of loop: every call succeeds and differs, but the replies keep
 restating the same thing ("the picture is now clear: X is done, this session's job is Y..."), each restatement
 priming the next. A reply repeats when its first REPEAT_WORDS content words overlap (Jaccard, at least
@@ -47,6 +56,18 @@ REPEATING = ("\n[harness] Your recent replies keep restating the same summary. I
              "the next step with a tool call, and record anything new in the task document.")
 REPEATING_DELEGATE = ("\n[harness] Your recent replies keep restating the same summary. It is settled: take the "
                       "next step, or report.")  # in request_state: the stop was a loop's (agent._call does not restart it)
+
+CYCLING = ("\n[harness] Of your last {window} tool calls, {repeated} repeated calls you had already made, with the "
+           "same input: you are going round in a cycle. Doing it again will not get a different result. Step back: "
+           "what are you trying to get, and why hasn't it come? Try something different, or pause_for_review with "
+           "what is blocking you.")
+CYCLING_DELEGATE = ("\n[harness] Of your last {window} tool calls, {repeated} repeated calls you had already made, "
+                    "with the same input: you are going round in a cycle. Try something different, or stop and "
+                    "report what is blocking you.")
+# The harness's own record tools: called again and again by design (and when nudged), so they neither make nor
+# break a cycle.
+RECORD_TOOLS = frozenset({"read_task_doc", "update_task_doc", "record_progress", "record_decision", "add_backlog",
+                          "tick_criterion", "amend_plan", "current_milestone", "read_plan", "check_plan"})
 
 WARNING = ("\n[harness] This exact call has now failed the same way {count} times. Repeating it will not help: "
            "change your approach (read the error, look at the code it points to, try something else), or "
@@ -110,10 +131,39 @@ class Repeats:
         return close
 
 
+class Cycles:
+    """The same calls over and over, though they work (the module's docstring)."""
+
+    def __init__(self, window: int, ratio: float, stop: int) -> None:
+        self.window, self.ratio, self.stop = window, ratio, stop
+        self.made: set[str] = set()  # every call made, by what it was
+        self.recent: list[bool] = []  # the last `window` calls: whether each repeated an earlier one
+        self.times = 0  # how often a cycle was found
+        self.repeated = 0  # of the window that found the last one, how many calls repeated
+
+    def note(self, name: str, tool_input: Any) -> int:
+        """Count a call. The how-many-th cycle this call completes (the model should be told), or 0."""
+        if not self.window or name in RECORD_TOOLS:
+            return 0
+        call = _key(name, tool_input)
+        self.recent.append(call in self.made)
+        self.made.add(call)
+        del self.recent[:-self.window]
+        if len(self.recent) < self.window or sum(self.recent) < self.ratio * self.window:
+            return 0
+        self.times += 1
+        self.repeated = sum(self.recent)
+        self.recent.clear()  # told: a whole window more before it is told again
+        return self.times
+
+
 class Loops:
     def __init__(self, cfg: Any, *, delegate: bool = False) -> None:
         self.warn, self.stop = cfg.loop_warn, cfg.loop_stop
         self.repeats = Repeats() if getattr(cfg, "repeat_notice", True) else None
+        self.cycles = Cycles(getattr(cfg, "cycle_window", 0), getattr(cfg, "cycle_ratio", 0.8),
+                             getattr(cfg, "cycle_stop", 0))
+        self.cycled = 0  # the cycle the last call completed, its model still to be told; 0 for none
         self.delegate = delegate
         self.seen: dict[str, int] = {}  # each failure, how often: for the warning
         self.streak: dict[str, int] = {}  # each failure, how often since anything new worked: for the stop
@@ -121,7 +171,12 @@ class Loops:
         self.reason = ""
 
     def note(self, name: str, tool_input: Any, result: Any, exception: Exception | None = None) -> int:
-        """Count a call, if it failed: how many times it has failed this way (0 for one that did not fail)."""
+        """Count a call, if it failed: how many times it has failed this way (0 for one that did not fail). A
+        cycle it completes (Cycles) is in `cycled`, and its stop in `reason`."""
+        self.cycled = self.cycles.note(name, tool_input)
+        if self.cycled and self.cycles.stop and self.cycled >= self.cycles.stop and not self.reason:
+            self.reason = (f"going round in a cycle: {self.cycled} times, at least {self.cycles.ratio:.0%} of "
+                           f"{self.cycles.window} tool calls in a row repeated earlier ones (the last: {name})")
         if not failed(result, exception):
             call = _key(name, tool_input)
             if call not in self.worked:  # something new worked: the model is getting somewhere
@@ -139,7 +194,7 @@ class Loops:
         return count
 
     def watch(self, agent: Any) -> None:
-        if not (self.warn or self.stop or self.repeats):
+        if not (self.warn or self.stop or self.repeats or self.cycles.window):
             return
         from strands.hooks import AfterToolCallEvent, MessageAddedEvent
 
@@ -166,6 +221,10 @@ class Loops:
             if told[0]:
                 notes.append(REPEATING_DELEGATE if self.delegate else REPEATING)
                 told[0] = False
+            if self.cycled:
+                metrics.count(event.agent, "cycles")
+                notes.append((CYCLING_DELEGATE if self.delegate else CYCLING).format(
+                    window=self.cycles.window, repeated=self.cycles.repeated))
             if notes and isinstance(event.result, dict):
                 event.result = {**event.result, "content": [*(event.result.get("content") or []),
                                                             *({"text": note} for note in notes)]}
@@ -191,7 +250,7 @@ def pause(ctx: Any) -> bool:
     print(f"\n! Stopped in a loop: {loops.reason}.", flush=True)
     try:
         print(terminal.pause(ctx, summary=f"Stopped in a loop: {loops.reason}.",
-                             next_step=NEXT_STEP.format(reason=loops.reason)))
+                             next_step=NEXT_STEP.format(reason=loops.reason), by_harness=True))
     except Exception as err:  # noqa: BLE001 -- the run ends either way; the sandbox is kept with the work
         print(f"! Could not pause: {type(err).__name__}: {err}")
     ctx.said = {**ctx.said, "loop": loops.reason}
