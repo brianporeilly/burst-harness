@@ -5,6 +5,19 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.61.0 (2026-11-22)
+
+### Features
+
+- **claude-code**: Compact Claude Code's conversation at 200k tokens by default, set in Settings
+  ([#75](https://github.com/brianporeilly/burst-harness/pull/75),
+  [`c06f6b9`](https://github.com/brianporeilly/burst-harness/commit/c06f6b98a84af87cfa1ea26cbb74d990909ed24d))
+
+- **loops**: Notice tool calls going round in a cycle though each works
+  ([#76](https://github.com/brianporeilly/burst-harness/pull/76),
+  [`37d5f61`](https://github.com/brianporeilly/burst-harness/commit/37d5f61c0167681b2ac08b37e51541350aedbc5d))
+
+
 ## v0.60.1 (2026-11-21)
 
 ### Bug Fixes
