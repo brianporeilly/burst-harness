@@ -355,6 +355,14 @@ class HarnessConfig:
     loop_stop: int = 5
     # Replies that keep restating the same thing (loops.Repeats): the model is told it is settled.
     repeat_notice: bool = True
+    # Going round in a cycle with every call working (loops.Cycles): of the last cycle_window tool calls, at least
+    # cycle_ratio repeated calls already made (the same tool, the same input, a browser's element references
+    # aside). The model is told to step back; at the cycle_stop-th time running, the agent is stopped (0: never).
+    # cycle_window 0 turns it off. Set from replays of 422 local-llm-benchmark runs: the loosest that stopped no
+    # good run (one notch looser, ratio 0.5 or window 30, did; stopping at the 2nd time did too).
+    cycle_window: int = 50
+    cycle_ratio: float = 0.6
+    cycle_stop: int = 3
     # This many tool calls with nothing recorded (steering.py): the next tool result says to record. 0: never.
     record_nudge_calls: int = 40
     # A burst that ends after real work having recorded nothing is sent back once to record (steering.py).

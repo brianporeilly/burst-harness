@@ -209,10 +209,12 @@ def project_summary(ctx: HarnessContext) -> str:
     return "\n".join(out)
 
 
-def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str | None = None) -> str:
+def pause(ctx: HarnessContext, *, summary: str, next_step: str, questions: str | None = None,
+          by_harness: bool = False) -> str:
     """Commit and push without a PR. Raises ValueError if the task doc is over its cap, or (once) when the burst
-    worked without recording anything."""
-    if why := steering.recorded_nothing(ctx, "pause_for_review"):
+    worked without recording anything: unless the harness is pausing it (`by_harness`: a loop, a budget), when
+    the agent is no longer there to record, and the pause records what stopped it."""
+    if not by_harness and (why := steering.recorded_nothing(ctx, "pause_for_review")):
         raise ValueError(why)
     # Added to what earlier bursts recorded: replacing Done with this burst's summary lost theirs.
     if ctx.project:

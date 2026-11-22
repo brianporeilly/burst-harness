@@ -83,6 +83,8 @@ scrape from the log:
   many times it cut. Where it cut, the model is told so (below).
 - `repeats`: replies that restated what recent ones said, the model told so
   (`repeat_notice`, below).
+- `cycles`: times the same tool calls went round in a cycle, the model told
+  so (`cycle_window`, below).
 - `model_retries` and `lost_server`: model calls that were retried.
 - `cost_usd`: approximate. It is 0 for a local llama.cpp model, and null if
   the price of any model used, the lead's or a delegate's, isn't known.
@@ -386,6 +388,22 @@ each share most of their opening content words with two of the six replies
 before them, the next tool result tells the model the summary is settled and to
 take the next step. `repeat_notice = false` turns it off. Checked against 350
 earlier runs, it fired in 11, nearly all of them stuck that way.
+
+**Calls that go round in a cycle.** A model can also loop with every call
+working and every reply different: the same few calls over and over (a
+browser's snapshot, click and fill form, 400 times in a run that went on for
+2.5 hours). A call repeats when the same tool had the same input before,
+whatever came of it, a browser's element references aside (each snapshot
+renumbers them); the harness's own record tools don't count, so obeying a
+nudge to record doesn't hide a cycle. When at least `cycle_ratio` (0.6) of the
+last `cycle_window` (50) calls repeat, the next tool result tells the model to
+step back, and the window starts afresh; the `cycle_stop`-th time (3; 0 for
+never), the agent stops as for a loop. `cycle_window = 0` turns it off. It's a
+window rather than "since anything new" so that one call differing each time
+(a CAPTCHA answer guessed afresh) doesn't hide a cycle, and reading a long file
+a chunk at a time isn't one. Replayed over 422 earlier runs, it stopped 6, all
+stuck (the 2.5-hour one at call 204), and no good run; one notch looser
+stopped good runs.
 
 **Rust without rustup.** The sandbox image's Rust is Fedora's, updated with the
 image, with the wasm32-unknown-unknown target. There is no rustup, since it would

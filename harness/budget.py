@@ -145,7 +145,7 @@ def pause(ctx: Any) -> bool:
     print(f"\n! Stopped at the burst's budget: {limits.reason}.", flush=True)
     try:
         print(terminal.pause(ctx, summary=f"Stopped at the burst's budget ({limits.reason}).",
-                             next_step=NEXT_STEP.format(reason=limits.reason)))
+                             next_step=NEXT_STEP.format(reason=limits.reason), by_harness=True))
     except Exception as err:  # noqa: BLE001 -- the run ends either way; the sandbox is kept with the work
         print(f"! Could not pause: {type(err).__name__}: {err}")
     ctx.said = {**ctx.said, "budget": limits.reason}

@@ -31,7 +31,7 @@ REVIEWER = [{"text": "NO FINDINGS"}]
 RESULT_KEYS = {"slug", "branch", "state", "pr", "engine", "target", "kept", "model", "base_url", "agent", "delegated",
                "said", "context_files", "fallback", "project", "metrics", "config", "transcript"}
 METRIC_KEYS = {"schema", "seconds", "model_seconds", "tool_seconds", "model_calls", "tool_calls", "tool_errors",
-               "tokens", "peak_prompt_tokens", "cut_off", "window_drops", "window_cuts", "repeats", "model_retries", "lost_server", "cost_usd",
+               "tokens", "peak_prompt_tokens", "cut_off", "window_drops", "window_cuts", "repeats", "cycles", "model_retries", "lost_server", "cost_usd",
                "fixups", "handoffs", "checks", "setup", "review", "criteria", "records"}
 
 
