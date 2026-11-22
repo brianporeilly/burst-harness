@@ -847,3 +847,24 @@ def test_cloning_over_the_api(tmp_path, harness):
     assert made.status_code == 202 and made.json()["slug"] == "flaky-2"
     assert runner.task("flaky-2")["prompt"] == "fix it properly"
     assert client.get("/api/tasks/gone/clone").status_code == 400
+
+
+def test_continuing_on_another_model_is_the_tasks_model_from_then_on(tmp_path, harness):
+    runner = _runner(tmp_path)
+    runner.create({"repo": "me/proj", "prompt": "build it", "slug": "t", "engine": "claude-code",
+                   "model": "claude-opus-5-5"})
+    assert harness.started[0][1].env["HARNESS_MODEL_ID"] == "claude-opus-5-5"
+    harness.started[0][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+    with pytest.raises(TasksError, match="is not a model id"):
+        runner.resume("t", model="two words")
+    runner.resume("t", "carry on", model="claude-sonnet-5-5")
+    assert harness.started[1][1].env["HARNESS_MODEL_ID"] == "claude-sonnet-5-5"
+    assert runner.task("t")["bursts"][-1]["model"] == "claude-sonnet-5-5"
+    harness.started[1][1].finish(0, state="pr", pr=PR1)
+    _settled(runner, "t", "pr")
+    runner.resume("t")  # no model: the one it was switched to
+    assert harness.started[2][1].env["HARNESS_MODEL_ID"] == "claude-sonnet-5-5"
+    record = runner.task("t")
+    assert record["model"] == "claude-sonnet-5-5" and "model" not in record["bursts"][-1]
+    assert runner.clone_spec("t")["model"] == "claude-sonnet-5-5"  # a clone is like it is now
