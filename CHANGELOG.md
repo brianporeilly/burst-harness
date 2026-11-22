@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.62.0 (2026-11-22)
+
+### Features
+
+- **tasks**: Review a task's open PR with another model, fresh context, findings as a PR comment
+  ([#77](https://github.com/brianporeilly/burst-harness/pull/77),
+  [`e7b7a1c`](https://github.com/brianporeilly/burst-harness/commit/e7b7a1c813b00710c63d5b1fb24e87f800c281a3))
+
+
 ## v0.61.0 (2026-11-22)
 
 ### Features
