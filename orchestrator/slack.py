@@ -313,6 +313,16 @@ class SlackBot:
 
     def _about(self, event: str, record: dict[str, Any]) -> str:
         count = len(record.get("bursts") or [])
+        if event == "started" and record.get("review"):
+            return f":mag: Reviewing the PR with {_reviewer(record['review'])}."
+        if event == "reviewed":
+            burst = (record.get("bursts") or [{}])[-1]
+            said = burst.get("said") or {}
+            if burst.get("state") != "reviewed":
+                return f":x: The review by {_reviewer(burst.get('review') or {})} failed."
+            return (f":mag: {said.get('by') or 'The reviewer'} reviewed the PR"
+                    + (f": {said['comment']}" if said.get("comment") else f", but {said.get('reason') or 'it gave no comment'}")
+                    + ".")
         if event == "started":
             if not record.get("repo"):
                 return ":hourglass_flowing_sand: Working on " + ("your follow-up." if record.get("message") else "it.")
@@ -627,3 +637,8 @@ def _project_lines(record: dict[str, Any]) -> list[str]:
     elif found.get("plan_change"):
         lines.append("It changed items in the plan: they are at the top of the PR.")
     return lines
+
+
+def _reviewer(review: dict[str, Any]) -> str:
+    """Who a review is by, as asked for (tasks.TaskRunner.review)."""
+    return review.get("profile") or (f"Claude Code ({review['model']})" if review.get("model") else "Claude Code")

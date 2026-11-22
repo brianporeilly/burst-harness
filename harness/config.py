@@ -391,6 +391,10 @@ class HarnessConfig:
     # The review's own limits (review.py): told to report when it is nearly at one, stopped at it.
     review_max_minutes: int = 20
     review_max_calls: int = 30
+    # A review of an open PR asked for from the orchestrator (`harness review`, review.of_pr): its own limits, a
+    # whole PR's diff being more to read than one burst's.
+    pr_review_max_minutes: int = 30
+    pr_review_max_calls: int = 60
 
     @classmethod
     def load(

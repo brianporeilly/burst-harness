@@ -111,8 +111,9 @@ def before_pr(ctx: Any, body: str) -> str:
     return body + IN_BODY.format(name=name, findings=findings)
 
 
-def run(ctx: Any, name: str) -> str:
-    """The review: profile `name`, read-only whatever it says, as a delegate of the burst."""
+def run(ctx: Any, name: str, *, brief: str = "") -> str:
+    """The review: profile `name`, read-only whatever it says, as a delegate of the burst. `brief`: _brief's,
+    unless given (a review of an open PR's)."""
     from .agent import delegate_function
 
     cfg = replace(ctx.cfg, delegate_to=(name,),
@@ -126,9 +127,57 @@ def run(ctx: Any, name: str) -> str:
         started=time.time(), delegated={}, target=ctx.target, budget=None))
     review = delegate_function(ctx.target, cfg, ctx.delegated, str(state_dir), caps, transcript.of(ctx),
                                watch=lambda helper: _nearly_out(helper, caps))
-    print(f"\nReviewing the change with {name} before the PR (at most {cfg.review_max_minutes} minutes, "
-          f"{cfg.review_max_calls} model calls).", flush=True)
-    return review(name, _brief(ctx))
+    print(f"\nReviewing the change with {name}" + ("" if brief else " before the PR")
+          + f" (at most {cfg.review_max_minutes} minutes, {cfg.review_max_calls} model calls).", flush=True)
+    return review(name, brief or _brief(ctx))
+
+
+# A review of an open PR, asked for from the orchestrator (`harness review`): a reviewer of your choosing, with a fresh
+# context, read-only on the PR's branch, its findings a comment on the PR. A comment from the token's user, so the
+# task's next burst reads it as review (cli._review_feedback), to address or answer.
+PR_HEAD = ("Review pull request {pr}: the change on this branch, against {base}. You are read-only: change "
+           "nothing, commit nothing.")
+PR_SYSTEM = ("You are reviewing a pull request another agent wrote, with a fresh view of it. You are read-only: "
+             "don't edit files, commit or push. Your last reply is posted on the PR as the review, so make it the "
+             "findings alone, in Markdown.")
+PR_COMMENT = """**Review by {by}**, asked for from the orchestrator: a fresh context, read-only on this PR's branch.
+
+{findings}"""
+
+
+def pr_brief(ctx: Any, pr: str) -> str:
+    """The brief for a review of an open PR: _brief's, about the PR rather than a change before one."""
+    first, _, rest = _brief(ctx).partition("\n")
+    return PR_HEAD.format(pr=pr, base=f"{ctx.cfg.remote}/{ctx.cfg.base_branch}") + "\n" + rest
+
+
+def of_pr(ctx: Any, pr: str, by: str = "") -> tuple[str, str]:
+    """Review an open PR: profile `by` (read-only, as a delegate), or with none, the run's Claude Code. Its
+    findings, and who gave them."""
+    brief = pr_brief(ctx, pr)
+    if by:
+        return run(ctx, by, brief=brief), by
+    from .claude_code import ClaudeCodeEngine
+
+    if ctx.cfg.engine != "claude-code":
+        raise ValueError("A review needs a profile (--by), or engine=claude-code.")
+    engine = ClaudeCodeEngine(ctx)
+    name = f"Claude Code ({ctx.cfg.model_id})" if ctx.cfg.model_id else "Claude Code"
+    print(f"\nReviewing {pr} with {name} (at most {ctx.cfg.max_burst_minutes} minutes, "
+          f"{ctx.cfg.max_model_calls} model calls).", flush=True)
+    engine.prepare()
+    try:
+        findings = engine.ask(brief, PR_SYSTEM)
+        engine.report()
+    finally:
+        engine.cleanup()
+    return findings, name
+
+
+def pr_comment(by: str, findings: str) -> str:
+    """The comment a review leaves on its PR."""
+    text = "No findings: nothing worth changing." if findings.strip().upper().startswith(NOTHING) else findings
+    return PR_COMMENT.format(by=by, findings=text.strip() or "(It gave no report.)")
 
 
 # Told this close to a limit (model calls, or minutes) to stop and report.

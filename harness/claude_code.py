@@ -417,9 +417,10 @@ class ClaudeCodeEngine:
             settings["attribution"] = {"commit": "", "pr": ""}  # empty: none, rather than Claude Code's own
         return json.dumps(settings)
 
-    def command(self, *args: str, pid_file: str = "") -> str:
+    def command(self, *args: str, pid_file: str = "", system: str | None = None) -> str:
         """A shell string running `claude` with the harness's settings and yours. With `pid_file`, claude's
-        process id is written there (the shell execs it), so the harness can end that claude and no other."""
+        process id is written there (the shell execs it), so the harness can end that claude and no other.
+        `system`: what to add to Claude Code's system prompt instead of a task's rules (a review's)."""
         cfg = self.ctx.cfg
         yours = shlex.split(cfg.claude_args)
         # model_id, unless claude_args picks one: without it Claude Code uses
@@ -446,7 +447,7 @@ class ClaudeCodeEngine:
             "claude", *args, *model,
             "--permission-mode", cfg.claude_permission_mode,
             "--settings", self.hook_settings(),
-            "--append-system-prompt", self.rules() + lead,
+            "--append-system-prompt", self.rules() + lead if system is None else system,
             *servers,
             *yours,
         ]
@@ -480,6 +481,29 @@ class ClaudeCodeEngine:
                 return
         if git.is_dirty(self.target):
             print(f"\n! No usable outcome. Uncommitted work left as-is:\n{git.dirty_summary(self.target)}", file=sys.stderr)
+
+    def ask(self, prompt: str, system: str) -> str:
+        """One `claude -p` with `system` in place of a task's rules (a review): its last reply, "" for none. The
+        budget's limits apply (its calls as max turns, its minutes by a timer)."""
+        transcript.of(self.ctx).claude({}, prompt=prompt)
+        limits = budget.of(self.ctx)
+        timer = None
+        if stop := limits.stop_at():
+            timer = threading.Timer(max(stop - time.time(), 0.0), self._time_up)
+            timer.daemon = True
+            timer.start()
+        try:
+            code = self.target.stream_shell(
+                self.command("-p", prompt, "--output-format", "stream-json", "--verbose",
+                             *limits.claude_args(self.turns, self.cost), pid_file=self.pid_file, system=system),
+                self._on_line)
+        finally:
+            if timer is not None:
+                timer.cancel()
+        said = str((self.result or {}).get("result") or "").strip()
+        if code != 0 and not said:
+            print(f"! claude exited with status {code}.", file=sys.stderr)
+        return said
 
     def _run(self, prompt: str, *, resume: bool) -> bool:
         """One `claude -p` invocation (a session through the SDK, when delegating). False if claude itself failed."""

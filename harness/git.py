@@ -346,6 +346,21 @@ def _utc(when: str) -> datetime:
     return found if found.tzinfo else found.replace(tzinfo=UTC)
 
 
+def comment_pr(url: str, body: str, cfg: HarnessConfig | None = None) -> str:
+    """Comment on a PR from the driver, with its forge's token; the comment's URL."""
+    host = _forge(cfg, url)
+    if host.kind == "forgejo":
+        try:
+            return forge.forgejo_comment(host, url, body)
+        except forge.ForgeError as err:
+            raise GitError(_redact(str(err))) from err
+    if not PR_URL.fullmatch(url):
+        raise GitError(f"{url!r} is not a PR's URL.")
+    owner, repo, _, number = url.rstrip("/").split("/")[-4:]
+    return _gh(["api", f"repos/{owner}/{repo}/issues/{number}/comments", "-f", f"body={body}", "--jq", ".html_url"],
+               f"commenting on {url}").strip() or url
+
+
 def open_pr(*, repo: str, head: str, title: str, body: str, base: str, draft: bool,
             cfg: HarnessConfig | None = None) -> str:
     """Create a PR from the driver and return its URL. `repo` is `host/owner/repo` (repo_slug), or

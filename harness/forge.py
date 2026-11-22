@@ -202,6 +202,18 @@ def forgejo_feedback(forge: Forge, pr_url: str) -> list[dict[str, str]]:
     return out
 
 
+def forgejo_comment(forge: Forge, pr_url: str, body: str) -> str:
+    """Comment on a Forgejo PR; the comment's URL."""
+    match = FORGEJO_PR.fullmatch(pr_url)
+    if not match:
+        raise ForgeError(f"{pr_url!r} is not a {forge.name} PR's URL.")
+    status, said = _api(forge, "POST", f"/repos/{match['owner']}/{match['repo']}/issues/{match['number']}/comments",
+                        {"body": body})
+    if status in (200, 201) and isinstance(said, dict):
+        return str(said.get("html_url") or pr_url)
+    raise ForgeError(f"{forge.name} refused the comment ({status}): {_message(said) or 'no reason given'}")
+
+
 def forgejo_pr_state(forge: Forge, pr_url: str) -> str:
     """A Forgejo PR's state: "open", "merged" or "closed"."""
     match = FORGEJO_PR.fullmatch(pr_url)

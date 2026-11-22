@@ -43,7 +43,8 @@ if mode == "fail":
     emit({"type": "result", "subtype": "success", "is_error": True, "result": "Not logged in"})
     sys.exit(1)
 emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
-      "total_cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 5}})
+      "total_cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 5},
+      "result": os.environ.get("FAKE_CLAUDE_REPLY", "")})
 if mode == "linger":  # a background job, or a wake-up it scheduled, keeps it running after its turn
     time.sleep(60)
 '''

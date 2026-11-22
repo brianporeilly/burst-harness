@@ -897,7 +897,7 @@ function memoryLine(m) {
 // --- tasks ---
 
 let selectedTask = null;
-const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", answered: "ok", merged: "ok", running: "warn", queued: "warn", paused: "warn",
+const taskChip = (state) => el("span", { class: "chip " + ({ pr: "ok", answered: "ok", merged: "ok", reviewed: "ok", running: "warn", queued: "warn", paused: "warn",
   waiting: "warn", failed: "bad", interrupted: "bad", pushed_no_pr: "warn", push_failed: "bad", max_tokens: "bad" }[state] || "") },
   { pr: "PR", merged: "PR merged", pushed_no_pr: "pushed, no PR", push_failed: "push refused", waiting: "needs input", max_tokens: "output limit" }[state] || state);
 // A project's milestone and its Accept items met, and a plan change (harness HARNESS_RESULT's `project`).
@@ -1043,6 +1043,36 @@ function metricsList(m) {
   return rows.length ? el("dl", { class: "metrics" }, rows.flatMap(([name, value]) => [el("dt", {}, name), el("dd", {}, value)])) : null;
 }
 
+// A review of a task's open PR (POST /api/tasks/SLUG/review): Claude Code with a model, or a profile, with a fresh
+// context, read-only on the PR's branch; its findings a comment on the PR, which the task's next burst reads.
+const REVIEWERS = [["", "Claude Code (its default model)"], ["claude-opus-5-5", "Claude Code: Opus 5.5"],
+  ["claude-sonnet-5-5", "Claude Code: Sonnet 5.5"]];
+const reviewable = (t) => t.repo && t.pr && !["queued", "running", "merged"].includes(t.state)
+  && !["merged", "closed"].includes(t.pr_state);
+function reviewForm(t) {
+  const choice = el("select", {}, ...REVIEWERS.map(([model, label]) => el("option", { value: `model:${model}` }, label)));
+  api("/api/settings/profiles").then((found) => choice.append(...(found.profiles || []).map((p) =>
+    el("option", { value: `profile:${p.name}` }, `Profile: ${p.name}`)))).catch(() => {});
+  return el("form", { onsubmit: (event) => { event.preventDefault();
+    const [kind, name] = [choice.value.slice(0, choice.value.indexOf(":")), choice.value.slice(choice.value.indexOf(":") + 1)];
+    taskAct("Review", () => api(`/api/tasks/${t.slug}/review`, { method: "POST",
+      body: JSON.stringify(kind === "profile" ? { profile: name } : { model: name }) })); } },
+    el("label", {}, "Review the PR with ", choice),
+    el("p", { class: "muted" }, "A fresh context, read-only on the PR's branch. Its findings are a comment on the PR, "
+      + "which the task's next burst reads when you continue it. The task stays as it is."),
+    el("div", { class: "row" }, el("button", { type: "submit" }, "Review")));
+}
+function reviewCell(b) {
+  const said = b.said || {};
+  const who = said.by || (b.review.profile || (b.review.model ? `Claude Code (${b.review.model})` : "Claude Code"));
+  const line = `review by ${who}` + (b.review.by ? `, asked by ${b.review.by}` : "");
+  if (!said.review) return line;
+  return el("details", {}, el("summary", {}, line, said.comment ? " · " : "",
+    said.comment ? el("a", { href: said.comment, target: "_blank", rel: "noopener" }, "its comment") : null,
+    said.reason ? ` · ${said.reason}` : ""),
+    el("pre", { class: "text" }, said.review));
+}
+
 async function renderTask() {
   const box = document.getElementById("task-detail");
   let t;
@@ -1080,6 +1110,7 @@ async function renderTask() {
   const bursts = t.bursts.map((b, i) => el("tr", {},
     el("td", {}, String(i + 1)), el("td", {}, new Date(b.started).toLocaleString()),
     el("td", {}, b.state ? taskChip(b.state) : taskChip("running")),
+    b.review ? el("td", { class: "muted" }, reviewCell(b)) :
     el("td", { class: "muted" }, (rounds.length > 1 && b.branch ? `round ${rounds.findIndex((r) => r.branch === b.branch) + 1}: ` : "")
       + (b.message || (b.by_merge ? "next round, started when the PR was merged" : i ? (asking ? "asked again" : "carry on") : "the prompt"))),
     el("td", { class: "muted" }, ((line) => b.metrics
@@ -1125,6 +1156,7 @@ async function renderTask() {
       taskAct("Continue", () => api(`/api/tasks/${t.slug}/continue`, { method: "POST", body: JSON.stringify({ message: reply.value }) })); } },
       el("label", {}, "Continue", reply),
       el("div", { class: "row" }, el("button", { class: "primary", type: "submit" }, t.state === "merged" ? "Start the next round" : "Continue"))) : null,
+    reviewable(t) ? reviewForm(t) : null,
     asking ? el("h3", {}, "Answers") : null,
     ...answers,
     el("h3", {}, "Bursts"),

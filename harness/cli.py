@@ -32,6 +32,7 @@ from . import (
     metrics,
     models,
     repo_commands,
+    review,
     runner,
     session,
     state,
@@ -398,6 +399,8 @@ def _finish(report: str | None, ctx: HarnessContext) -> int:
         print(f"Paused. State: {project.PROGRESS if ctx.project else state.doc_relpath(ctx.cfg, ctx.slug)}")
     elif ctx.terminal == "abandoned":
         print("Abandoned.")
+    elif ctx.terminal == "reviewed":
+        print("Reviewed: nothing committed or pushed.")
     elif ctx.waiting:
         print("Waiting for an answer from the user.")
     elif ctx.stopped == "max_tokens":
@@ -711,6 +714,37 @@ def cmd_run(args: argparse.Namespace) -> int:
             # A project's plan is the task: a round with nothing more to say carries on with its milestone.
             raise SystemExit(f"{ctx.branch} does not exist yet, so --task is needed to start it.")
         return _start(ctx, args.task or "", args.message, setup=args.setup)
+
+    return _session(args, body)
+
+
+def cmd_review(args: argparse.Namespace) -> int:
+    """Review an open PR with a fresh context (review.of_pr), read-only on its branch, and comment the findings on
+    it. Nothing is committed or pushed."""
+    def body(ctx: HarnessContext) -> str | None:
+        cfg = ctx.cfg
+        if not git.remote_has_branch(ctx.target, ctx.branch, remote=cfg.remote, auth=ctx.auth):
+            raise SystemExit(f"{ctx.branch} is not on {cfg.remote}: nothing to review.")
+        print(git.sync_branch(ctx.target, ctx.branch, remote=cfg.remote, auth=ctx.auth))
+        ctx.cfg = replace(cfg, review_max_minutes=cfg.pr_review_max_minutes, review_max_calls=cfg.pr_review_max_calls,
+                          max_model_calls=cfg.pr_review_max_calls, max_burst_minutes=cfg.pr_review_max_minutes,
+                          max_cost_usd=0.0)
+        ctx.project = project.is_project(ctx.target)  # the brief carries the milestone, not a task document
+        try:
+            findings, by = review.of_pr(ctx, args.pr, args.by or "")
+        except ValueError as err:
+            raise SystemExit(str(err)) from err
+        finally:
+            ctx.project = False  # a review is no burst of the project's
+        print("\n" + findings)
+        ctx.terminal, ctx.said = "reviewed", {"review": findings, "by": by}
+        try:
+            ctx.said["comment"] = git.comment_pr(args.pr, review.pr_comment(by, findings), ctx.cfg)
+            print(f"\nCommented on {args.pr}: {ctx.said['comment']}")
+        except git.GitError as err:
+            print(f"! Could not comment on {args.pr}: {err}", file=sys.stderr)
+            ctx.said["reason"] = f"the comment could not be posted: {err}"
+        return None
 
     return _session(args, body)
 
@@ -1159,6 +1193,14 @@ def main(argv: list[str] | None = None) -> int:
                                       "it carries on from the document, after earlier work was merged.")
     run.add_argument("--setup", action="store_true", help=SETUP_HELP)
     run.set_defaults(func=cmd_run)
+
+    rv = sub.add_parser("review", help="Review a task's open PR with a fresh context, read-only, and comment the "
+                                       "findings on it: with --by a profile, or with engine=claude-code (--model).")
+    rv.add_argument("slug")
+    rv.add_argument("--pr", required=True, help="The PR's URL.")
+    rv.add_argument("--branch", help="The PR's branch (default: the branch prefix and the slug).")
+    rv.add_argument("--by", help="A profile ([agents.NAME]) to review with, rather than Claude Code.")
+    rv.set_defaults(func=cmd_review)
 
     chat = sub.add_parser("chat", help="Drive a task interactively, starting it if needed.")
     chat.add_argument("slug")
