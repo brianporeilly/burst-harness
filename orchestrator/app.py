@@ -283,6 +283,11 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         raw = await body(request) if await request.body() else {}
         return await run_in_threadpool(task_runner().resume, slug, str(raw.get("message") or ""))
 
+    @app.post("/api/tasks/{slug}/review", status_code=202)
+    async def review_task(slug: str, request: Request) -> dict[str, Any]:
+        raw = await body(request) if await request.body() else {}
+        return await run_in_threadpool(lambda: task_runner().review(slug, raw, user=request.state.user))
+
     @app.post("/api/tasks/{slug}/notify")
     async def notify_task(slug: str, request: Request) -> dict[str, Any]:
         raw = await body(request)

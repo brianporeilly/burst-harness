@@ -257,6 +257,21 @@ either engine as the lead. It's set in your config or the orchestrator's, not
 the repo's, because it decides where requests go. A local model costs nothing
 to review with.
 
+**A review of an open PR.** `harness review SLUG --pr URL` reviews a task's
+open PR with a fresh context, read-only, on its branch, and comments the
+findings on the PR from the driver. Nothing is committed or pushed. The
+reviewer is Claude Code (`--engine claude-code`, with `--model` or its default)
+or a profile (`--by NAME`). It gets the same brief as the review before a PR,
+about the PR. Its limits are `pr_review_max_minutes` (default 30) and
+`pr_review_max_calls` (default 60). The comment comes from the token's user,
+so the task's next burst reads it as review, to address or answer.
+`HARNESS_RESULT` has `state: "reviewed"` and `said` with `review`, `by` and
+`comment`. In the orchestrator, a task with an open PR has a **Review**
+control (`POST /api/tasks/SLUG/review`, with `{"model": ...}` or
+`{"profile": ...}`). The review runs in a fresh sandbox, shows as a burst of
+its own with its findings and a link to its comment, and leaves the task's
+state as it was.
+
 **Setup before the model.** `setup_command` names a command the harness runs in
 the repo before each burst's model starts, such as installing dependencies
 (`uv sync`, `npm ci`). It can go in the repo's `.harness.toml`. Its result and

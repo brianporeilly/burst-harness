@@ -86,7 +86,7 @@ from .launch import REPO, Launched, LaunchError, Subprocess, granted
 from .mcp_servers import McpServersError, McpServerStore
 from .profiles import ProfilesError, ProfileStore, check, names_given
 from .runners import RunnerStore, RunnersError
-from .task_settings import TaskSettings
+from .task_settings import MODEL_CHARS, TaskSettings
 from .servers import ModelServers, models_for, servers_for
 
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,47}")
@@ -401,6 +401,40 @@ class TaskRunner:
         except McpServersError as err:
             raise TasksError(str(err)) from err
 
+    def review(self, slug: str, raw: dict[str, Any], *, user: str = "") -> dict[str, Any]:
+        """Queue a review of the task's open PR (harness review): by Claude Code, with `model` or its own default,
+        or by `profile`. A fresh context, read-only on the PR's branch; its findings are a comment on the PR, which
+        the task's next burst reads. The task is as it was afterwards."""
+        profile = str(raw.get("profile") or "").strip()
+        model = str(raw.get("model") or "").strip()
+        if profile and model:
+            raise TasksError("Give a profile or a model, not both.")
+        if model and (len(model) > MODEL_CHARS or any(c.isspace() for c in model)):
+            raise TasksError("model is a model's id, such as claude-sonnet-5-5.")
+        if profile and profile not in (self.profiles.profiles() if self.profiles is not None else self.base.agents):
+            raise TasksError(f"No profile named {profile}.")
+        self.check_pr(slug, 0, auto=False)  # merged or closed since it was last looked at?
+        with self.lock:
+            record = self._read(slug)
+            if not record.get("repo") or not record.get("pr"):
+                raise TasksError(f"{slug} has no PR to review.")
+            if record["state"] not in IDLE or record["state"] == "merged" or record.get("pr_state") in ("merged",
+                                                                                                         "closed"):
+                raise TasksError(f"{slug}'s PR is not open to review"
+                                 + (f": the task is {record['state']}." if record["state"] not in IDLE else "."))
+            record.update(review={"profile": profile} if profile else {"model": model}, after=record["state"],
+                          state="queued", queued=time.time_ns(), message=None, restarts=0, by_merge=False,
+                          review_by=user)
+            self._write(record)
+        self.dispatch()
+        return _summary(self._read(slug))
+
+    @staticmethod
+    def _reviewed(record: dict[str, Any]) -> None:
+        """A review's end, however it ended: the task as it was before it."""
+        record["state"] = record.pop("after", None) or "pr"
+        record.pop("review", None), record.pop("review_by", None)
+
     def resume(self, slug: str, message: str = "", *, merged: bool = False) -> dict[str, Any]:
         """Queue another burst: with the user's reply, or to carry on from where it stopped. Once the task's
         PR is merged, the burst starts the task's next round. `merged`: started by auto_continue, not a person."""
@@ -591,7 +625,10 @@ class TaskRunner:
         with self.lock:
             record = self._read(slug)
             if record["state"] == "queued":
-                record["state"] = "cancelled"
+                if record.get("review"):
+                    self._reviewed(record)
+                else:
+                    record["state"] = "cancelled"
                 self._write(record)
                 return _summary(record)
             launched = self.running.get(slug)
@@ -646,7 +683,11 @@ class TaskRunner:
                     continue
                 if record.get("bursts"):
                     record["bursts"][-1].update(ended=_now(), state="interrupted")
-                if record.get("cancelling"):
+                if record.get("review") and (record.get("cancelling") or record.get("restarts", 0) >= RESTARTS):
+                    record["cancelling"] = False
+                    self._reviewed(record)
+                    done.append(f"{record['slug']}: its review was cut short by a restart")
+                elif record.get("cancelling"):
                     record.update(state="cancelled", cancelling=False)
                 elif record.get("restarts", 0) < RESTARTS:
                     record.update(state="queued", restarts=record.get("restarts", 0) + 1)
@@ -694,8 +735,10 @@ class TaskRunner:
         threading.Thread(target=loop, name="task-queue", daemon=True).start()
 
     def _argv(self, record: dict[str, Any]) -> list[str]:
-        argv = [sys.executable, "-m", "harness", "--engine", record["engine"], "--claim-ttl", str(self.claim_ttl)]
-        if record["engine"] == "claude-code":
+        review = record.get("review")
+        engine = ("strands" if review.get("profile") else "claude-code") if review else record["engine"]
+        argv = [sys.executable, "-m", "harness", "--engine", engine, "--claim-ttl", str(self.claim_ttl)]
+        if engine == "claude-code":
             # Nobody is there to approve a command, and a task is always in a sandbox: it may run anything
             # (the git rules still hold, as a hook).
             argv += ["--permission-mode", "bypassPermissions"]
@@ -725,6 +768,11 @@ class TaskRunner:
         argv += ["--repo-url", record["repo"], "--draft-pr" if record.get("draft") else "--no-draft-pr"]
         if record.get("base_branch"):
             argv += ["--base-branch", record["base_branch"]]
+        if review:  # in a fresh sandbox, not the one the task's last burst kept
+            return argv + [*(["--model", review["model"]] if review.get("model") else []),
+                           "review", record["slug"], "--pr", record["pr"],
+                           *(["--branch", record["branch"]] if record.get("branch") else []),
+                           *(["--by", review["profile"]] if review.get("profile") else [])]
         if record.get("sandbox"):
             argv += shlex.split(record["sandbox"])  # the sandbox the last burst kept, after --target to win
         argv += ["run", record["slug"]]
@@ -744,6 +792,8 @@ class TaskRunner:
         """The orchestrator's settings with the task's model on top: what its burst runs with, for what
         it is granted (a provider plugin's credentials go to the tasks that use it)."""
         cfg = replace(self.base, **self._chosen(record))
+        if (review := record.get("review")) and not review.get("profile"):
+            cfg = replace(cfg, engine="claude-code")  # Claude Code's review: no model server of the task's to wait for
         if record.get("runner"):
             cfg = replace(cfg, runners=self._runner_entries(), runner=record["runner"])  # its SSH key
         if self.profiles is not None:
@@ -757,6 +807,8 @@ class TaskRunner:
         return cfg
 
     def _chosen(self, record: dict[str, Any]) -> dict[str, Any]:
+        if record.get("review"):  # the reviewer's model (--model), not the task's
+            return {}
         return model_choice(self.base, record.get("provider") or "", record.get("base_url") or "",
                             record.get("model") or "", record.get("context_window") or 0, record.get("settings"))
 
@@ -785,7 +837,7 @@ class TaskRunner:
         """Start a burst of a queued task. Called with the lock held."""
         with open(self._output(record["slug"]), "ab") as output:
             offset = output.tell()  # where this burst's output starts: its HARNESS_SANDBOX line is after it
-            heading = f"\n=== burst {len(record['bursts']) + 1}, {_now()}"
+            heading = f"\n=== {'review' if record.get('review') else 'burst'} {len(record['bursts']) + 1}, {_now()}"
             output.write((heading + (f": {record['message']}" if record.get("message") else "") + " ===\n").encode())
             output.flush()
         # A question's run is found by its id, which is set here.
@@ -807,6 +859,8 @@ class TaskRunner:
             return
         record["bursts"].append({"started": _now(), "message": record.get("message"), "offset": offset,
                                  **({"by_merge": True} if record.get("by_merge") else {}),
+                                 **({"review": {**record["review"], "by": record.get("review_by") or ""}}
+                                    if record.get("review") else {}),
                                  **({"run": run[job.RUN_ID_ENV]} if run else {"branch": record.get("branch")})})
         record.update(state="running", boot=self.boot, **launched.record())
         self._write(record)
@@ -831,7 +885,20 @@ class TaskRunner:
                 record = self._read(slug)
             except TasksError:
                 record = None  # removed meanwhile
-            if record is not None:
+            if record is not None and record.get("review"):
+                said = result.get("said") if isinstance(result.get("said"), dict) else None
+                record["bursts"][-1].update(
+                    ended=_now(), exit=code, said=said, metrics=result.get("metrics"), config=result.get("config"),
+                    delegated=result.get("delegated"),
+                    state="cancelled" if record.get("cancelling") else
+                    "reviewed" if result.get("state") == "reviewed" else "failed")
+                self._reviewed(record)
+                record.update(cancelling=False)
+                record.pop("pid", None), record.pop("job", None)
+                self._write(record)
+                self._tell("reviewed", {**record, "exit": code})
+                record = None  # told: not as a burst of the task's
+            elif record is not None:
                 state = "cancelled" if record.get("cancelling") else _state(code, result)
                 record["bursts"][-1].update(ended=_now(), exit=code, state=state, delegated=result.get("delegated"),
                                             metrics=result.get("metrics"), config=result.get("config"),
