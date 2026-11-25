@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.66.0 (2026-11-25)
+
+### Features
+
+- **tasks**: The review loop: each PR reviewed, changes asked for fixed by the task itself, approval
+  left for a person to merge ([#83](https://github.com/brianporeilly/burst-harness/pull/83),
+  [`d444a80`](https://github.com/brianporeilly/burst-harness/commit/d444a8077c2a94056390b102593bef19d66ec84b))
+
+
 ## v0.65.0 (2026-11-25)
 
 ### Features
