@@ -44,7 +44,7 @@
   label { display: grid; gap: 3px; font-size: 13px; }
   label.inline { display: flex; gap: 6px; align-items: center; }
   [hidden] { display: none !important; }  /* or a rule like label.inline's shows what is hidden */
-  input[type=text], input[type=number], select, textarea {
+  input[type=text], input[type=number], input[type=password], input[type=url], select, textarea {
     font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 6px 8px; width: 100%; }
   textarea { font-family: var(--mono); font-size: 12px; min-height: 54px; }
@@ -75,6 +75,34 @@
   tr.clickable { cursor: pointer; } tr.clickable:hover td { background: var(--chip); }
   tr.selected td { background: var(--chip); }
   h3 { font-size: 13px; font-weight: 600; margin: 14px 0 6px; }
+  /* Settings: a menu of sections, one shown at a time */
+  main.settings { grid-template-columns: 190px minmax(0, 1fr); align-items: start; }
+  .settings-nav { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 2px; }
+  .settings-nav button { text-align: left; border: 0; background: none; padding: 7px 10px; border-radius: 6px; }
+  .settings-nav button:hover { background: var(--chip); }
+  .settings-nav button.active { background: var(--chip); color: var(--accent); font-weight: 600; }
+  .settings-body { min-width: 0; max-width: 1000px; }
+  .settings-body > section { padding: 16px 18px; }
+  .settings-body > section > h2 { font-size: 16px; }
+  .settings-body > section > p.muted:first-of-type { max-width: 75ch; }
+  .subpanel { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+  h3.subpanel { margin-top: 16px; }
+  .subpanel > h3:first-child { margin-top: 0; }
+  .setting { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; display: grid; gap: 8px;
+             margin-bottom: 12px; }
+  .setting > h3 { margin: 0; }
+  .setting p.muted { margin: 0; }
+  .table-wrap { overflow-x: auto; }
+  .table-wrap .chip { white-space: nowrap; }
+  .settings-body form, .settings-body .setting > label:not(.inline), .settings-body .setting > select { max-width: 640px; }
+  .cell-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .table-wrap td code { overflow-wrap: anywhere; }
+  @media (max-width: 860px) {
+    main.settings { grid-template-columns: 1fr; }
+    .settings-nav { position: static; flex-direction: row; overflow-x: auto; padding-bottom: 2px; }
+    .settings-nav button { white-space: nowrap; }
+    .settings-body > section { padding: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -186,17 +214,18 @@
     <p class="muted">Choose a job.</p>
   </section>
 </main>
-<main id="settings-view" class="hidden">
-  <section class="panel">
+<main id="settings-view" class="settings hidden">
+  <nav class="settings-nav" aria-label="Settings"><button type="button" data-section="credentials">Credentials</button><button type="button" data-section="profiles">Profiles</button><button type="button" data-section="tasks">Tasks</button><button type="button" data-section="mcp">MCP servers</button><button type="button" data-section="runners">Runners</button><button type="button" data-section="webhooks">Webhooks</button><button type="button" data-section="job-repos">Job repos</button><button type="button" data-section="tokens">API tokens</button></nav>
+  <div class="settings-body">
+  <section class="panel" data-section="credentials">
     <h2>Credentials</h2>
     <p class="muted">A credential set here is used instead of the orchestrator's environment variable of the same
       name, by sessions, tasks and jobs started from now on. Values are never shown again, here or by the API.
       Clearing one goes back to the environment's.</p>
-    <div id="credentials"><p class="muted">Loading...</p></div>
+    <div id="credentials" class="table-wrap"><p class="muted">Loading...</p></div>
     <p class="muted" id="slack-status"></p>
-  </section>
-  <section class="panel">
-    <h2>Set a credential</h2>
+      <div class="subpanel">
+    <h3>Set a credential</h3>
     <form id="credential-form" autocomplete="off">
       <label>Name <input type="text" name="name" required maxlength="64" list="credential-names"
         pattern="[A-Z][A-Z0-9_]{1,63}" placeholder="ANTHROPIC_API_KEY"></label>
@@ -204,118 +233,16 @@
       <label>Value <input type="password" name="value" required autocomplete="new-password"></label>
       <div class="row"><button class="primary" type="submit">Set</button><span class="error" id="credential-form-error"></span></div>
     </form>
+    </div>
   </section>
-  <section class="panel">
+  <section class="panel" data-section="profiles">
     <h2>Profiles</h2>
     <p class="muted">Other agents a task's lead may hand pieces of work to: a model and what it is good at, which
       is all the lead knows of it. Those set here are added to the orchestrator's configuration's, and replace one
       of the same name. Bursts that start from now on use them.</p>
-    <div id="profiles"><p class="muted">Loading...</p></div>
-    <h3>Delegates for new tasks</h3>
-    <p class="muted">Who a new task's lead may hand work to, unless the task picks its own.</p>
-    <div id="delegates-default" class="row" style="flex-wrap:wrap"></div>
-    <p class="muted" id="delegates-source"></p>
-    <div class="row"><button id="delegates-save">Save</button><button id="delegates-reset">Use the configuration's</button>
-      <span class="error" id="delegates-error"></span></div>
-  </section>
-  <section class="panel">
-    <h2>Tasks</h2>
-    <label class="inline"><input type="checkbox" id="claude-attribution"> Claude Code adds its attribution to what a
-      task commits and the PRs it opens</label>
-    <p class="muted">For Claude Code tasks' bursts that start from now on, new tasks and continued ones.</p>
-    <p class="muted" id="claude-attribution-source"></p>
-    <div class="row"><button id="claude-attribution-reset">Use the configuration's</button>
-      <span class="error" id="claude-attribution-error"></span></div>
-    <label>Claude Code compacts its conversation at <input id="claude-compact-window" type="number" min="0"
-      max="1000000" step="10000" style="width:9em"> tokens</label>
-    <p class="muted">Every model call re-reads the conversation so far: a smaller window costs less of your plan, and
-      the record in the repo carries what a burst needs. 0 for Claude Code's own (about 967K on a 1M model).</p>
-    <p class="muted" id="claude-compact-window-source"></p>
-    <div class="row"><button id="claude-compact-window-save">Save</button>
-      <button id="claude-compact-window-reset">Use the configuration's</button>
-      <span class="error" id="claude-compact-window-error"></span></div>
-    <label>A review before each PR, by <select id="review-with"></select></label>
-    <p class="muted">A profile reads the change, read-only, once the repo's check passes; its findings go back to
-      the task's agent once, then into the PR's body.</p>
-    <label>When the local model's server can't be reached, a burst runs on <select id="fallback-to"></select></label>
-    <label id="fallback-model-row">Claude Code's model <input id="fallback-model" placeholder="its own default"></label>
-    <p class="muted" id="review-fallback-source"></p>
-    <div class="row"><button id="review-fallback-save">Save</button>
-      <button id="review-fallback-reset">Use the configuration's</button>
-      <span class="error" id="review-fallback-error"></span></div>
-  </section>
-  <section class="panel">
-    <h2>MCP servers</h2>
-    <p class="muted">Servers a session's or task's agent can connect to, over HTTPS. New sessions and tasks get the
-      ones on by default, and their forms show every one here to pick from. A server's key goes in the Credentials:
-      NAME_API_KEY for a bearer token, or NAME_BASIC_AUTH as user:secret (not encoded) for a server that takes Basic
-      auth, such as an Atlassian personal API token. The gateway adds it. Those from the configuration (HARNESS_MCP)
-      can be turned off by default, or replaced by one of the same name.</p>
-    <div id="mcp-servers"><p class="muted">Loading...</p></div>
-    <form id="mcp-form" autocomplete="off">
-      <div class="grid2">
-        <label>Name <input type="text" name="name" required maxlength="40" pattern="[A-Za-z0-9_\-]+" placeholder="context7"></label>
-        <label>URL <input type="url" name="url" required maxlength="500" placeholder="https://mcp.example.com/mcp"></label>
-      </div>
-      <label class="inline"><input type="checkbox" name="default" checked> On by default for new sessions and tasks</label>
-      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="mcp-form-error"></span></div>
-    </form>
-  </section>
-  <section class="panel">
-    <h2>Runners</h2>
-    <p class="muted">Hosts of your own that tasks and jobs can run on, over SSH. A podman or docker runner runs each
-      one in a container on that host, with its gateway, as here; a plain host (ssh://) gets a directory per run,
-      with no gateway, so its network is open and the agent's credentials are written there for the run: give it a
-      machine of its own that you reset. New tasks run on the default runner unless they pick another; a job picks
-      one in its job.toml (<code>runner = "NAME"</code>). Those from the configuration (HARNESS_RUNNERS) can be
-      replaced by one of the same name.</p>
-    <div id="runners"><p class="muted">Loading...</p></div>
-    <form id="runner-form" autocomplete="off">
-      <div class="grid2">
-        <label>Name <input type="text" name="name" required maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}" placeholder="vm1"></label>
-        <label>URL <input type="text" name="url" required maxlength="500" placeholder="podman+ssh://agent@box.example.com/run/user/1000/podman/podman.sock"></label>
-      </div>
-      <p class="muted">ssh://[user@]host[:port][/path], podman+ssh://[user@]host/socket-path, docker+ssh://[user@]host,
-        or podman+unix:///socket-path and docker+unix:///socket-path for an engine on the orchestrator's machine.</p>
-      <label class="inline"><input type="checkbox" name="default"> New tasks run here unless they pick another</label>
-      <label>SSH private key (kept as a credential, NAME_SSH_KEY; leave empty to keep the one set)
-        <textarea name="key" spellcheck="false" style="min-height:80px" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
-      <label>Its host keys, as known_hosts lines (NAME_SSH_KNOWN_HOSTS; ssh-keyscan HOST gives them, to check)
-        <textarea name="known_hosts" spellcheck="false" style="min-height:60px" placeholder="box.example.com ssh-ed25519 AAAA..."></textarea></label>
-      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="runner-form-error"></span></div>
-    </form>
-  </section>
-  <section class="panel">
-    <h2>Webhooks</h2>
-    <p class="muted">A forge can tell the orchestrator when a PR is merged or a branch is pushed, so a task carries on
-      and a job repo syncs straight away rather than at the next look (every few minutes, which goes on anyway). In
-      the repo's settings, add a webhook to the address below, content type <code>application/json</code>, with the
-      secret set here as the credential named, for Pull request and Push events. What a delivery says is only a
-      hint: the orchestrator looks for itself.</p>
-    <div id="hooks"><p class="muted">Loading...</p></div>
-  </section>
-  <section class="panel">
-    <h2>Job repos</h2>
-    <p class="muted">Git repos of jobs, beside the orchestrator's job directories. Each is synced every few
-      minutes, or now with Sync, and its jobs are read from one commit at a time; a run records the commit it ran
-      from. Nothing is written back. A private repo is read with the credential named (JOBS_GIT_TOKEN unless you
-      name another): a token that can only read it. Those from the configuration (ORCHESTRATOR_JOB_REPOS) are
-      changed there.</p>
-    <div id="job-sources"><p class="muted">Loading...</p></div>
-    <form id="source-form" autocomplete="off">
-      <div class="grid2">
-        <label>Name <input type="text" name="name" required maxlength="40" pattern="[a-z0-9][a-z0-9\-]{0,39}" placeholder="jobs"></label>
-        <label>Repo URL <input type="text" name="url" required maxlength="500" placeholder="https://github.com/you/jobs.git"></label>
-        <label>Branch <input type="text" name="branch" maxlength="200" placeholder="its default branch"></label>
-        <label>Folder <input type="text" name="path" maxlength="200" placeholder="the repo's top"></label>
-        <label>Credential <input type="text" name="token" maxlength="64" pattern="[A-Z][A-Z0-9_]{1,63}" placeholder="JOBS_GIT_TOKEN"></label>
-      </div>
-      <div class="row"><button class="primary" type="submit">Save and sync</button><span class="error" id="source-form-error"></span>
-        <span class="muted" id="source-form-note"></span></div>
-    </form>
-  </section>
-  <section class="panel">
-    <h2>Add or change a profile</h2>
+    <div id="profiles" class="table-wrap"><p class="muted">Loading...</p></div>
+    <div class="subpanel">
+    <h3>Add or change a profile</h3>
     <form id="profile-form" autocomplete="off">
       <div class="grid2">
         <label>Name <input type="text" name="name" required maxlength="32" pattern="[a-z0-9][a-z0-9_\-]{0,31}" placeholder="coder"></label>
@@ -336,22 +263,140 @@
       <label class="inline"><input type="checkbox" name="read_only"> Read-only: it looks and runs commands, but changes no files</label>
       <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="profile-form-error"></span></div>
     </form>
+    </div>
+    <div class="subpanel">
+    <h3>Delegates for new tasks</h3>
+    <p class="muted">Who a new task's lead may hand work to, unless the task picks its own.</p>
+    <div id="delegates-default" class="row" style="flex-wrap:wrap"></div>
+    <p class="muted" id="delegates-source"></p>
+    <div class="row"><button id="delegates-save">Save</button><button id="delegates-reset">Use the configuration's</button>
+      <span class="error" id="delegates-error"></span></div>
+    </div>
   </section>
-  <section class="panel">
+  <section class="panel" data-section="tasks">
+    <h2>Tasks</h2>
+    <div class="setting">
+    <h3>Attribution</h3>
+    <label class="inline"><input type="checkbox" id="claude-attribution"> Claude Code adds its attribution to what a
+      task commits and the PRs it opens</label>
+    <p class="muted">For Claude Code tasks' bursts that start from now on, new tasks and continued ones.</p>
+    <p class="muted" id="claude-attribution-source"></p>
+    <div class="row"><button id="claude-attribution-reset">Use the configuration's</button>
+      <span class="error" id="claude-attribution-error"></span></div>
+    </div>
+    <div class="setting">
+    <h3>Compaction</h3>
+    <label class="inline">Claude Code compacts its conversation at <input id="claude-compact-window" type="number" min="0"
+      max="1000000" step="10000" style="width:9em"> tokens</label>
+    <p class="muted">Every model call re-reads the conversation so far: a smaller window costs less of your plan, and
+      the record in the repo carries what a burst needs. 0 for Claude Code's own (about 967K on a 1M model).</p>
+    <p class="muted" id="claude-compact-window-source"></p>
+    <div class="row"><button id="claude-compact-window-save">Save</button>
+      <button id="claude-compact-window-reset">Use the configuration's</button>
+      <span class="error" id="claude-compact-window-error"></span></div>
+    </div>
+    <div class="setting">
+    <h3>Review and fallback</h3>
+    <label>A review before each PR, by <select id="review-with"></select></label>
+    <p class="muted">A profile reads the change, read-only, once the repo's check passes; its findings go back to
+      the task's agent once, then into the PR's body.</p>
+    <label>When the local model's server can't be reached, a burst runs on <select id="fallback-to"></select></label>
+    <label id="fallback-model-row">Claude Code's model <input id="fallback-model" placeholder="its own default"></label>
+    <p class="muted" id="review-fallback-source"></p>
+    <div class="row"><button id="review-fallback-save">Save</button>
+      <button id="review-fallback-reset">Use the configuration's</button>
+      <span class="error" id="review-fallback-error"></span></div>
+    </div>
+  </section>
+  <section class="panel" data-section="mcp">
+    <h2>MCP servers</h2>
+    <p class="muted">Servers a session's or task's agent can connect to, over HTTPS. New sessions and tasks get the
+      ones on by default, and their forms show every one here to pick from. A server's key goes in the Credentials:
+      NAME_API_KEY for a bearer token, or NAME_BASIC_AUTH as user:secret (not encoded) for a server that takes Basic
+      auth, such as an Atlassian personal API token. The gateway adds it. Those from the configuration (HARNESS_MCP)
+      can be turned off by default, or replaced by one of the same name.</p>
+    <div id="mcp-servers" class="table-wrap"><p class="muted">Loading...</p></div>
+    <h3 class="subpanel">Add or change a server</h3>
+    <form id="mcp-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="40" pattern="[A-Za-z0-9_\-]+" placeholder="context7"></label>
+        <label>URL <input type="url" name="url" required maxlength="500" placeholder="https://mcp.example.com/mcp"></label>
+      </div>
+      <label class="inline"><input type="checkbox" name="default" checked> On by default for new sessions and tasks</label>
+      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="mcp-form-error"></span></div>
+    </form>
+  </section>
+  <section class="panel" data-section="runners">
+    <h2>Runners</h2>
+    <p class="muted">Hosts of your own that tasks and jobs can run on, over SSH. A podman or docker runner runs each
+      one in a container on that host, with its gateway, as here; a plain host (ssh://) gets a directory per run,
+      with no gateway, so its network is open and the agent's credentials are written there for the run: give it a
+      machine of its own that you reset. New tasks run on the default runner unless they pick another; a job picks
+      one in its job.toml (<code>runner = "NAME"</code>). Those from the configuration (HARNESS_RUNNERS) can be
+      replaced by one of the same name.</p>
+    <div id="runners" class="table-wrap"><p class="muted">Loading...</p></div>
+    <h3 class="subpanel">Add or change a runner</h3>
+    <form id="runner-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="32" pattern="[a-z][a-z0-9_\-]{0,31}" placeholder="vm1"></label>
+        <label>URL <input type="text" name="url" required maxlength="500" placeholder="podman+ssh://agent@box.example.com/run/user/1000/podman/podman.sock"></label>
+      </div>
+      <p class="muted">ssh://[user@]host[:port][/path], podman+ssh://[user@]host/socket-path, docker+ssh://[user@]host,
+        or podman+unix:///socket-path and docker+unix:///socket-path for an engine on the orchestrator's machine.</p>
+      <label class="inline"><input type="checkbox" name="default"> New tasks run here unless they pick another</label>
+      <label>SSH private key (kept as a credential, NAME_SSH_KEY; leave empty to keep the one set)
+        <textarea name="key" spellcheck="false" style="min-height:80px" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea></label>
+      <label>Its host keys, as known_hosts lines (NAME_SSH_KNOWN_HOSTS; ssh-keyscan HOST gives them, to check)
+        <textarea name="known_hosts" spellcheck="false" style="min-height:60px" placeholder="box.example.com ssh-ed25519 AAAA..."></textarea></label>
+      <div class="row"><button class="primary" type="submit">Save</button><span class="error" id="runner-form-error"></span></div>
+    </form>
+  </section>
+  <section class="panel" data-section="webhooks">
+    <h2>Webhooks</h2>
+    <p class="muted">A forge can tell the orchestrator when a PR is merged or a branch is pushed, so a task carries on
+      and a job repo syncs straight away rather than at the next look (every few minutes, which goes on anyway). In
+      the repo's settings, add a webhook to the address below, content type <code>application/json</code>, with the
+      secret set here as the credential named, for Pull request and Push events. What a delivery says is only a
+      hint: the orchestrator looks for itself.</p>
+    <div id="hooks" class="table-wrap"><p class="muted">Loading...</p></div>
+  </section>
+  <section class="panel" data-section="job-repos">
+    <h2>Job repos</h2>
+    <p class="muted">Git repos of jobs, beside the orchestrator's job directories. Each is synced every few
+      minutes, or now with Sync, and its jobs are read from one commit at a time; a run records the commit it ran
+      from. Nothing is written back. A private repo is read with the credential named (JOBS_GIT_TOKEN unless you
+      name another): a token that can only read it. Those from the configuration (ORCHESTRATOR_JOB_REPOS) are
+      changed there.</p>
+    <div id="job-sources" class="table-wrap"><p class="muted">Loading...</p></div>
+    <h3 class="subpanel">Add or change a job repo</h3>
+    <form id="source-form" autocomplete="off">
+      <div class="grid2">
+        <label>Name <input type="text" name="name" required maxlength="40" pattern="[a-z0-9][a-z0-9\-]{0,39}" placeholder="jobs"></label>
+        <label>Repo URL <input type="text" name="url" required maxlength="500" placeholder="https://github.com/you/jobs.git"></label>
+        <label>Branch <input type="text" name="branch" maxlength="200" placeholder="its default branch"></label>
+        <label>Folder <input type="text" name="path" maxlength="200" placeholder="the repo's top"></label>
+        <label>Credential <input type="text" name="token" maxlength="64" pattern="[A-Z][A-Z0-9_]{1,63}" placeholder="JOBS_GIT_TOKEN"></label>
+      </div>
+      <div class="row"><button class="primary" type="submit">Save and sync</button><span class="error" id="source-form-error"></span>
+        <span class="muted" id="source-form-note"></span></div>
+    </form>
+  </section>
+  <section class="panel" data-section="tokens">
     <h2>API tokens</h2>
     <p class="muted">A token lets a script, another machine or a bot use the Tasks API, and nothing else:
       <code>curl -H "Authorization: Bearer orch_..." .../api/tasks</code>. Tasks it starts say they were made by
       you, via the token's name.</p>
-    <div id="tokens"><p class="muted">Loading...</p></div>
-  </section>
-  <section class="panel">
-    <h2>New token</h2>
+    <div id="tokens" class="table-wrap"><p class="muted">Loading...</p></div>
+      <div class="subpanel">
+    <h3>New token</h3>
     <form id="token-form" autocomplete="off">
       <label>Name (what will use it) <input type="text" name="name" required maxlength="48" placeholder="laptop script"></label>
       <div class="row"><button class="primary" type="submit">Make token</button><span class="error" id="token-form-error"></span></div>
     </form>
     <div id="token-made"></div>
+    </div>
   </section>
+  </div>
 </main>
 <main id="sessions-view">
   <section class="panel">
@@ -1467,12 +1512,17 @@ async function refreshCredentials() {
       el("td", {}, el("span", { class: "chip " + (c.source ? "ok" : "") }, SOURCES[c.source]),
         c.environment_too ? el("div", { class: "muted" }, "over the environment's") : ""),
       el("td", {}, c.updated ? when(c.updated) + (c.updated_by ? ` by ${c.updated_by}` : "") : ""),
-      el("td", {}, c.source === "stored" ? el("button", { class: "danger", onclick: async () => {
+      el("td", {}, el("div", { class: "cell-actions" }, el("button", { class: "small", onclick: () => {
+        const form = document.getElementById("credential-form");
+        form.name.value = c.name;
+        form.value.focus();
+        form.scrollIntoView({ behavior: "smooth", block: "center" });
+      } }, c.source ? "Replace" : "Set"), c.source === "stored" ? el("button", { class: "small danger", onclick: async () => {
         if (!confirm(`Clear ${c.name}? ${c.environment_too ? "The environment's value is used again."
           : "It will have no value."}`)) return;
         try { await api(`/api/settings/credentials/${c.name}`, { method: "DELETE" }); } catch (err) { alert(`Clear: ${err.message}`); }
         refreshCredentials(); loadInfo().catch(() => {});
-      } }, "Clear") : "")))));
+      } }, "Clear") : ""))))));
 }
 
 document.getElementById("credential-form").onsubmit = async (event) => {
@@ -1950,6 +2000,28 @@ document.getElementById("token-form").onsubmit = async (event) => {
     refreshTokens();
   } catch (err) { error.textContent = err.message; }
 };
+
+// Settings: one section at a time, the one last shown.
+let settingsSection = "credentials";
+try { settingsSection = localStorage.getItem("settings-section") || settingsSection; } catch {}
+function showSettingsSection(name) {
+  const sections = [...document.querySelectorAll(".settings-body > section")];
+  if (!sections.some((section) => section.dataset.section === name)) name = sections[0].dataset.section;
+  settingsSection = name;
+  for (const section of sections) section.classList.toggle("hidden", section.dataset.section !== name);
+  for (const button of document.querySelectorAll(".settings-nav button")) {
+    button.classList.toggle("active", button.dataset.section === name);
+    button.setAttribute("aria-current", button.dataset.section === name ? "page" : "false");
+  }
+  try { localStorage.setItem("settings-section", name); } catch {}
+}
+for (const button of document.querySelectorAll(".settings-nav button")) {
+  button.onclick = () => {
+    showSettingsSection(button.dataset.section);
+    button.scrollIntoView({ block: "nearest", inline: "nearest" });  // the menu scrolls sideways on a phone
+  };
+}
+showSettingsSection(settingsSection);
 
 const views = { tasks: refreshTasks, sessions: () => refresh(), jobs: refreshJobs,
   settings: () => { refreshCredentials(); refreshMcp(); refreshRunners(); refreshHooks(); refreshSources(); refreshProfiles(); refreshTaskSettings(); refreshTokens(); } };
