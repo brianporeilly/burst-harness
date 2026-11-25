@@ -320,9 +320,11 @@ class SlackBot:
             said = burst.get("said") or {}
             if burst.get("state") != "reviewed":
                 return f":x: The review by {_reviewer(burst.get('review') or {})} failed."
-            return (f":mag: {said.get('by') or 'The reviewer'} reviewed the PR"
-                    + (f": {said['comment']}" if said.get("comment") else f", but {said.get('reason') or 'it gave no comment'}")
-                    + ".")
+            verdict = {"approve": " and approved it", "request_changes": " and asked for changes"}.get(
+                said.get("verdict") or "", "")
+            link = said.get("posted") or said.get("comment")
+            return (f":mag: {said.get('by') or 'The reviewer'} reviewed the PR{verdict}"
+                    + (f": {link}" if link else f", but {said.get('reason') or 'it gave no comment'}") + ".")
         if event == "started":
             if not record.get("repo"):
                 return ":hourglass_flowing_sand: Working on " + ("your follow-up." if record.get("message") else "it.")

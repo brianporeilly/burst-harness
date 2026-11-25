@@ -856,7 +856,9 @@ class TaskRunner:
             launched = self.launcher.start(
                 record["slug"], len(record["bursts"]) + 1, self._argv(record),
                 credentials.for_run([], {"PYTHONUNBUFFERED": "1", **self._model_env(record), **run}),
-                granted(credentials.for_task(self._config(record))), self._output(record["slug"]))
+                granted(credentials.for_task(self._config(record))
+                        + (credentials.reviewer_tokens(self._config(record)) if record.get("review") else [])),
+                self._output(record["slug"]))
         except LaunchError as err:
             with open(self._output(record["slug"]), "ab") as output:
                 output.write(f"! could not start the burst: {err}\n".encode())

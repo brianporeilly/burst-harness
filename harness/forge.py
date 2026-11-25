@@ -6,7 +6,11 @@ GitHub (github.com) is built in: its token is HARNESS_GIT_TOKEN, GH_TOKEN or GIT
     forges = ["forgejo=https://forgejo.example.com"]
 
 Its token is the credential <NAME>_TOKEN (FORGEJO_TOKEN), and its PRs go through its API from the driver: POST
-/api/v1/repos/OWNER/REPO/pulls to open one, GET .../pulls/N for its state. Forgejo has no draft PRs; a draft's
+/api/v1/repos/OWNER/REPO/pulls to open one, GET .../pulls/N for its state.
+
+A review of a PR (`harness review`) is posted as another user, the forge's reviewer: <NAME>_REVIEWER_TOKEN
+(FORGEJO_REVIEWER_TOKEN; GitHub's is GITHUB_REVIEWER_TOKEN). A forge doesn't let a PR's author approve it, so
+the reviewer is what can approve or request changes; with no reviewer token, a review is a comment. Forgejo has no draft PRs; a draft's
 title starts "WIP: ", which Forgejo shows as one.
 
 A token goes only to its own forge's host: a repo on a host that is neither github.com nor listed gets none,
@@ -56,6 +60,14 @@ class Forge:
     def token(self) -> str:
         return credentials.first(self.token_vars)
 
+    @property
+    def reviewer_vars(self) -> tuple[str, ...]:
+        """The credential holding its reviewer's token: another user than the one opening PRs."""
+        return (reviewer_var(self.name),)
+
+    def reviewer_token(self) -> str:
+        return credentials.first(self.reviewer_vars)
+
 
 GITHUB = Forge("github", "github", "github.com", "https://github.com")
 
@@ -63,6 +75,11 @@ GITHUB = Forge("github", "github", "github.com", "https://github.com")
 def token_var(name: str) -> str:
     """FORGEJO_TOKEN for a forge named forgejo."""
     return re.sub(r"[^A-Z0-9_]", "_", name.upper()) + "_TOKEN"
+
+
+def reviewer_var(name: str) -> str:
+    """FORGEJO_REVIEWER_TOKEN for a forge named forgejo, GITHUB_REVIEWER_TOKEN for GitHub."""
+    return token_var(name).removesuffix("_TOKEN") + "_REVIEWER_TOKEN"
 
 
 def forges(cfg: HarnessConfig) -> list[Forge]:
@@ -114,18 +131,21 @@ def basic_credential(secret: str) -> str:
 def all_tokens(cfg: HarnessConfig | None) -> list[str]:
     """Every forge's token that has a value, for keeping them out of what is shown."""
     found = forges(cfg) if cfg is not None else [GITHUB]
-    return [secret for forge in found if (secret := forge.token())]
+    return [secret for forge in found for secret in (forge.token(), forge.reviewer_token()) if secret]
 
 
 # --- Forgejo's API --------------------------------------------------------------
 
 
-def _api(forge: Forge, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
+def _api(forge: Forge, method: str, path: str, body: dict | None = None, *,
+         token: str | None = None) -> tuple[int, object]:
+    """Forgejo's API, as the forge's own user, or as `token`'s."""
+    secret = forge.token() if token is None else token
     request = urllib.request.Request(
         f"{forge.url}/api/v1{path}", method=method,
         data=json.dumps(body).encode() if body is not None else None,
         headers={"Accept": "application/json", "Content-Type": "application/json", "User-Agent": "burst-harness",
-                 **({"Authorization": f"token {secret}"} if (secret := forge.token()) else {})})
+                 **({"Authorization": f"token {secret}"} if secret else {})})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             return response.status, json.loads(response.read() or b"null")
@@ -212,6 +232,25 @@ def forgejo_comment(forge: Forge, pr_url: str, body: str) -> str:
     if status in (200, 201) and isinstance(said, dict):
         return str(said.get("html_url") or pr_url)
     raise ForgeError(f"{forge.name} refused the comment ({status}): {_message(said) or 'no reason given'}")
+
+
+# A review's verdict as Forgejo's API names it.
+FORGEJO_EVENTS = {"approve": "APPROVED", "request_changes": "REQUEST_CHANGES", "comment": "COMMENT"}
+
+
+def forgejo_review(forge: Forge, pr_url: str, verdict: str, body: str) -> str:
+    """Post a review on a Forgejo PR as the forge's reviewer (reviewer_token): `verdict` approve,
+    request_changes or comment. The review's URL."""
+    match = FORGEJO_PR.fullmatch(pr_url)
+    if not match:
+        raise ForgeError(f"{pr_url!r} is not a {forge.name} PR's URL.")
+    if not (secret := forge.reviewer_token()):
+        raise ForgeError(f"{forge.name} has no reviewer: set {forge.reviewer_vars[0]}.")
+    status, said = _api(forge, "POST", f"/repos/{match['owner']}/{match['repo']}/pulls/{match['number']}/reviews",
+                        {"event": FORGEJO_EVENTS[verdict], "body": body}, token=secret)
+    if status in (200, 201) and isinstance(said, dict):
+        return str(said.get("html_url") or pr_url)
+    raise ForgeError(f"{forge.name} refused the review ({status}): {_message(said) or 'no reason given'}")
 
 
 def forgejo_pr_state(forge: Forge, pr_url: str) -> str:

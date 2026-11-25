@@ -12,6 +12,8 @@ a Strands agent in the same sandbox.
 
 from __future__ import annotations
 
+import re
+import sys
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -133,30 +135,68 @@ def run(ctx: Any, name: str, *, brief: str = "") -> str:
 
 
 # A review of an open PR, asked for from the orchestrator (`harness review`): a reviewer of your choosing, with a fresh
-# context, read-only on the PR's branch, its findings a comment on the PR. A comment from the token's user, so the
-# task's next burst reads it as review (cli._review_feedback), to address or answer.
+# context, read-only on the PR's branch. It ends with a verdict; posted as a review by the forge's reviewer (forge.py)
+# when there is one, so it can approve or request changes, else as a comment. Either way the task's next burst reads
+# it as review (cli._review_feedback), to address or answer.
 PR_HEAD = ("Review pull request {pr}: the change on this branch, against {base}. You are read-only: change "
            "nothing, commit nothing.")
-PR_SYSTEM = ("You are reviewing a pull request another agent wrote, with a fresh view of it. You are read-only: "
-             "don't edit files, commit or push. Your last reply is posted on the PR as the review, so make it the "
-             "findings alone, in Markdown.")
+PR_SYSTEM = """You are reviewing a pull request another agent wrote, with a fresh view of it. You are read-only: \
+don't edit files, commit or push. Your last reply is posted on the PR as the review, so make it the findings alone, \
+in Markdown, most serious first, each marked **blocking** or **nit**.
+
+A finding is blocking when the change: leaves an Accept item of the current milestone unmet, or ticked without a \
+test or check that backs it; has a bug; breaks a constraint or rule of the plan (PLAN.md, AGENTS.md); or does work \
+that belongs to a later milestone. Anything else (naming, style, a better way that isn't needed) is a nit: say it, \
+but it doesn't hold the PR up.
+
+End the reply with a line of its own: `VERDICT: APPROVE` when nothing is blocking, `VERDICT: REQUEST_CHANGES` \
+when something is."""
+PR_EARLIER = """
+
+Earlier on this PR, oldest first: your own earlier reviews are among them, and the author's answers. Check first \
+whether each blocking point raised before was addressed, and say so. Where the author declined one with a reason, \
+weigh the reason rather than repeating the point. Don't raise new nits on code that hasn't changed since.
+
+<earlier>
+{earlier}
+</earlier>"""
+EARLIER_CHARS = 20000
 PR_COMMENT = """**Review by {by}**, asked for from the orchestrator: a fresh context, read-only on this PR's branch.
 
 {findings}"""
+VERDICT_LINE = re.compile(r"^[*_`>\s]*VERDICT\s*:?[*_`\s]*(APPROVE|REQUEST[_ ]CHANGES)\b[*_`.\s]*$", re.IGNORECASE)
+VERDICTS = ("approve", "request_changes", "comment")
 
 
-def pr_brief(ctx: Any, pr: str) -> str:
-    """The brief for a review of an open PR: _brief's, about the PR rather than a change before one."""
+def pr_brief(ctx: Any, pr: str, earlier: list[dict[str, str]] | None = None) -> str:
+    """The brief for a review of an open PR: _brief's, about the PR rather than a change before one, with what
+    was said on the PR before (git.feedback's), newest kept when there is too much."""
     first, _, rest = _brief(ctx).partition("\n")
-    return PR_HEAD.format(pr=pr, base=f"{ctx.cfg.remote}/{ctx.cfg.base_branch}") + "\n" + rest
+    brief = PR_HEAD.format(pr=pr, base=f"{ctx.cfg.remote}/{ctx.cfg.base_branch}") + "\n" + rest
+    lines: list[str] = []
+    size = 0
+    for item in reversed(earlier or []):
+        line = (f"- {item.get('who') or 'someone'}" + (f" on {item['where']}" if item.get("where") else "")
+                + f" ({item.get('when') or 'some time'}): {item.get('text', '').strip()}")
+        if size + len(line) > EARLIER_CHARS:
+            lines.append("- (earlier ones left out)")
+            break
+        lines.append(line)
+        size += len(line) + 1
+    return brief + (PR_EARLIER.format(earlier="\n".join(reversed(lines))) if lines else "")
 
 
 def of_pr(ctx: Any, pr: str, by: str = "") -> tuple[str, str]:
     """Review an open PR: profile `by` (read-only, as a delegate), or with none, the run's Claude Code. Its
     findings, and who gave them."""
-    brief = pr_brief(ctx, pr)
+    try:
+        earlier = git.feedback(pr, ctx.cfg)
+    except git.GitError as err:
+        print(f"! Could not read what was said on {pr} before: {err}", file=sys.stderr)
+        earlier = []
+    brief = pr_brief(ctx, pr, earlier)
     if by:
-        return run(ctx, by, brief=brief), by
+        return run(ctx, by, brief=brief + "\n\n" + PR_SYSTEM), by
     from .claude_code import ClaudeCodeEngine
 
     if ctx.cfg.engine != "claude-code":
@@ -174,10 +214,29 @@ def of_pr(ctx: Any, pr: str, by: str = "") -> tuple[str, str]:
     return findings, name
 
 
-def pr_comment(by: str, findings: str) -> str:
-    """The comment a review leaves on its PR."""
+def verdict(findings: str) -> tuple[str, str]:
+    """A review's verdict (approve, request_changes, or comment when it gave none) and its findings without the
+    verdict line. NO FINDINGS approves."""
+    text = findings.strip()
+    if text.upper().startswith(NOTHING):
+        return "approve", "No findings: nothing worth changing."
+    lines = text.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if not lines[i].strip():
+            continue
+        if match := VERDICT_LINE.match(lines[i]):
+            said = match[1].upper().replace(" ", "_")
+            return ("approve" if said == "APPROVE" else "request_changes"), "\n".join(lines[:i]).strip()
+        break
+    return "comment", text
+
+
+def pr_comment(by: str, findings: str, said: str = "comment") -> str:
+    """What a review leaves on its PR: the findings, and its verdict when it gave one."""
     text = "No findings: nothing worth changing." if findings.strip().upper().startswith(NOTHING) else findings
-    return PR_COMMENT.format(by=by, findings=text.strip() or "(It gave no report.)")
+    body = PR_COMMENT.format(by=by, findings=text.strip() or "(It gave no report.)")
+    return body + {"approve": "\n\n**Verdict:** approve.", "request_changes": "\n\n**Verdict:** changes requested.",
+                   "comment": ""}[said]
 
 
 # Told this close to a limit (model calls, or minutes) to stop and report.

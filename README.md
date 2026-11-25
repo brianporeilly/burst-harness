@@ -258,18 +258,31 @@ the repo's, because it decides where requests go. A local model costs nothing
 to review with.
 
 **A review of an open PR.** `harness review SLUG --pr URL` reviews a task's
-open PR with a fresh context, read-only, on its branch, and comments the
-findings on the PR from the driver. Nothing is committed or pushed. The
-reviewer is Claude Code (`--engine claude-code`, with `--model` or its default)
-or a profile (`--by NAME`). It gets the same brief as the review before a PR,
-about the PR. Its limits are `pr_review_max_minutes` (default 30) and
-`pr_review_max_calls` (default 60). The comment comes from the token's user,
-so the task's next burst reads it as review, to address or answer.
-`HARNESS_RESULT` has `state: "reviewed"` and `said` with `review`, `by` and
+open PR with a fresh context, read-only, on its branch, and posts it on the PR
+from the driver. Nothing is committed or pushed. The reviewer is Claude Code
+(`--engine claude-code`, with `--model` or its default) or a profile
+(`--by NAME`). It gets the same brief as the review before a PR, about the PR,
+plus what was said on the PR before (its own earlier reviews and the author's
+answers, to check first). Each finding is **blocking** (an Accept item unmet or
+untested, a bug, a broken rule of the plan, work from a later milestone) or a
+**nit**, and the review ends with a verdict: approve when nothing is blocking,
+request changes when something is. Its limits are `pr_review_max_minutes`
+(default 30) and `pr_review_max_calls` (default 60).
+
+It's posted as a review by the forge's **reviewer**, another user than the one
+opening PRs (a forge doesn't let a PR's author approve it):
+`<NAME>_REVIEWER_TOKEN` (`FORGEJO_REVIEWER_TOKEN`; GitHub's is
+`GITHUB_REVIEWER_TOKEN`), granted to review runs alone. With branch protection
+asking for an approval from that user, its approval is what lets the PR merge.
+With no reviewer token, or if the forge refuses the review, it's a comment from
+the token's user, its verdict written in it. Either way the task's next burst
+reads it as review, to address or answer. `HARNESS_RESULT` has
+`state: "reviewed"` and `said` with `review`, `by`, `verdict` (`approve`,
+`request_changes`, or `comment` when it gave none), and `posted` (the review) or
 `comment`. In the orchestrator, a task with an open PR has a **Review**
 control (`POST /api/tasks/SLUG/review`, with `{"model": ...}` or
 `{"profile": ...}`). The review runs in a fresh sandbox, shows as a burst of
-its own with its findings and a link to its comment, and leaves the task's
+its own with its findings, verdict and a link to the review, and leaves the task's
 state as it was.
 
 **Setup before the model.** `setup_command` names a command the harness runs in
@@ -730,7 +743,8 @@ GitHub, for tasks, sessions and jobs alike:
   starts `WIP: `, which Forgejo shows as work in progress.
 - **The orchestrator** takes the repo's full URL in the task form and the API
   (`owner/repo` alone still means GitHub). Its Settings list `FORGEJO_TOKEN`
-  among the credentials to set. A job repo on the forge (Settings, Job repos)
+  among the credentials to set, and `FORGEJO_REVIEWER_TOKEN` for reviews of
+  PRs (above): a second user's, with read access to the repo. A job repo on the forge (Settings, Job repos)
   names the credential it's read with, which may be `FORGEJO_TOKEN` or a
   read-only token of its own.
 

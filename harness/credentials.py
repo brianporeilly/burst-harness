@@ -134,6 +134,13 @@ def forge_tokens(cfg: HarnessConfig) -> list[str]:
     return [var for found in forge.forges(cfg) if found.kind != "github" for var in found.token_vars]
 
 
+def reviewer_tokens(cfg: HarnessConfig) -> list[str]:
+    """Every forge's reviewer token (forge.py): granted to a run that reviews a PR, and to no other."""
+    from . import forge
+
+    return [var for found in forge.forges(cfg) for var in found.reviewer_vars]
+
+
 def for_job(cfg: HarnessConfig, secrets: Iterable[str], outputs: Iterable[str]) -> list[str]:
     """What a job's run is granted: the model's keys, the gateway's token, its MCP servers' keys,
     its runner's SSH key and known_hosts, the secrets its job.toml names, and Slack's if it posts there. Not the git token: a job that
