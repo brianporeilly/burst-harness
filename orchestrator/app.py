@@ -379,6 +379,7 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         base = getattr(backend, "base", None)
         return [*(name for name in credentials.GIT if os.environ.get(name)),
                 *(credentials.forge_tokens(base) if base else []),
+                *(credentials.reviewer_tokens(base) if base else []),
                 *(var for name in (mcp.servers(base) if base else {}) for var in mcp.key_vars(name)),
                 *(var for name in (mcp_servers.servers() if mcp_servers else {}) for var in mcp.key_vars(name)),
                 *(jobs.secret_names() if jobs else []),

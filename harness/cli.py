@@ -738,8 +738,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_review(args: argparse.Namespace) -> int:
-    """Review an open PR with a fresh context (review.of_pr), read-only on its branch, and comment the findings on
-    it. Nothing is committed or pushed."""
+    """Review an open PR with a fresh context (review.of_pr), read-only on its branch, and post it: as a review by
+    the forge's reviewer with its verdict, or as a comment when there is none. Nothing is committed or pushed."""
     def body(ctx: HarnessContext) -> str | None:
         cfg = ctx.cfg
         if not git.remote_has_branch(ctx.target, ctx.branch, remote=cfg.remote, auth=ctx.auth):
@@ -756,9 +756,19 @@ def cmd_review(args: argparse.Namespace) -> int:
         finally:
             ctx.project = False  # a review is no burst of the project's
         print("\n" + findings)
-        ctx.terminal, ctx.said = "reviewed", {"review": findings, "by": by}
+        said, text = review.verdict(findings)
+        ctx.terminal, ctx.said = "reviewed", {"review": text, "by": by, "verdict": said}
+        body = review.pr_comment(by, text, said)
+        try:  # as the forge's reviewer, who can approve or request changes
+            if posted := git.review_pr(args.pr, said, body, ctx.cfg):
+                ctx.said["posted"] = posted
+                print(f"\nReviewed {args.pr} ({said.replace('_', ' ')}): {posted}")
+                return None
+            print("The forge has no reviewer token: the review is a comment, and approves nothing.")
+        except git.GitError as err:
+            print(f"! Could not post the review as the reviewer, so it is a comment: {err}", file=sys.stderr)
         try:
-            ctx.said["comment"] = git.comment_pr(args.pr, review.pr_comment(by, findings), ctx.cfg)
+            ctx.said["comment"] = git.comment_pr(args.pr, body, ctx.cfg)
             print(f"\nCommented on {args.pr}: {ctx.said['comment']}")
         except git.GitError as err:
             print(f"! Could not comment on {args.pr}: {err}", file=sys.stderr)
@@ -1213,8 +1223,9 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--setup", action="store_true", help=SETUP_HELP)
     run.set_defaults(func=cmd_run)
 
-    rv = sub.add_parser("review", help="Review a task's open PR with a fresh context, read-only, and comment the "
-                                       "findings on it: with --by a profile, or with engine=claude-code (--model).")
+    rv = sub.add_parser("review", help="Review a task's open PR with a fresh context, read-only, and post it as the "
+                                       "forge's reviewer, approving or requesting changes (a comment without a "
+                                       "reviewer token): with --by a profile, or with engine=claude-code (--model).")
     rv.add_argument("slug")
     rv.add_argument("--pr", required=True, help="The PR's URL.")
     rv.add_argument("--branch", help="The PR's branch (default: the branch prefix and the slug).")

@@ -24,8 +24,11 @@ def _with_pr(tmp_path, harness, **options):  # noqa: F811
     return runner
 
 
-def test_a_review_runs_claude_code_on_the_prs_branch_and_leaves_the_task_as_it_was(tmp_path, harness):  # noqa: F811
+def test_a_review_runs_claude_code_on_the_prs_branch_and_leaves_the_task_as_it_was(tmp_path, harness,  # noqa: F811
+                                                                                    monkeypatch):
+    monkeypatch.setenv("GITHUB_REVIEWER_TOKEN", "reviewer-secret")
     runner = _with_pr(tmp_path, harness)
+    assert "GITHUB_REVIEWER_TOKEN" not in harness.started[0][1].env  # the author's burst: never the reviewer's
     runner.review("t", {"model": "claude-sonnet-5-5"}, user="brian")
     argv, process = harness.started[1]
     assert argv[argv.index("--engine") + 1] == "claude-code" and "bypassPermissions" in argv
@@ -33,6 +36,7 @@ def test_a_review_runs_claude_code_on_the_prs_branch_and_leaves_the_task_as_it_w
     assert argv[at - 2:at] == ["--model", "claude-sonnet-5-5"]
     assert argv[at:] == ["review", "t", "--pr", PR, "--branch", "harness/t"]
     assert "HARNESS_PROVIDER" not in process.env and "HARNESS_BASE_URL" not in process.env  # not the task's model
+    assert process.env["GITHUB_REVIEWER_TOKEN"] == "reviewer-secret"  # the review posts as the reviewer
     assert runner.task("t")["state"] == "running"
 
     process.finish(0, state="reviewed", said={"review": "f.py:2 returns 1.", "by": "Claude Code (claude-sonnet-5-5)",
@@ -113,5 +117,7 @@ def test_slack_says_a_review_started_and_where_its_comment_is():
     done = {"repo": "me/proj", "bursts": [{"state": "reviewed", "review": {"profile": "critic"},
                                            "said": {"by": "critic", "comment": PR + "#c1"}}]}
     assert about(None, "reviewed", done) == f":mag: critic reviewed the PR: {PR}#c1."
+    done["bursts"][0]["said"] = {"by": "critic", "verdict": "request_changes", "posted": PR + "#r2"}
+    assert about(None, "reviewed", done) == f":mag: critic reviewed the PR and asked for changes: {PR}#r2."
     failed = {"repo": "me/proj", "bursts": [{"state": "failed", "review": {"profile": "critic"}}]}
     assert about(None, "reviewed", failed) == ":x: The review by critic failed."

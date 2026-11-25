@@ -1058,8 +1058,9 @@ function reviewForm(t) {
     taskAct("Review", () => api(`/api/tasks/${t.slug}/review`, { method: "POST",
       body: JSON.stringify(kind === "profile" ? { profile: name } : { model: name }) })); } },
     el("label", {}, "Review the PR with ", choice),
-    el("p", { class: "muted" }, "A fresh context, read-only on the PR's branch. Its findings are a comment on the PR, "
-      + "which the task's next burst reads when you continue it. The task stays as it is."),
+    el("p", { class: "muted" }, "A fresh context, read-only on the PR's branch. It approves or requests changes as the forge's reviewer "
+      + "(a comment, when no reviewer token is set), which the task's next burst reads when you continue it. "
+      + "The task stays as it is."),
     el("div", { class: "row" }, el("button", { type: "submit" }, "Review")));
 }
 function reviewCell(b) {
@@ -1067,8 +1068,10 @@ function reviewCell(b) {
   const who = said.by || (b.review.profile || (b.review.model ? `Claude Code (${b.review.model})` : "Claude Code"));
   const line = `review by ${who}` + (b.review.by ? `, asked by ${b.review.by}` : "");
   if (!said.review) return line;
-  return el("details", {}, el("summary", {}, line, said.comment ? " · " : "",
-    said.comment ? el("a", { href: said.comment, target: "_blank", rel: "noopener" }, "its comment") : null,
+  const verdict = { approve: "approved", request_changes: "changes requested" }[said.verdict];
+  const link = said.posted || said.comment;
+  return el("details", {}, el("summary", {}, line, verdict ? ` · ${verdict}` : "", link ? " · " : "",
+    link ? el("a", { href: link, target: "_blank", rel: "noopener" }, said.posted ? "the review" : "its comment") : null,
     said.reason ? ` · ${said.reason}` : ""),
     el("pre", { class: "text" }, said.review));
 }

@@ -277,9 +277,9 @@ def pr_state(url: str, cfg: HarnessConfig | None = None) -> str:
     return state
 
 
-def _gh(args: list[str], what: str) -> str:
+def _gh(args: list[str], what: str, *, as_token: str = "") -> str:
     env = dict(os.environ)
-    if secret := token():
+    if secret := as_token or token():
         env["GH_TOKEN"] = secret
     try:
         proc = subprocess.run(["gh", *args], capture_output=True, text=True, env=env, timeout=60, check=False)
@@ -344,6 +344,26 @@ def _utc(when: str) -> datetime:
     except ValueError:
         return datetime.fromtimestamp(0, UTC)
     return found if found.tzinfo else found.replace(tzinfo=UTC)
+
+
+def review_pr(url: str, verdict: str, body: str, cfg: HarnessConfig | None = None) -> str | None:
+    """Post a review on a PR as its forge's reviewer (forge.py): `verdict` approve, request_changes or comment.
+    The review's URL, or None when the forge has no reviewer token (then a review can only be a comment)."""
+    host = _forge(cfg, url)
+    if not (secret := host.reviewer_token()):
+        return None
+    _sent.add(secret)  # kept out of anything shown, as the git token is
+    if host.kind == "forgejo":
+        try:
+            return forge.forgejo_review(host, url, verdict, body)
+        except forge.ForgeError as err:
+            raise GitError(_redact(str(err))) from err
+    if not PR_URL.fullmatch(url):
+        raise GitError(f"{url!r} is not a PR's URL.")
+    owner, repo, _, number = url.rstrip("/").split("/")[-4:]
+    event = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES", "comment": "COMMENT"}[verdict]
+    return _gh(["api", f"repos/{owner}/{repo}/pulls/{number}/reviews", "-f", f"event={event}", "-f", f"body={body}",
+                "--jq", ".html_url"], f"gh api pulls/{number}/reviews", as_token=secret).strip() or url
 
 
 def comment_pr(url: str, body: str, cfg: HarnessConfig | None = None) -> str:
