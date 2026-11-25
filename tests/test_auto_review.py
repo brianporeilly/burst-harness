@@ -23,14 +23,20 @@ def _task(tmp_path, harness, loop=LOOP):  # noqa: F811
     return runner
 
 
-def _burst(runner, harness, index, **result):  # noqa: F811
-    """End the index'th burst, and wait for what the loop does next to start (or for the task to settle)."""
+def _burst(runner, harness, index, follows=True, **result):  # noqa: F811
+    """End the index'th burst. `follows`: the loop starts another (a review, or a fix), waited for; otherwise the
+    task settles with nothing more started (looked at a little after it settles, the loop's step being after)."""
     harness.started[index][1].finish(0, **result)
-    for _ in range(200):
-        if len(harness.started) > index + 1 or (runner.task("t")["state"] not in ("running", "queued")
-                                                and "t" not in runner.running):
+    wait = __import__("threading").Event().wait
+    for _ in range(500):
+        if len(harness.started) > index + 1:
             return
-        __import__("threading").Event().wait(0.02)
+        if not follows and runner.task("t")["state"] not in ("running", "queued") and "t" not in runner.running:
+            wait(0.3)
+            return
+        wait(0.02)
+    if follows:
+        raise AssertionError(f"nothing started after burst {index}: the task is {runner.task('t')['state']}")
 
 
 def _is_review(harness, index):  # noqa: F811
@@ -51,7 +57,7 @@ def test_a_pr_is_reviewed_fixed_and_reviewed_again_until_approved(tmp_path, harn
 
     _burst(runner, harness, 2, state="pr", pr=PR, said={"summary": "f returns 2"})
     assert _is_review(harness, 3)
-    _burst(runner, harness, 3, state="reviewed", said={"review": "Fixed.", "by": "Claude Code", "verdict": "approve",
+    _burst(runner, harness, 3, False, state="reviewed", said={"review": "Fixed.", "by": "Claude Code", "verdict": "approve",
                                                        "posted": PR + "#r2"})
     done = _settled(runner, "t", "pr")
     assert len(harness.started) == 4  # approved: nothing more starts, and nothing is merged
@@ -64,7 +70,8 @@ def test_the_loop_stops_after_max_cycles_of_fixes(tmp_path, harness):  # noqa: F
     _burst(runner, harness, 0, state="pr", pr=PR)
     _burst(runner, harness, 1, state="reviewed", said={"review": "A bug.", "verdict": "request_changes", "posted": "x"})
     _burst(runner, harness, 2, state="pr", pr=PR)
-    _burst(runner, harness, 3, state="reviewed", said={"review": "Another.", "verdict": "request_changes", "posted": "x"})
+    _burst(runner, harness, 3, False, state="reviewed", said={"review": "Another.", "verdict": "request_changes",
+                                                              "posted": "x"})
     done = _settled(runner, "t", "pr")
     assert len(harness.started) == 4
     assert done["review_status"]["stopped"] == "the reviewer still asks for changes after 1 rounds of fixes"
@@ -79,7 +86,7 @@ def test_a_blocking_point_raised_again_stops_the_loop(tmp_path, harness):  # noq
     _burst(runner, harness, 1, state="reviewed", said={"review": "1. **blocking** M0.5 has no test.",
                                                        "verdict": "request_changes", "posted": "x"})
     _burst(runner, harness, 2, state="pr", pr=PR)
-    _burst(runner, harness, 3, state="reviewed", said={"review": "1. M0.5: **still blocking**, the answer doesn't hold.",
+    _burst(runner, harness, 3, False, state="reviewed", said={"review": "1. M0.5: **still blocking**, the answer doesn't hold.",
                                                        "verdict": "request_changes", "posted": "x"})
     done = _settled(runner, "t", "pr")
     assert len(harness.started) == 4
@@ -93,7 +100,7 @@ def test_a_blocking_point_raised_again_stops_the_loop(tmp_path, harness):  # noq
 def test_a_review_without_a_verdict_stops_the_loop(tmp_path, harness, result, why):  # noqa: F811
     runner = _task(tmp_path, harness)
     _burst(runner, harness, 0, state="pr", pr=PR)
-    _burst(runner, harness, 1, **result)
+    _burst(runner, harness, 1, False, **result)
     done = _settled(runner, "t", "pr")
     assert len(harness.started) == 2 and done["review_status"]["stopped"] == why
 
@@ -101,7 +108,8 @@ def test_a_review_without_a_verdict_stops_the_loop(tmp_path, harness, result, wh
 def test_an_approval_posted_as_a_comment_is_said(tmp_path, harness):  # noqa: F811
     runner = _task(tmp_path, harness)
     _burst(runner, harness, 0, state="pr", pr=PR)
-    _burst(runner, harness, 1, state="reviewed", said={"review": "Fine.", "verdict": "approve", "comment": PR + "#c"})
+    _burst(runner, harness, 1, False, state="reviewed", said={"review": "Fine.", "verdict": "approve",
+                                                              "comment": PR + "#c"})
     record = _settled(runner, "t", "pr")
     assert record["review_status"]["approved_as_comment"] is True
     line = SlackBot._about(None, "reviewed", {**record, "bursts": [{"state": "reviewed",
@@ -111,7 +119,7 @@ def test_an_approval_posted_as_a_comment_is_said(tmp_path, harness):  # noqa: F8
 
 def test_a_burst_without_a_pr_is_not_reviewed_and_no_loop_no_review(tmp_path, harness):  # noqa: F811
     runner = _task(tmp_path, harness)
-    _burst(runner, harness, 0, state="paused", said={"summary": "s", "next_step": "n"})
+    _burst(runner, harness, 0, False, state="paused", said={"summary": "s", "next_step": "n"})
     assert len(harness.started) == 1 and _settled(runner, "t", "paused")
 
     plain = _runner(tmp_path / "b")
@@ -119,6 +127,7 @@ def test_a_burst_without_a_pr_is_not_reviewed_and_no_loop_no_review(tmp_path, ha
                   "base_url": "http://llm.lan:8080"})
     harness.started[1][1].finish(0, state="pr", pr=PR)
     _settled(plain, "t", "pr")
+    __import__("threading").Event().wait(0.3)
     assert len(harness.started) == 2 and plain.task("t")["auto_review"] is None
 
 
