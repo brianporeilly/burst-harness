@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.65.0 (2026-11-25)
+
+### Features
+
+- **orchestrator**: Settings as a menu of sections, one shown at a time, each list with its form
+  ([#82](https://github.com/brianporeilly/burst-harness/pull/82),
+  [`081cffc`](https://github.com/brianporeilly/burst-harness/commit/081cffcc1404c170bed15fb5385d51a4577f65c0))
+
+
 ## v0.64.0 (2026-11-25)
 
 ### Features
