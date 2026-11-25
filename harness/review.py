@@ -145,9 +145,14 @@ don't edit files, commit or push. Your last reply is posted on the PR as the rev
 in Markdown, most serious first, each marked **blocking** or **nit**.
 
 A finding is blocking when the change: leaves an Accept item of the current milestone unmet, or ticked without a \
-test or check that backs it; has a bug; breaks a constraint or rule of the plan (PLAN.md, AGENTS.md); or does work \
-that belongs to a later milestone. Anything else (naming, style, a better way that isn't needed) is a nit: say it, \
-but it doesn't hold the PR up.
+test or check that backs it; has a bug; breaks a constraint or rule of the plan (PLAN.md, AGENTS.md); does work \
+that belongs to a later milestone; or (in a change to the plan) leaves an Accept item that can't be met as written, \
+such as one only a manual check can show that isn't marked manual. Anything else (naming, style, a better way \
+that isn't needed, an inconsistency nothing depends on) is a nit: say it, but it doesn't hold the PR up. Judge \
+each finding by these rules alone, so the same finding gets the same weight in every review.
+
+When a blocking point raised in an earlier review is still not addressed, and the author's answer doesn't \
+change your mind, write **still blocking** on it.
 
 End the reply with a line of its own: `VERDICT: APPROVE` when nothing is blocking, `VERDICT: REQUEST_CHANGES` \
 when something is."""
@@ -161,6 +166,8 @@ weigh the reason rather than repeating the point. Don't raise new nits on code t
 {earlier}
 </earlier>"""
 EARLIER_CHARS = 20000
+# The mark on a burst's answer to a review (terminal.finish): the reviewer reads it, the next burst doesn't.
+ANSWER_MARK = "<!-- harness: an answer to the review -->"
 PR_COMMENT = """**Review by {by}**, asked for from the orchestrator: a fresh context, read-only on this PR's branch.
 
 {findings}"""

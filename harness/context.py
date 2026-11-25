@@ -28,6 +28,8 @@ class HarnessContext:
     # Why the remote refused the push, if it did: the commits exist only in the target, so it is kept.
     push_error: str | None = None
     pr_url: str | None = None
+    # Set when this burst started with a review of its PR to address: its PR body is posted there as its answer.
+    answering_review: bool = False
     # Set when a headless run stopped on a question for the user.
     waiting: bool = False
     # Set when an interactive session was detached and is still running in the

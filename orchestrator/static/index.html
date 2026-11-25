@@ -30,7 +30,7 @@
   .muted { color: var(--muted); }
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; }
   .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.bad { color: var(--bad); }
-  span.warn { color: var(--warn); }
+  span.warn, p.warn { color: var(--warn); }
   button, .button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
                     padding: 5px 11px; border-radius: 6px; cursor: pointer; text-decoration: none; }
   button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
@@ -195,6 +195,9 @@
       </div>
       <label class="inline"><input type="checkbox" name="draft"> Open the PR as a draft</label>
       <label class="inline"><input type="checkbox" name="auto_continue"> Once its PR is merged, start the next round by itself</label>
+      <label class="inline"><input type="checkbox" name="auto_review"> Review each PR with
+        <input type="text" name="auto_review_model" placeholder="claude-opus-5-5" style="width:12em">
+        and fix what the reviewer asks, up to <input type="number" name="auto_review_cycles" min="1" max="10" value="3" style="width:4em"> times</label>
       <label class="inline"><input type="checkbox" name="setup"> Set up this repo as a project: turn its foundation document (or this prompt) into a plan with milestones, for a PR to review first</label>
       <label class="inline"><input type="checkbox" name="keep_conversation"> Carry each burst's conversation into the next (otherwise each starts fresh from the task document and git)</label>
       <label class="inline" id="task-notify" hidden><input type="checkbox" name="notify"> Tell me in Slack when a burst ends (a PR, a question for you, a failure), and continue it from there</label>
@@ -1108,6 +1111,25 @@ function reviewForm(t) {
       + "The task stays as it is."),
     el("div", { class: "row" }, el("button", { type: "submit" }, "Review")));
 }
+// The review loop as the API takes it: a model id, or a profile's name (one of Settings' profiles).
+function reviewLoop(who, cycles) {
+  who = (who || "").trim() || "claude-opus-5-5";
+  const loop = { max_cycles: Number(cycles) || 3 };
+  if (/^claude-/.test(who)) loop.model = who; else loop.profile = who;
+  return loop;
+}
+// Where a task's review loop stands.
+function reviewLoopLine(t) {
+  const s = t.review_status || {};
+  if (!t.auto_review) return null;
+  const who = t.auto_review.profile || t.auto_review.model || "Claude Code";
+  const where = s.stopped ? `stopped: ${s.stopped}. Continue it, or merge, as you see fit.`
+    : s.verdict === "approve" ? (s.approved_as_comment ? "approved, but as a comment (no reviewer token): yours to merge."
+      : "approved: yours to merge.")
+    : s.verdict === "request_changes" ? `fixing what the reviewer asked (${s.cycles} of ${t.auto_review.max_cycles}).`
+    : "each PR is reviewed when it's up.";
+  return el("p", { class: s.stopped ? "warn" : "muted" }, `Review loop (${who}, up to ${t.auto_review.max_cycles} fixes): ${where}`);
+}
 function reviewCell(b) {
   const said = b.said || {};
   const who = said.by || (b.review.profile || (b.review.model ? `Claude Code (${b.review.model})` : "Claude Code"));
@@ -1128,7 +1150,7 @@ async function renderTask() {
   catch (err) { box.replaceChildren(el("p", { class: "muted" }, "Gone.")); delete box.dataset.key; return; }
   if (selectedTask !== t.slug) return;
   const output = box.querySelector("pre[data-output]");
-  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue, t.notify, t.told, t.project]);
+  const key = JSON.stringify([t.slug, t.state, t.pr, t.pr_state, t.bursts.length, t.cancelling, t.sandbox, t.auto_continue, t.notify, t.told, t.project, t.auto_review, t.review_status]);
   if (box.dataset.key === key) {
     // Only the output moves while a burst runs; keep it scrolled to the end if it was.
     if (output && output.textContent !== (t.output || "")) {
@@ -1189,6 +1211,11 @@ async function renderTask() {
       taskAct(event.target.checked ? "Auto-continue on" : "Auto-continue off", () => api(`/api/tasks/${t.slug}/auto-continue`,
         { method: "POST", body: JSON.stringify({ on: event.target.checked }) })) }),
       " Once its PR is merged, start the next round by itself (it stops at a round that ends without a PR)") : null,
+    t.repo ? el("label", { class: "inline" }, el("input", { type: "checkbox", checked: !!t.auto_review, onchange: (event) =>
+      taskAct(event.target.checked ? "Review loop on" : "Review loop off", () => api(`/api/tasks/${t.slug}/auto-review`,
+        { method: "POST", body: JSON.stringify(event.target.checked ? { on: true, ...reviewLoop("", 3) } : { on: false }) })) }),
+      " Review each PR (Opus, up to 3 fixes) and fix what the reviewer asks; approved, it's yours to merge") : null,
+    reviewLoopLine(t),
     !t.from_slack ? el("label", { class: "inline" }, el("input", { type: "checkbox", checked: !!t.notify, onchange: (event) =>
       taskAct(event.target.checked ? "Slack on" : "Slack off", () => api(`/api/tasks/${t.slug}/notify`,
         { method: "POST", body: JSON.stringify({ on: event.target.checked }) })) }),
@@ -1288,6 +1315,9 @@ function fillTaskForm(spec) {
   if (spec.runner) set("runner", spec.runner);
   for (const name of ["draft", "auto_continue", "keep_conversation", "setup", "notify"])
     if (taskForm[name]) taskForm[name].checked = !!spec[name];
+  taskForm.auto_review.checked = !!spec.auto_review;
+  taskForm.auto_review_model.value = spec.auto_review ? (spec.auto_review.profile || spec.auto_review.model || "") : "";
+  taskForm.auto_review_cycles.value = spec.auto_review ? spec.auto_review.max_cycles : 3;
   if (spec.delegate_to) for (const box of document.querySelectorAll("#task-delegates [data-boxes] input"))
     box.checked = spec.delegate_to.includes(box.value);
   if (spec.mcp) {  // the servers it had: Settings' ticked, the others typed in
@@ -1465,6 +1495,8 @@ taskForm.onsubmit = async (event) => {
   const data = Object.fromEntries(new FormData(taskForm));
   data.draft = taskForm.draft.checked;
   data.auto_continue = taskForm.auto_continue.checked;
+  data.auto_review = taskForm.auto_review.checked ? reviewLoop(taskForm.auto_review_model.value,
+    taskForm.auto_review_cycles.value) : null;
   data.keep_conversation = taskForm.keep_conversation.checked;
   data.setup = taskForm.setup.checked;
   data.notify = !document.getElementById("task-notify").hidden && taskForm.notify.checked;

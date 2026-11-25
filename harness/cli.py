@@ -620,7 +620,8 @@ REVIEWED = """The person reviewed this task's PR ({pr}) since the last burst:
 <review>
 {items}
 </review>{more}
-Address each point: change the work, or say why not. Finishing again updates the same PR."""
+Address each point: change the work, or say why not. Finishing again updates the same PR, and the body you finish \
+with is posted on it as your answer to the review: for each point, what you changed, or why you didn't."""
 REVIEW_MORE = """
 That is not all of it: every comment, in full, is in {path} (never committed). Read it before you start."""
 # What of a review goes into the prompt; all of it, when it is longer, is in REVIEW_FILE (the burst can't ask the
@@ -647,6 +648,10 @@ def _review_feedback(ctx: HarnessContext) -> str:
         return ""
     if not said:
         return ""
+    said = [item for item in said if not item["text"].lstrip().startswith(review.ANSWER_MARK)]  # its own answers
+    if not said:
+        return ""
+    ctx.answering_review = True
     lines = [f"- {item['who'] or 'someone'}" + (f" on {item['where']}" if item.get("where") else "")
              + f": {item['text'].strip()}" for item in said]
     shown, size = [], 0

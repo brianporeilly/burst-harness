@@ -47,6 +47,15 @@ ended in a PR merged, the next round is started then, as if Continue had been pr
 A round that ends any other way (paused, waiting on a question, abandoned, failed) stops there, so the
 task runs until the work runs out or it needs someone.
 
+A task can opt in to a review loop (`auto_review`: a reviewer, Claude Code with a model or a profile, and how
+many times its findings may be fixed, `max_cycles`). When a burst ends in a PR, a review of it is queued (as the
+Review button does: harness review, posted as the forge's reviewer). When the reviewer asks for changes, the
+task carries on by itself, the review in its next burst's prompt, and that burst's PR is reviewed again. When it
+approves, a person merges (the gate at each milestone: nothing is merged for them). The loop stops, for a person
+to look, when the reviewer still asks for changes after `max_cycles` fixes, raises a blocking point again that
+was raised before (the author and the reviewer disagree), gives no verdict, or fails. Where it stands is the
+task's `review_status`. A person continuing the task starts the count again; a new round starts it afresh.
+
 A task can run on a runner (runners.py, harness/runner.py), a host of your own, which it keeps for every burst:
 the one it picked, or Settings' default runner when it picked none. On a podman or docker runner it is a
 container there, with its gateway as here; on a plain host it has no gateway, so its network is open, and a
@@ -112,6 +121,11 @@ FINISHED = ("pr", "pushed_no_pr", "paused", "abandoned")
 TASK_FILE = "task.json"
 # How many times a burst cut short by the orchestrator stopping is started again.
 RESTARTS = 2
+# Who asks for a review the loop starts (auto_review).
+AUTO_REVIEW = "auto-review"
+AUTO_REVIEW_CYCLES = 3
+# A reviewer marks a blocking point it raised before, and still sees, so (review.PR_SYSTEM).
+STILL_BLOCKING = re.compile(r"\bstill blocking\b", re.IGNORECASE)
 # States in which nothing is running or waiting to run.
 IDLE = ("pr", "pushed_no_pr", "push_failed", "paused", "abandoned", "waiting", "max_tokens", "failed", "interrupted", "cancelled",
         "answered", "merged")
@@ -306,6 +320,8 @@ class TaskRunner:
             "egress": egress_mode or None, "allow": allow, "runner": on or None,
             "base_branch": base_branch, "draft": bool(raw.get("draft")) and url is not None,
             "auto_continue": bool(raw.get("auto_continue")) and url is not None,
+            # Each PR reviewed, and the reviewer's findings fixed by itself: None, or the reviewer and max_cycles.
+            "auto_review": self._auto_review(raw.get("auto_review")) if url is not None else None,
             # Each burst carries on the last one's conversation, rather than starting from the repo (the task
             # document and git): the harness's resume_from = "snapshot". Off unless chosen.
             "keep_conversation": bool(raw.get("keep_conversation")) and url is not None,
@@ -338,6 +354,7 @@ class TaskRunner:
         spec.update(record.get("settings") or {})  # effort, thinking, max_tokens, model_params
         for key in ("draft", "auto_continue", "keep_conversation", "setup", "notify"):
             spec[key] = bool(record.get(key))
+        spec["auto_review"] = record.get("auto_review")
         spec["from"] = slug
         return spec
 
@@ -405,14 +422,7 @@ class TaskRunner:
         """Queue a review of the task's open PR (harness review): by Claude Code, with `model` or its own default,
         or by `profile`. A fresh context, read-only on the PR's branch; its findings are a comment on the PR, which
         the task's next burst reads. The task is as it was afterwards."""
-        profile = str(raw.get("profile") or "").strip()
-        model = str(raw.get("model") or "").strip()
-        if profile and model:
-            raise TasksError("Give a profile or a model, not both.")
-        if model and (len(model) > MODEL_CHARS or any(c.isspace() for c in model)):
-            raise TasksError("model is a model's id, such as claude-sonnet-5-5.")
-        if profile and profile not in (self.profiles.profiles() if self.profiles is not None else self.base.agents):
-            raise TasksError(f"No profile named {profile}.")
+        spec = self._reviewer(raw)
         self.check_pr(slug, 0, auto=False)  # merged or closed since it was last looked at?
         with self.lock:
             record = self._read(slug)
@@ -422,12 +432,81 @@ class TaskRunner:
                                                                                                          "closed"):
                 raise TasksError(f"{slug}'s PR is not open to review"
                                  + (f": the task is {record['state']}." if record["state"] not in IDLE else "."))
-            record.update(review={"profile": profile} if profile else {"model": model}, after=record["state"],
+            record.update(review=spec, after=record["state"],
                           state="queued", queued=time.time_ns(), message=None, restarts=0, by_merge=False,
                           review_by=user)
             self._write(record)
         self.dispatch()
         return _summary(self._read(slug))
+
+    def _reviewer(self, raw: dict[str, Any]) -> dict[str, str]:
+        """Who reviews: {"profile": NAME}, or {"model": ID} (Claude Code; "" for its default)."""
+        profile = str(raw.get("profile") or "").strip()
+        model = str(raw.get("model") or "").strip()
+        if profile and model:
+            raise TasksError("Give a profile or a model, not both.")
+        if model and (len(model) > MODEL_CHARS or any(c.isspace() for c in model)):
+            raise TasksError("model is a model's id, such as claude-sonnet-5-5.")
+        if profile and profile not in (self.profiles.profiles() if self.profiles is not None else self.base.agents):
+            raise TasksError(f"No profile named {profile}.")
+        return {"profile": profile} if profile else {"model": model}
+
+    def _auto_review(self, raw: Any) -> dict[str, Any] | None:
+        """A task's review loop as asked for: None (off), or its reviewer and max_cycles."""
+        if not raw:
+            return None
+        if not isinstance(raw, dict):
+            raise TasksError("auto_review is {model or profile, max_cycles}, or nothing.")
+        try:
+            given = raw.get("max_cycles")
+            cycles = AUTO_REVIEW_CYCLES if given in (None, "") else int(given)
+        except (TypeError, ValueError) as err:
+            raise TasksError("max_cycles is how many times the reviewer's findings may be fixed: 1 to 10.") from err
+        if not 1 <= cycles <= 10:
+            raise TasksError("max_cycles is how many times the reviewer's findings may be fixed: 1 to 10.")
+        return {**self._reviewer(raw), "max_cycles": cycles}
+
+    def auto_review(self, slug: str, raw: dict[str, Any]) -> dict[str, Any]:
+        """Turn the review loop on (`on`, with a reviewer and max_cycles) or off. Turned on for an idle task with
+        an open PR, it reviews that PR now."""
+        loop = self._auto_review(raw) if raw.get("on") else None
+        with self.lock:
+            record = self._read(slug)
+            if not record.get("repo"):
+                raise TasksError(f"{slug} is a question: it has no PR to review.")
+            record["auto_review"] = loop
+            record["review_status"] = {**(record.get("review_status") or {}), "cycles": 0, "stopped": None} \
+                if loop else None
+            self._write(record)
+            now = bool(loop and record["state"] == "pr" and record.get("pr") and record.get("pr_state") != "merged")
+        if now:
+            return self.review(slug, loop, user=AUTO_REVIEW)
+        return _summary(record)
+
+    def _after_review(self, record: dict[str, Any], state: str, said: dict[str, Any] | None) -> bool:
+        """The review loop's next step, once a review ends: True to carry on fixing what it asked for; otherwise
+        it waits for a person, review_status saying why (or that the PR is approved)."""
+        loop = record.get("auto_review")
+        if not loop:
+            return False
+        status = {"cycles": 0, **(record.get("review_status") or {})}
+        said = said or {}
+        verdict = said.get("verdict") if state == "reviewed" else None
+        status.update(verdict=verdict, stopped=None, approved_as_comment=False)
+        if state != "reviewed":
+            status["stopped"] = "the review failed"
+        elif verdict == "approve":
+            status["approved_as_comment"] = not said.get("posted")  # not the forge's reviewer: no approval counts
+        elif verdict != "request_changes":
+            status["stopped"] = "the review gave no verdict"
+        elif status["cycles"] >= loop.get("max_cycles", AUTO_REVIEW_CYCLES):
+            status["stopped"] = f"the reviewer still asks for changes after {status['cycles']} rounds of fixes"
+        elif status["cycles"] and STILL_BLOCKING.search(str(said.get("review") or "")):
+            status["stopped"] = "the reviewer raised a blocking point again: the author and the reviewer disagree"
+        else:
+            status["cycles"] += 1
+        record["review_status"] = status
+        return verdict == "request_changes" and not status["stopped"]
 
     @staticmethod
     def _reviewed(record: dict[str, Any]) -> None:
@@ -435,10 +514,13 @@ class TaskRunner:
         record["state"] = record.pop("after", None) or "pr"
         record.pop("review", None), record.pop("review_by", None)
 
-    def resume(self, slug: str, message: str = "", *, merged: bool = False, model: str = "") -> dict[str, Any]:
+    def resume(self, slug: str, message: str = "", *, merged: bool = False, model: str = "",
+               fixing: bool = False) -> dict[str, Any]:
         """Queue another burst: with the user's reply, or to carry on from where it stopped. Once the task's
         PR is merged, the burst starts the task's next round. `merged`: started by auto_continue, not a person.
-        `model`: the task's model from this burst on (its provider and engine stay), "" to keep its own."""
+        `model`: the task's model from this burst on (its provider and engine stay), "" to keep its own.
+        `fixing`: started by the review loop, for what the reviewer asked; a person continuing starts its count
+        again."""
         model = model.strip()
         if model:
             try:
@@ -458,6 +540,8 @@ class TaskRunner:
             if model and model != record.get("model"):
                 record.update(model=model, switched_model=model)
                 record.pop("uses", None)  # a profile a router chose: the model chosen now is what works on it
+            if not fixing and record.get("auto_review"):
+                record["review_status"] = {**(record.get("review_status") or {}), "cycles": 0, "stopped": None}
             record.update(state="queued", queued=time.time_ns(), message=message.strip() or None, restarts=0,
                           by_merge=merged)
             self._write(record)
@@ -545,7 +629,7 @@ class TaskRunner:
         rounds = [*record.get("rounds", []), {"branch": record["branch"], "pr": record.get("pr"),
                                               "pr_state": record.get("pr_state")}]
         record.update(rounds=rounds, branch=f"{rounds[0]['branch']}-{len(rounds) + 1}", pr=None, pr_state=None,
-                      pr_checked=None, sandbox=None)
+                      pr_checked=None, sandbox=None, review_status=None)
 
     def auto_continue(self, slug: str, on: bool) -> dict[str, Any]:
         """Turn carrying on by itself on or off. Turned on for a task whose PR is already merged, it starts
@@ -892,7 +976,7 @@ class TaskRunner:
         except TasksError:
             pass  # removed meanwhile
         result = _result(self._output(slug))
-        done_with = None
+        done_with, fix, review = None, False, None
         with self.lock:
             self.running.pop(slug, None)
             try:
@@ -906,6 +990,8 @@ class TaskRunner:
                     delegated=result.get("delegated"),
                     state="cancelled" if record.get("cancelling") else
                     "reviewed" if result.get("state") == "reviewed" else "failed")
+                fix = record["bursts"][-1]["state"] != "cancelled" and \
+                    self._after_review(record, record["bursts"][-1]["state"], said)
                 self._reviewed(record)
                 record.update(cancelling=False)
                 record.pop("pid", None), record.pop("job", None)
@@ -936,11 +1022,22 @@ class TaskRunner:
                 elif record.get("sandbox") and state in FINISHED:
                     # Attached to an earlier burst's sandbox, which the harness leaves alone: release it here.
                     done_with, record["sandbox"] = record["sandbox"], None
+                if state == "pr" and record.get("auto_review") and not record.get("cancelling"):
+                    review = record["auto_review"]
                 self._write(record)
         if done_with:
             self._release(slug, done_with)
         if record is not None:
             self._tell("ended", {**record, "exit": code})
+        try:  # the review loop's next step
+            if fix:
+                print(f"tasks: {slug}: the reviewer asked for changes; carrying on (auto_review).", flush=True)
+                self.resume(slug, fixing=True)
+            elif review:
+                print(f"tasks: {slug}: its PR is up; reviewing it (auto_review).", flush=True)
+                self.review(slug, review, user=AUTO_REVIEW)
+        except TasksError as err:  # merged, removed or continued meanwhile
+            print(f"tasks: {slug}: {err}", flush=True)
         self.dispatch()
 
     def _answered(self, slug: str, code: int) -> None:
@@ -1067,7 +1164,7 @@ def _roadmap_changed(record: dict[str, Any]) -> bool:
 
 def _summary(record: dict[str, Any]) -> dict[str, Any]:
     return {key: record.get(key) for key in (
-        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "keep_conversation", "setup", "project", "branch", "created", "created_by",
+        "slug", "repo", "prompt", "engine", "provider", "base_url", "model", "context_window", "settings", "uses", "delegate_to", "mcp", "base_branch", "draft", "auto_continue", "auto_review", "review_status", "keep_conversation", "setup", "project", "branch", "created", "created_by",
         "state", "pr", "pr_state", "rounds", "message", "restarts", "sandbox", "said", "server_wait", "egress",
         "allow", "runner", "notify")} | {"from_slack": bool(record.get("slack")), "told": bool(record.get("dm")),
         "bursts": len(record.get("bursts", [])), "last_burst": (record.get("bursts") or [None])[-1]}
