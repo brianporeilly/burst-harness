@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.64.0 (2026-11-25)
+
+### Features
+
+- **review**: A PR's review ends in a verdict, posted as the forge's reviewer so it can approve or
+  request changes ([#81](https://github.com/brianporeilly/burst-harness/pull/81),
+  [`bd01fa2`](https://github.com/brianporeilly/burst-harness/commit/bd01fa28b6079f6adfad7e5d38bf78173dd6e4c2))
+
+
 ## v0.63.2 (2026-11-25)
 
 ### Bug Fixes
