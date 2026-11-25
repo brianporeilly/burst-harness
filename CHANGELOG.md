@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.63.2 (2026-11-25)
+
+### Bug Fixes
+
+- **review**: A PR's review reaches the next burst whole, the rest of a long one in a file it reads
+  ([#80](https://github.com/brianporeilly/burst-harness/pull/80),
+  [`dd1ef35`](https://github.com/brianporeilly/burst-harness/commit/dd1ef35043fc47f47c795b13457accc527d20125))
+
+
 ## v0.63.1 (2026-11-22)
 
 ### Bug Fixes
