@@ -258,7 +258,8 @@ written in a chat elsewhere then comes out in this shape from the start, and the
 
 - **Merge:** the next round starts at the next milestone (auto-continue), unless the PR changed the roadmap.
 - **Comment on the PR and press Continue:** the next burst's first prompt has the PR's review comments and
-  unresolved threads (from the forge's API), and the burst adds to the same PR.
+  unresolved threads (from the forge's API), each in full (what is too long for the prompt is in
+  `.harness/review.md`, never committed), and the burst adds to the same PR.
 - **Merge with a message:** the next round gets your steering as its message.
 - **`FEEDBACK.md`:** steering that lasts across rounds.
 - **The task's card and the Slack message at a PR** show the milestone, criteria ticked out of the total, plan

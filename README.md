@@ -1297,7 +1297,9 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   `POST /api/tasks/SLUG/clone` creates it, with what the body gives changed.
 - **Reviewing.** Comment on a task's open PR (comments, a review, comments on
   lines) and press Continue: the next burst's first prompt has what was said
-  since its last commit, bots left out, and finishing again updates the same PR.
+  since its last commit, bots left out, each comment whole (a review longer
+  than the prompt takes is in `.harness/review.md` too, never committed), and
+  finishing again updates the same PR.
   A project's card and its Slack message at a burst's end show the milestone and
   how many Accept items are met. A round that changed the project's roadmap says
   so; after its merge, auto-continue doesn't start the next round, and you

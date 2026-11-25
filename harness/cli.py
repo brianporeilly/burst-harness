@@ -619,16 +619,23 @@ def _start(ctx: HarnessContext, task: str, message: str | None = None, *, setup:
 REVIEWED = """The person reviewed this task's PR ({pr}) since the last burst:
 <review>
 {items}
-</review>
+</review>{more}
 Address each point: change the work, or say why not. Finishing again updates the same PR."""
-REVIEW_ITEM_CHARS, REVIEW_CHARS = 1500, 8000
+REVIEW_MORE = """
+That is not all of it: every comment, in full, is in {path} (never committed). Read it before you start."""
+# What of a review goes into the prompt; all of it, when it is longer, is in REVIEW_FILE (the burst can't ask the
+# forge itself: its token stays with the driver).
+REVIEW_CHARS = 24000
+REVIEW_FILE = ".harness/review.md"
 
 
 def _review_feedback(ctx: HarnessContext) -> str:
     """What people said on the branch's open PR since its last commit (the last burst's work), for the next burst's
-    first prompt; "" when there is no PR, nothing new, or the forge can't be asked."""
+    first prompt; "" when there is no PR, nothing new, or the forge can't be asked. Each comment whole: what doesn't
+    fit the prompt is in REVIEW_FILE, written for this burst (and one an earlier burst had removed)."""
     if not ctx.repo_slug:
         return ""
+    ctx.target.run_shell(f"rm -f {shlex.quote(REVIEW_FILE)}", check=False)
     try:
         pr = git.find_pr(ctx.repo_slug, ctx.branch, ctx.cfg)
         if not pr:
@@ -640,18 +647,30 @@ def _review_feedback(ctx: HarnessContext) -> str:
         return ""
     if not said:
         return ""
-    lines, size = [], 0
-    for item in said:
-        text = item["text"].strip()
-        text = text if len(text) <= REVIEW_ITEM_CHARS else text[:REVIEW_ITEM_CHARS] + " [...]"
-        line = f"- {item['who'] or 'someone'}" + (f" on {item['where']}" if item.get("where") else "") + f": {text}"
+    lines = [f"- {item['who'] or 'someone'}" + (f" on {item['where']}" if item.get("where") else "")
+             + f": {item['text'].strip()}" for item in said]
+    shown, size = [], 0
+    for line in lines:
         if size + len(line) > REVIEW_CHARS:
-            lines.append(f"- ... and {len(said) - len(lines)} more on the PR.")
             break
-        lines.append(line)
-        size += len(line)
+        shown.append(line)
+        size += len(line) + 1
+    more = ""
+    if len(shown) < len(lines):
+        _exclude(ctx.target, REVIEW_FILE)
+        ctx.target.write_file(REVIEW_FILE, f"# The review of {pr} since the last burst\n\n" + "\n\n".join(lines) + "\n")
+        shown.append(f"- ... and {len(lines) - len(shown)} more, in {REVIEW_FILE}.")
+        more = REVIEW_MORE.format(path=REVIEW_FILE)
+        print(f"The PR's review is longer than the prompt takes: all of it is in {REVIEW_FILE}.")
     print(f"The PR has {len(said)} new comment(s) from review; they are in the first prompt.")
-    return REVIEWED.format(pr=pr, items="\n".join(lines))
+    return REVIEWED.format(pr=pr, items="\n".join(shown), more=more)
+
+
+def _exclude(target: ExecTarget, relative: str) -> None:
+    """Keep a file the harness writes in the work tree out of every commit (the repo's own info/exclude)."""
+    line = shlex.quote("/" + relative)
+    target.run_shell(f'exclude="$(git rev-parse --git-path info/exclude)" && mkdir -p "$(dirname "$exclude")" '
+                     f'&& (grep -qxF {line} "$exclude" 2>/dev/null || echo {line} >> "$exclude")', check=False)
 
 
 def _project_prompt(ctx: HarnessContext, instruction: str) -> str:

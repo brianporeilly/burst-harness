@@ -92,6 +92,46 @@ def test_the_next_burst_is_given_what_the_review_said(tmp_path, origin, llama, c
     assert asked_since[0][:2] == "20" and "T" in asked_since[0]  # the branch's last commit's time: what came after it is new
 
 
+def test_a_long_review_reaches_the_burst_whole(tmp_path, origin, llama, capsys, monkeypatch):  # noqa: F811
+    """A review is one long comment: it is given in full, and what the prompt can't take is in a file the burst
+    reads (it can't ask the forge itself), never committed, and gone once a later burst has nothing new."""
+    pause = {"tool": "pause_for_review", "args": {"summary": "s", "next_step": "n"}}
+    url, _ = llama([pause, {"text": "."}])
+    work = tmp_path / "work"
+    sh(tmp_path, "clone", "-q", str(origin), str(work))
+    cli.main(["--provider", "llamacpp", "--base-url", url, "--repo", str(work), "start", "t1", "--task", "Add f."])
+    capsys.readouterr()
+    monkeypatch.setattr(git, "repo_slug", lambda remote: "github.com/me/proj")
+    monkeypatch.setattr(git, "find_pr", lambda repo, head, cfg=None: PR)
+    review = "**Findings**\n\n" + "".join(f"{n}. Finding {n}: " + "x" * 600 + "\n" for n in range(1, 9)) + "THE END"
+    said = [{"who": "reviewer", "when": "2026-11-21T12:00:00Z", "where": "", "text": review}]
+    monkeypatch.setattr(git, "feedback", lambda pr, cfg=None, since="": said)
+
+    def resume():
+        url, requests = llama([pause, {"text": "."}])
+        cli.main(["--provider", "llamacpp", "--base-url", url, "--repo", str(work), "resume", "t1"])
+        return json.loads(json.dumps(requests[0]["messages"][1]))["content"], capsys.readouterr().out
+
+    prompt, _ = resume()
+    text = prompt if isinstance(prompt, str) else json.dumps(prompt)
+    assert "THE END" in text and "[...]" not in text and cli.REVIEW_FILE not in text
+    assert not (work / cli.REVIEW_FILE).exists()
+
+    said[:] = [{"who": "reviewer", "when": "2026-11-21T12:00:00Z", "where": f"src/f.py:{n}", "text": f"{n}: " + "y" * 5000}
+               for n in range(1, 9)]
+    prompt, out = resume()
+    text = prompt if isinstance(prompt, str) else json.dumps(prompt)
+    assert "src/f.py:1:" in text and "src/f.py:8:" not in text and f"more, in {cli.REVIEW_FILE}" in text
+    written = (work / cli.REVIEW_FILE).read_text()
+    assert all(f"src/f.py:{n}: {n}: " + "y" * 5000 in written for n in range(1, 9))
+    assert cli.REVIEW_FILE not in sh(work, "status", "--porcelain", "--untracked-files=all")
+    assert f"all of it is in {cli.REVIEW_FILE}" in out
+
+    said.clear()
+    prompt, _ = resume()
+    assert not (work / cli.REVIEW_FILE).exists()
+
+
 def test_a_round_that_changed_the_roadmap_waits_for_a_person_after_its_merge(tmp_path, harness, capsys):  # noqa: F811
     runner = _runner(tmp_path)
     runner.create({"repo": "me/proj", "prompt": "build it", "slug": "t", "auto_continue": True})
