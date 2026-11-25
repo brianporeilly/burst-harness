@@ -324,7 +324,8 @@ class SlackBot:
                 said.get("verdict") or "", "")
             link = said.get("posted") or said.get("comment")
             return (f":mag: {said.get('by') or 'The reviewer'} reviewed the PR{verdict}"
-                    + (f": {link}" if link else f", but {said.get('reason') or 'it gave no comment'}") + ".")
+                    + (f": {link}" if link else f", but {said.get('reason') or 'it gave no comment'}") + "."
+                    + _loop_line(record))
         if event == "started":
             if not record.get("repo"):
                 return ":hourglass_flowing_sand: Working on " + ("your follow-up." if record.get("message") else "it.")
@@ -639,6 +640,22 @@ def _project_lines(record: dict[str, Any]) -> list[str]:
     elif found.get("plan_change"):
         lines.append("It changed items in the plan: they are at the top of the PR.")
     return lines
+
+
+def _loop_line(record: dict[str, Any]) -> str:
+    """Where a task's review loop (auto_review) stands after a review: fixing, yours to merge, or stopped."""
+    status = record.get("review_status") or {}
+    if not record.get("auto_review") or not status:
+        return ""
+    if status.get("stopped"):
+        return f"\n:warning: The review loop stopped: {status['stopped']}. It's yours to look at."
+    if status.get("verdict") == "approve":
+        return ("\n:white_check_mark: Approved, but as a comment (no reviewer token): it counts for nothing in the "
+                "branch rules. Yours to merge." if status.get("approved_as_comment") else
+                "\n:white_check_mark: Approved: it's yours to merge.")
+    if status.get("verdict") == "request_changes":
+        return f"\n:repeat: Fixing what it asked for (round {status.get('cycles')} of fixes)."
+    return ""
 
 
 def _reviewer(review: dict[str, Any]) -> str:

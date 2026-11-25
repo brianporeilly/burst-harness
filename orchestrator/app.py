@@ -309,6 +309,11 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         raw = await body(request)
         return await run_in_threadpool(task_runner().auto_continue, slug, raw.get("on") is True)
 
+    @app.post("/api/tasks/{slug}/auto-review")
+    async def auto_review_task(slug: str, request: Request) -> dict[str, Any]:
+        """The review loop: {"on": true, "model" or "profile", "max_cycles"}, or {"on": false}."""
+        return await run_in_threadpool(task_runner().auto_review, slug, await body(request))
+
     @app.get("/api/tasks/{slug}/refusals")
     def task_refusals(slug: str) -> dict[str, Any]:
         return task_runner().refusals(slug)

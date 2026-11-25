@@ -285,6 +285,29 @@ control (`POST /api/tasks/SLUG/review`, with `{"model": ...}` or
 its own with its findings, verdict and a link to the review, and leaves the task's
 state as it was.
 
+On Forgejo, the reviewer is a user of its own (say `review-bot`) with **write**
+access to the repo: an approval from a user who can only read is shown but
+doesn't count for the branch rules. Its token needs the `write:repository`
+scope to post reviews. The token opening PRs (`FORGEJO_TOKEN`, another user,
+say `coding-bot`) needs `write:repository` and `write:issue`: comments on a PR
+are issue comments. In the branch's protection, ask for one approval, limited
+to an allowlist with the reviewer (and you) on it; block merging on a review
+asking for changes; and dismiss stale approvals when commits are pushed.
+
+**The review loop.** A task with `auto_review` (`{"model": ...}` or
+`{"profile": ...}`, and `max_cycles`, default 3; the task form's "Review each
+PR", or `POST /api/tasks/SLUG/auto-review` with `{"on": true, ...}`) has each
+PR it opens or updates reviewed, as the Review control does. When the reviewer
+asks for changes, the task carries on by itself: the next burst gets the
+review, and the body it finishes with is posted on the PR as its answer (what
+it changed, or why not), which the next review reads. When the reviewer
+approves, the merge is yours: nothing is merged for you, so each milestone
+waits for you. The loop stops, for you to look, when the reviewer still asks
+for changes after `max_cycles` fixes, marks a point it raised before **still
+blocking** (the author and the reviewer disagree), gives no verdict, or fails.
+Where it stands (`review_status`) is on the task's card and in Slack.
+Continuing the task yourself starts the count again, and so does a new round.
+
 **Setup before the model.** `setup_command` names a command the harness runs in
 the repo before each burst's model starts, such as installing dependencies
 (`uv sync`, `npm ci`). It can go in the repo's `.harness.toml`. Its result and
@@ -736,7 +759,8 @@ GitHub, for tasks, sessions and jobs alike:
   driver's environment or the orchestrator's Settings. It's sent the same way as
   GitHub's (HTTP Basic on the harness's own git commands, or added by the gateway
   with `--egress-inject git`), and only to its own host. A token needs
-  repository read and write, and issue read and write for pull requests.
+  repository read and write, and issue read and write for pull requests (the
+  scopes `write:repository` and `write:issue`).
 - **Pull requests** are opened through the forge's API from the driver
   (`POST /api/v1/repos/OWNER/REPO/pulls`), and a task's PR is followed there to
   see it merged (task rounds). Forgejo has no draft PRs: a draft's title

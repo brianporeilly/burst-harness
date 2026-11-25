@@ -97,6 +97,7 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
     """Check, review, commit, push, and open a PR. Raises ValueError if the task doc is over its cap,
     CheckFailed (one) if check_command fails, ReviewGiven (one) with review_with's findings the first time."""
     cfg = ctx.cfg
+    answer = body  # as given: what the body comes to below is the PR's
     if cfg.check_command.strip() or cfg.review_with:
         # Committed and pushed before the check and the review, which can take long: a sandbox that reaches its
         # deadline meanwhile, or a refusal the lead never gets to fix, strands nothing.
@@ -155,7 +156,22 @@ def finish(ctx: HarnessContext, *, title: str, body: str, next_step: str | None 
         return "\n".join([*steps, f"Could not open the PR: {err}"])
     ctx.terminal, ctx.pr_url = "pr", url
     kind = "draft PR" if cfg.pr_draft else "PR"
+    if getattr(ctx, "answering_review", False):  # the PR was open already: its body would go nowhere
+        steps.append(_answer(ctx, url, answer))
     return "\n".join([*steps, f"Opened {kind}: {url}"])
+
+
+ANSWER = "{mark}\n**The author's answer to the review**\n\n{body}"
+
+
+def _answer(ctx: HarnessContext, url: str, body: str) -> str:
+    """Post a burst's answer to the review it was given (its finish's body) on the PR, for the next review."""
+    try:
+        posted = git.comment_pr(url, ANSWER.format(mark=review.ANSWER_MARK, body=body.strip() or "(no answer given)"),
+                                ctx.cfg)
+    except git.GitError as err:
+        return f"Could not post the answer to the review: {err}"
+    return f"Answered the review on the PR: {posted}"
 
 
 RECORD_FILES = frozenset((project.PLAN, project.PROGRESS, project.DECISIONS, project.BACKLOG, project.FEEDBACK))
