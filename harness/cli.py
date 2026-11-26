@@ -18,6 +18,7 @@ from . import (
     agent_sandbox,
     agents,
     budget,
+    cache_prune,
     ask,
     cluster_session,
     containers,
@@ -328,7 +329,7 @@ def _open(args: argparse.Namespace) -> HarnessContext:
         url = git.remote_url(target, cfg.remote)
         key = state.state_key(url, target.repo)
         if cfg.build_cache and not isinstance(target, LocalTarget):
-            target = replace(target, env=_build_cache(target, cfg.build_cache, key))
+            target = replace(target, env=_build_cache(target, cfg.build_cache, key, cfg))
         return HarnessContext(
             target=target,
             cfg=cfg,
@@ -343,9 +344,9 @@ def _open(args: argparse.Namespace) -> HarnessContext:
         raise
 
 
-def _build_cache(target: Any, root: str, key: str) -> tuple[tuple[str, str], ...]:
+def _build_cache(target: Any, root: str, key: str, cfg: HarnessConfig | None = None) -> tuple[tuple[str, str], ...]:
     """The agent's build environment for build_cache, made in the target: () when it is not there (a sandbox
-    without the volume) or cannot be written."""
+    without the volume) or cannot be written. Pruned first (cache_prune.py), unless cfg turns that off."""
     cargo, built = f"{root}/cargo", f"{root}/target/{key}"
     made = target.run_shell(f"test -d {shlex.quote(root)} && mkdir -p {shlex.quote(cargo)} {shlex.quote(built)}",
                             check=False, cwd="/")
@@ -353,7 +354,20 @@ def _build_cache(target: Any, root: str, key: str) -> tuple[tuple[str, str], ...
         print(f"build_cache {root} is not there in the sandbox (or not writable): builds start from nothing.")
         return ()
     print(f"Builds keep their output in {root}: CARGO_HOME={cargo}, CARGO_TARGET_DIR={built}.")
+    if cfg is not None and cfg.build_cache_days > 0 and cfg.build_cache_max_gb > 0:
+        _prune_cache(target, root, key, cfg)
     return (("CARGO_HOME", cargo), ("CARGO_TARGET_DIR", built))
+
+
+def _prune_cache(target: Any, root: str, key: str, cfg: HarnessConfig) -> None:
+    """Prune the build cache in the sandbox, with its python3 (cache_prune.py says how); without one, not."""
+    args = " ".join(shlex.quote(str(arg)) for arg in (root, key, cfg.build_cache_days, cfg.build_cache_max_gb))
+    pruned = target.run_shell(f"command -v python3 >/dev/null || exit 0; python3 - {args}", check=False, cwd="/",
+                              stdin=Path(cache_prune.__file__).read_text())
+    if pruned.stdout.strip():
+        print(pruned.stdout.strip())
+    if pruned.returncode != 0:
+        print(f"Could not prune the build cache: {(pruned.stderr.strip().splitlines() or ['no output'])[-1]}")
 
 
 def _close(ctx: HarnessContext) -> None:

@@ -1386,6 +1386,18 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   burst doesn't build again what the last one built. Cargo locks both itself,
   so bursts in two sandboxes at once wait for each other rather than collide.
   A sandbox without the directory builds as before.
+  - Cargo never removes old output: each crate built with something changed
+    (its features, its dependencies, or for the workspace's own tests and
+    binaries, the code) is written again under a new hash, and a game's test
+    binary is a gigabyte. So each burst prunes its repo's directory first
+    (`harness/cache_prune.py`, run by the sandbox's `python3`): a crate's
+    output built more than `build_cache_days` days ago (3) goes once the
+    crate has been built since under another hash; then, over
+    `build_cache_max_gb` (30), what was built longest ago goes; and another
+    repo's directory nothing was built in for 30 days goes whole. Output a
+    build still wanted is built again, never broken. A directory is pruned
+    with cargo's locks held, and one being built is left for the next burst.
+    Either setting at 0 turns pruning off.
 - On a cluster, `--bursts job` (`ORCHESTRATOR_BURSTS=job`) runs each burst,
   and each job's run (scheduled or not), as a Kubernetes Job of its own
   instead of a subprocess (docs/burst-jobs.md). It has its own memory, and it
