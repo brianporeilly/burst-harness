@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.67.0 (2026-11-26)
+
+### Features
+
+- **cache**: Prune the build cache at the start of each burst
+  ([#84](https://github.com/brianporeilly/burst-harness/pull/84),
+  [`be78506`](https://github.com/brianporeilly/burst-harness/commit/be7850657071e03b8bedac8d5d30f3d2c63525cc))
+
+
 ## v0.66.0 (2026-11-25)
 
 ### Features
