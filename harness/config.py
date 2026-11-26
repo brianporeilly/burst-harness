@@ -227,6 +227,12 @@ class HarnessConfig:
     # BUILD_CACHE/cargo, and each repo's CARGO_TARGET_DIR is
     # BUILD_CACHE/target/<repo>. Unset, or not there in the sandbox: nothing.
     build_cache: str = ""
+    # Pruning it at the start of each burst (harness/cache_prune.py): a crate's
+    # output built more than build_cache_days days ago is removed once the crate
+    # has been built since with something changed, and a repo's output is kept
+    # under build_cache_max_gb by removing what was built longest ago. 0: never.
+    build_cache_days: int = 3
+    build_cache_max_gb: int = 30
     # MCP servers the agent connects to, as NAME=URL (remote ones, over HTTPS):
     # say, context7=https://mcp.context7.com/mcp. A key in the driver's
     # <NAME>_API_KEY is sent as a bearer token; <NAME>_BASIC_AUTH, as
