@@ -546,12 +546,32 @@ def _unreachable(err: BaseException | None) -> bool:
     return False
 
 
+# A provider's server answering that it is overloaded or briefly down, where its SDK raises its own error rather
+# than Strands' ModelThrottledException (google-genai's ServerError for a 503 "high demand"): the status codes,
+# found on the error as `code` or `status_code`.
+_OVERLOADED = {500, 502, 503, 504}
+
+
+def _overloaded(err: BaseException | None) -> bool:
+    """Whether a model call failed with a server error worth backing off and retrying."""
+    seen = 0
+    while err is not None and seen < 10:
+        for name in ("code", "status_code"):
+            code = getattr(err, name, None)
+            if isinstance(code, int) and not isinstance(code, bool) and code in _OVERLOADED:
+                return True
+        err, seen = err.__cause__ or err.__context__, seen + 1
+    return False
+
+
 def retry_strategy(cfg: HarnessConfig) -> Any:
     """Strands' retries, plus `model_retries` on timeouts and backoff on a server
     that went away, with every retry logged.
 
     Strands retries throttling (429, 503) with backoff and says so only at debug
-    level, and does not retry a timeout or a dropped connection at all. A server
+    level, and does not retry a timeout or a dropped connection at all. Nor a
+    server error a provider's SDK raises as its own (Gemini's 503 "high
+    demand"): those are retried as throttling too. A server
     that is restarting drops the call, then refuses connections, then answers
     503 while it loads the model; all three are backed off and retried, for up
     to about eight minutes. A model that stalls should be visible: each retry,
@@ -592,8 +612,9 @@ def retry_strategy(cfg: HarnessConfig) -> Any:
             what = f"{type(exception).__name__}: {exception}".rstrip(": ")
             if _timed_out(exception):
                 pass  # below; an httpx timeout is not a dropped connection
-            elif isinstance(exception, ModelThrottledException) or _unreachable(exception):
-                why = "throttled" if isinstance(exception, ModelThrottledException) else "lost the server"
+            elif isinstance(exception, ModelThrottledException) or _overloaded(exception) or _unreachable(exception):
+                why = ("throttled" if isinstance(exception, ModelThrottledException) or _overloaded(exception)
+                       else "lost the server")
                 if self._current_attempt + 1 >= self._max_attempts:
                     logger.warning("Model call %s after %.0fs (%s); giving up after %d attempts.",
                                    why, took, what, self._max_attempts)
