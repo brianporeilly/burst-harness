@@ -1280,7 +1280,13 @@ curl -X POST http://127.0.0.1:8700/api/tasks -H 'X-Orchestrator: 1' -H 'Content-
   opencode takes only `anthropic`, `llamacpp` and `openai`. Empty means the
   orchestrator's own. A different provider from the orchestrator's starts from
   that provider's defaults, so a cluster's llama.cpp URL does not follow a
-  task to Anthropic. `llamacpp` and `openai` then need a `base_url`. Claude
+  task to Anthropic. `llamacpp` then needs a `base_url`; `openai` without one
+  is OpenAI's own API, and with one any compatible server (a session's
+  opencode needs one). `gemini`, and OpenAI's own API, need a model id: the
+  default model is a Claude one. In the form, the Model field suggests the
+  provider's own models, asked of it with the orchestrator's keys
+  (`POST /api/models`; a server's for llama.cpp, Ollama or a compatible
+  one); any id can still be typed. Claude
   Code is always Anthropic's, with the orchestrator's Claude token or
   Anthropic key. Each task shows what it uses (`uses`: provider, model and
   URL, the defaults filled in).
@@ -1993,8 +1999,9 @@ compared.
 
 ## Providers
 
-`--provider` / `HARNESS_PROVIDER`: `anthropic` (default), `openai` (any
-OpenAI-compatible endpoint, including llama-server's `/v1`), `bedrock`,
+`--provider` / `HARNESS_PROVIDER`: `anthropic` (default), `openai` (OpenAI's
+own API with `OPENAI_API_KEY` and one of its model ids, or with `--base-url`
+any OpenAI-compatible endpoint, including llama-server's `/v1`), `bedrock`,
 `llamacpp`, `ollama`, `gemini`. `--base-url` overrides the endpoint; optional
 providers report the missing extra to install rather than raising an import error.
 

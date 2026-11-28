@@ -36,7 +36,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from harness import containers, credentials, egress, git, mcp, session
 from harness.exec_target import ExecError
 
-from .backend import Backend, SessionSpec, SpecError, probe
+from . import model_list
+from .backend import Backend, SessionSpec, SpecError, check_model, probe, task_providers
 from .jobs import JobRunner, JobsError
 from .launch import HANDOFF_PATH, LaunchError
 from .hooks import PATH as HOOKS_PATH, HookError, Hooks
@@ -273,6 +274,15 @@ def create_app(backend: Backend, jobs: JobRunner | None = None, *, tasks: TaskRu
         """A llama-server's own description, for the Tasks form (backend.probe). A POST, so it needs the
         change header: a page elsewhere cannot have a signed-in browser make the orchestrator fetch a URL."""
         return await run_in_threadpool(probe, str((await body(request)).get("base_url") or ""))
+
+    @app.post("/api/models")
+    async def provider_models(request: Request) -> dict[str, Any]:
+        """The models a provider offers, as suggestions for the model fields (model_list). A POST, as for probe:
+        it may send a key from Settings to the base URL given, so a page elsewhere must not be able to ask."""
+        raw = await body(request)
+        provider, base_url = str(raw.get("provider") or ""), str(raw.get("base_url") or "")
+        check_model(provider, base_url, "", task_providers())  # SpecError: a 400
+        return await run_in_threadpool(model_list.models, provider, base_url)
 
     @app.get("/api/tasks/{slug}")
     def task_detail(slug: str) -> dict[str, Any]:

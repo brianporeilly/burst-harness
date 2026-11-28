@@ -531,8 +531,38 @@ const statusChip = (s) => el("span", { class: "chip " + ({ running: "ok", starti
 const duration = (seconds) => !seconds ? "" : seconds % 86400 === 0 ? `${seconds / 86400}d`
   : seconds % 3600 === 0 ? `${seconds / 3600}h` : seconds % 60 === 0 ? `${seconds / 60}m` : `${seconds}s`;
 
-const providerName = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" };
-const providerOption = { ...providerName, llamacpp: "llama.cpp server", bedrock: "Bedrock", ollama: "Ollama", gemini: "Gemini" };
+const providerName = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI" };
+const providerOption = { ...providerName, llamacpp: "llama.cpp server", openai: "OpenAI (or a compatible server)", bedrock: "Bedrock",
+                         ollama: "Ollama", gemini: "Gemini" };
+// The models a provider offers (POST /api/models, asked of the provider with the orchestrator's keys), as a
+// field's suggestions: a datalist, so any id can still be typed. The field's title says why there are none.
+const modelsAsked = {};
+async function suggestModels(input, provider, baseUrl) {
+  if (!input) return;
+  let list = input.list;
+  if (!list) {
+    list = el("datalist", { id: `models-${Math.random().toString(36).slice(2)}` });
+    input.after(list);
+    input.setAttribute("list", list.id);
+  }
+  const ask = JSON.stringify({ provider, base_url: baseUrl || "" });
+  if (list.dataset.ask === ask) return;
+  list.dataset.ask = ask;
+  const kept = modelsAsked[ask];
+  if (!kept || kept.until < Date.now())  // the task view is drawn again each refresh: asked once in a while
+    modelsAsked[ask] = { until: Date.now() + 5 * 60_000, found: api("/api/models", { method: "POST", body: ask })
+      .catch((err) => ({ models: [], why: err.message }))
+      .then((found) => { if (!found.models.length) modelsAsked[ask].until = Date.now() + 30_000; return found; }) };
+  const found = await modelsAsked[ask].found;
+  if (list.dataset.ask !== ask) return;  // asked again since, for another provider
+  list.replaceChildren(...found.models.map((name) => el("option", { value: name })));
+  input.title = found.models.length ? `${found.models.length} models from ${providerName[provider] || provider}; or type any id`
+    : `No suggestions: ${found.why}. Type the model's id.`;
+}
+// A provider as a form gives it ("" is the default), and its base URL: what to ask for suggestions.
+const providerAsked = (chosen, url) => !defaults ? [chosen, url]
+  : !chosen || chosen === defaults.provider ? [defaults.provider, url || defaults.base_url || ""] : [chosen, url];
+
 let sessions = [], selected = null, stream = null, streaming = null, defaults = null, credentialsHeld = {};
 
 async function loadInfo() {
@@ -988,7 +1018,7 @@ async function refreshTasks() {
 const modelLabel = (t) => {
   const uses = t.uses || { provider: t.provider, model: t.model };  // tasks from before `uses`
   if (t.engine === "claude-code") return "Claude Code" + (uses.model ? ` · ${uses.model}` : "");
-  const provider = { anthropic: "Anthropic", llamacpp: "llama.cpp", openai: "OpenAI-compatible" }[uses.provider] || uses.provider || "default model";
+  const provider = providerName[uses.provider] || uses.provider || "default model";
   return `Strands · ${provider}${uses.model ? ` ${uses.model}` : ""}${uses.agent ? ` (agent ${uses.agent})` : ""}`;
 };
 
@@ -1171,8 +1201,9 @@ async function renderTask() {
     : t.state === "pr" ? "Changes to make on the PR's branch" : "Your answer, or leave empty to carry on" });
   // Continuing on another model: the task's from that burst on, its provider and engine as they are.
   const switchTo = el("input", { type: "text", list: "continue-models", placeholder: `as now: ${modelLabel(t)}` });
-  const suggested = el("datalist", { id: "continue-models" }, ...(t.engine === "claude-code"
-    ? ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] : []).map((m) => el("option", { value: m })));
+  const suggested = el("datalist", { id: "continue-models" });
+  const uses = t.uses || { provider: t.provider };
+  setTimeout(() => suggestModels(switchTo, ...(t.engine === "claude-code" ? ["anthropic", ""] : providerAsked(uses.provider, t.base_url || ""))));
   // Its rounds, the merged ones first: a burst ran on the branch of one of them.
   const rounds = [...(t.rounds || []), { branch: t.branch, pr: t.pr, pr_state: t.pr_state }];
   const actions = [
@@ -1354,11 +1385,12 @@ function taskModelFields() {
   const own = provider === defaults.provider && !(claude && !endpoint && defaults.provider !== "anthropic");
   taskForm.provider.disabled = claude;
   taskForm.base_url.disabled = claude;
-  // Only a server of your own needs its URL; Anthropic, the other built-ins and a plugin know theirs.
+  // Only a server of your own needs its URL; Anthropic, the other built-ins and a plugin know theirs. openai is
+  // OpenAI's own API without one, or any compatible server's with it.
   const server = ["llamacpp", "openai"].includes(provider);
-  taskForm.base_url.required = !own && server;
-  taskForm.base_url.placeholder = own ? (defaults.base_url ? `default (${defaults.base_url})` : "the provider's own") : provider === "anthropic" ? "Anthropic's own" : server ? "http://llm.lan:8080" : "the provider's own";
-  taskForm.model.placeholder = own ? `default (${defaults.model})` : provider === "anthropic" ? "default (claude-opus-5-5)" : server ? "the server's model" : "the provider's default";
+  taskForm.base_url.required = !own && provider === "llamacpp";
+  taskForm.base_url.placeholder = own ? (defaults.base_url ? `default (${defaults.base_url})` : "the provider's own") : provider === "anthropic" ? "Anthropic's own" : provider === "openai" ? "OpenAI's own, or a compatible server's" : server ? "http://llm.lan:8080" : "the provider's own";
+  taskForm.model.placeholder = own ? `default (${defaults.model})` : provider === "anthropic" ? "default (claude-opus-5-5)" : provider === "llamacpp" ? "the server's model" : "pick or type one";
   taskForm.context_window.placeholder = own ? `default (${defaults.context_window})` : "default (1000000)";
   const held = credentialsHeld;
   const key = held.anthropic_api_key || (claude && held.claude_oauth_token);
@@ -1382,6 +1414,8 @@ function taskModelFields() {
   }
   taskProvider = provider;
   taskSettingsFields(claude);
+  suggestModels(taskForm.model, ...(claude && !endpoint ? ["anthropic", ""] : providerAsked(taskForm.provider.value, taskForm.base_url.value.trim())));
+  suggestModels(taskForm.auto_review_model, "anthropic", "");  // the reviewer: a Claude model, or a profile's name
 }
 
 // --- the task's model settings ---
@@ -1489,7 +1523,7 @@ document.getElementById("task-probe").onclick = async () => {
     document.getElementById("task-settings").querySelector('[data-for="thinking"]').classList.add("hidden");
 };
 
-taskForm.engine.onchange = taskForm.provider.onchange = taskModelFields;
+taskForm.engine.onchange = taskForm.provider.onchange = taskForm.base_url.onchange = taskModelFields;
 taskForm.onsubmit = async (event) => {
   event.preventDefault();
   const error = document.getElementById("task-form-error");
@@ -1843,7 +1877,8 @@ async function refreshProfiles() {
   if (box.dataset.key === key) return;
   box.dataset.key = key;
   if (!profileForm.provider.options.length)
-    profileForm.provider.replaceChildren(el("option", { value: "" }, "Default"), ...found.providers.map((name) => el("option", { value: name }, name)));
+    profileForm.provider.replaceChildren(el("option", { value: "" }, "Default"), ...found.providers.map((name) => el("option", { value: name }, providerOption[name] || name)));
+  profileModels();
   box.replaceChildren(found.profiles.length ? el("table", {},
     el("tr", {}, el("th", {}, "Name"), el("th", {}, "Model"), el("th", {}, "Changed"), el("th", {}, "")),
     ...found.profiles.map((p) => el("tr", {},
@@ -1856,6 +1891,7 @@ async function refreshProfiles() {
           for (const field of ["name", "provider", "model_id", "base_url", "context_window_limit", "use_for", "prompt"])
             profileForm[field].value = p[field] ?? "";
           profileForm.read_only.checked = !!p.read_only;
+          profileModels();
           profileForm.scrollIntoView({ behavior: "smooth" });
         } }, p.source === "settings" ? "Edit" : "Copy here"),
         p.source === "settings" ? el("button", { class: "danger", onclick: async () => {
@@ -1965,6 +2001,8 @@ document.getElementById("claude-compact-window-save").onclick = () => {
 document.getElementById("claude-compact-window-reset").onclick = () => saveCompactWindow(null);
 document.getElementById("claude-attribution-reset").onclick = () => saveAttribution(null);
 
+const profileModels = () => suggestModels(profileForm.model_id, ...providerAsked(profileForm.provider.value, profileForm.base_url.value.trim()));
+profileForm.provider.onchange = profileForm.base_url.onchange = profileModels;
 profileForm.onsubmit = async (event) => {
   event.preventDefault();
   const error = document.getElementById("profile-form-error");

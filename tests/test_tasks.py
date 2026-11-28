@@ -287,7 +287,7 @@ def test_a_task_can_choose_its_provider_and_model(tmp_path, harness, monkeypatch
     # Claude Code is Anthropic's, whatever the orchestrator's provider.
     made = runner.create({"repo": "me/proj", "prompt": "x", "slug": "cc", "engine": "claude-code"})
     assert made["provider"] == "anthropic" and harness.started[-1][1].env["HARNESS_BASE_URL"] == ""
-    for raw, message in [({"provider": "openai"}, "needs a base URL"), ({"provider": "vertex"}, "provider is one of"),
+    for raw, message in [({"provider": "openai"}, "OpenAI's own API needs a model id"), ({"provider": "vertex"}, "provider is one of"),
                          ({"base_url": "file:///etc"}, "not a base URL"), ({"model": "a b"}, "not a model id"),
                          ({"context_window": "lots"}, "number of tokens"),
                          ({"engine": "claude-code", "provider": "llamacpp"}, "always uses Anthropic")]:

@@ -102,3 +102,13 @@ def test_the_default_label_skips_a_provider_list_not_filled_yet():
     loop = re.search(r"for \(const select of document\.querySelectorAll\('select\[name=\"provider\"\]'\)\)(.*?);",
                      text, re.S)
     assert loop and "if (select.options.length)" in loop.group(1)
+
+
+def test_model_fields_are_suggested_from_the_provider_and_still_typed():
+    """The model fields get the provider's models (POST /api/models) as a datalist: suggestions, any id still typed;
+    no list of model ids is written into the page to go out of date."""
+    text = PAGE.read_text()
+    assert 'api("/api/models", { method: "POST"' in text and 'el("datalist"' in text
+    for field in ("taskForm.model", "taskForm.auto_review_model", "profileForm.model_id", "switchTo"):
+        assert f"suggestModels({field}" in text, field
+    assert '"claude-sonnet-5-5", "claude-haiku-5-5"]' not in text
