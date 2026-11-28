@@ -31,7 +31,7 @@ from typing import Any
 from harness import agents
 from harness.config import HarnessConfig
 
-from .backend import GEMINI_MODEL, SpecError, check_model, task_providers
+from .backend import SpecError, check_model, needs_model, task_providers
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 # What the page may set: a model and its role. Not token_command or token_file, which run a command or read
@@ -151,10 +151,10 @@ def parse(raw: dict[str, Any]) -> dict[str, Any]:
         check_model(provider, base_url, model, task_providers())
     except SpecError as err:
         raise ProfilesError(str(err)) from err
-    if provider in ("llamacpp", "openai") and not base_url:
+    if provider == "llamacpp" and not base_url:
         raise ProfilesError(f"provider {provider} needs a base URL.")
-    if provider == "gemini" and not model:
-        raise ProfilesError(GEMINI_MODEL)
+    if not model and (why := needs_model(provider, base_url)):
+        raise ProfilesError(why)
     profile: dict[str, Any] = {key: value for key, value in
                                (("provider", provider), ("base_url", base_url), ("model_id", model)) if value}
     try:

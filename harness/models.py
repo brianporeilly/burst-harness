@@ -256,12 +256,16 @@ class _ReasoningWarnedOnce(logging.Filter):
 
 
 def _openai(cfg: HarnessConfig) -> "Model":
-    """Any OpenAI-compatible endpoint: OpenAI, vLLM, LM Studio, llama-server's /v1."""
+    """OpenAI's own API (no base URL), or any compatible endpoint: vLLM, LM Studio, llama-server's /v1."""
     OpenAIModel = _require(*REQUIRES["openai"])
     strands_openai = logging.getLogger("strands.models.openai")
     if not any(isinstance(found, _ReasoningWarnedOnce) for found in strands_openai.filters):
         strands_openai.addFilter(_ReasoningWarnedOnce())
     base_url = cfg.base_url or os.environ.get("OPENAI_BASE_URL", "")
+    if not base_url and cfg.model_id.startswith("claude-"):
+        raise ProviderError(f"provider openai, with OpenAI's own API, was given {cfg.model_id}, a Claude model: set "
+                            "model_id (--model, HARNESS_MODEL_ID) to one of OpenAI's, or base_url to a compatible "
+                            "server's")
     api_key = secrets_.get("OPENAI_API_KEY")
     client_args: dict[str, Any] = {"api_key": api_key or "not-needed"}
     if base_url:

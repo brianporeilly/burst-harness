@@ -111,7 +111,7 @@ class SessionSpec:
             "container_root": self.root, "mcp": self.mcp,
         }
         return {key: value for key, value in chosen.items() if value is not None} | model_choice(
-            base, self.provider, self.base_url, self.model, self.context_window)
+            base, self.provider, self.base_url, self.model, self.context_window, servers=("llamacpp", "openai"))
 
 
 # The settings that go with one provider and mean nothing to another: a different provider starts
@@ -119,8 +119,16 @@ class SessionSpec:
 PROVIDER_SETTINGS = ("base_url", "model_id", "context_window_limit", "model_params", "token_command", "token_file")
 
 
-# The harness's default model is a Claude one: a Gemini task names its own.
-GEMINI_MODEL = "provider gemini needs a model id (gemini-...)."
+
+
+def needs_model(provider: str, base_url: str) -> str:
+    """Why a provider chosen with this base URL must be given a model id, or "": the harness's default model is a
+    Claude one, which Gemini, and OpenAI's own API (openai with no base URL), do not have."""
+    if provider == "gemini":
+        return "provider gemini needs a model id (gemini-...)."
+    if provider == "openai" and not base_url:
+        return "provider openai with OpenAI's own API needs a model id (or give a compatible server's base URL)."
+    return ""
 
 
 def task_providers() -> list[str]:
@@ -190,16 +198,17 @@ def model_settings(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def model_choice(base: HarnessConfig, provider: str, base_url: str, model: str, context_window: int,
-                 settings: dict[str, Any] | None = None) -> dict[str, Any]:
+                 settings: dict[str, Any] | None = None, servers: tuple[str, ...] = ("llamacpp",)) -> dict[str, Any]:
     """The harness settings for a chosen provider and model, on top of `base`. Empty means base's;
     another provider than base's resets the settings that went with base's. `settings` are
-    model_settings', model_params as the JSON the harness takes."""
+    model_settings', model_params as the JSON the harness takes. `servers`: the providers that need a base URL
+    (a session's opencode reaches openai only at one; a task's harness reaches OpenAI's own API without)."""
     chosen: dict[str, Any] = {}
     if provider and provider != base.provider:
-        if provider in ("llamacpp", "openai") and not base_url:
+        if provider in servers and not base_url:
             raise SpecError(f"provider {provider} needs a base URL.")
-        if provider == "gemini" and not model:
-            raise SpecError(GEMINI_MODEL)
+        if not model and (why := needs_model(provider, base_url)):
+            raise SpecError(why)
         defaults = HarnessConfig()
         chosen = {"provider": provider, **{name: getattr(defaults, name) for name in PROVIDER_SETTINGS}}
     for name, value in (("base_url", base_url), ("model_id", model), ("context_window_limit", context_window)):
