@@ -11,7 +11,7 @@ With [uv](https://docs.astral.sh/uv/), from a checkout:
 
 ```bash
 uv sync                    # Python 3.13 and exactly what uv.lock says, in .venv
-uv sync --extra openai     # also the SDK for provider = "openai" (and --extra gemini)
+uv sync --extra openai --extra gemini  # the SDKs for provider = "openai" and "gemini"
 uv run harness --help      # or: source .venv/bin/activate; harness --help
 uv run orchestrator        # http://127.0.0.1:8700/
 ```
@@ -1997,6 +1997,12 @@ compared.
 OpenAI-compatible endpoint, including llama-server's `/v1`), `bedrock`,
 `llamacpp`, `ollama`, `gemini`. `--base-url` overrides the endpoint; optional
 providers report the missing extra to install rather than raising an import error.
+
+`gemini` is Google's Gemini API, with a key from Google AI Studio in
+`GOOGLE_API_KEY` (or `GEMINI_API_KEY`; in the orchestrator, the Settings tab)
+and a Gemini model id (`--model gemini-...`: the default model is a Claude one,
+so a task or profile with provider gemini names its model). The image has its
+SDK. Its prices are not in the metrics, so `cost_usd` is null for it.
 
 For an Anthropic-compatible proxy that wants a short-lived bearer token rather than
 an API key, set `HARNESS_TOKEN_COMMAND` (stdout is the token, re-run to refresh)

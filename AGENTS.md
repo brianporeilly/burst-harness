@@ -28,7 +28,7 @@ orchestrator do; ROADMAP.md says where they are going.
 ## Checks
 
 ```sh
-uv sync --extra openai
+uv sync --extra openai --extra gemini
 uv run pytest -q -n 8          # what CI runs (ci.yml), with -n 4
 uvx ruff@0.15.0 check          # lint
 ```
