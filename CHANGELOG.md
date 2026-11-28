@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.69.0 (2026-11-28)
+
+### Features
+
+- **orchestrator**: Model suggestions from each provider, and OpenAI's own API as provider openai
+  ([#88](https://github.com/brianporeilly/burst-harness/pull/88),
+  [`6803bfb`](https://github.com/brianporeilly/burst-harness/commit/6803bfb542e12736836af4a027476b0fa182cbed))
+
+
 ## v0.68.2 (2026-11-28)
 
 ### Bug Fixes
