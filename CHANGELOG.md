@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.68.2 (2026-11-28)
+
+### Bug Fixes
+
+- **models**: Retry a provider's own 5xx server error as throttling
+  ([#86](https://github.com/brianporeilly/burst-harness/pull/86),
+  [`f6742ef`](https://github.com/brianporeilly/burst-harness/commit/f6742ef2743158a50beb020d9364673c9b866561))
+
+
 ## v0.68.1 (2026-11-28)
 
 ### Bug Fixes
