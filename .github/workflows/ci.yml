@@ -18,7 +18,7 @@ jobs:
           version: "0.11.25"
           enable-cache: true
       # The Python in .python-version, and exactly what uv.lock says.
-      - run: uv sync --frozen --extra openai
+      - run: uv sync --frozen --extra openai --extra gemini
       - run: uv run --frozen pytest -q -n 4 tests
         env:
           GIT_AUTHOR_NAME: ci

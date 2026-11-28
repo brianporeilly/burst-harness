@@ -429,6 +429,9 @@ def _ollama(cfg: HarnessConfig) -> "Model":
 
 def _gemini(cfg: HarnessConfig) -> "Model":
     GeminiModel = _require(*REQUIRES["gemini"])
+    if cfg.model_id.startswith("claude-"):
+        raise ProviderError(f"provider gemini was given {cfg.model_id}, a Claude model: set model_id "
+                            "(--model, HARNESS_MODEL_ID) to a Gemini one, gemini-...")
     client_args: dict[str, Any] = {}
     if key := secrets_.first(("GOOGLE_API_KEY", "GEMINI_API_KEY")):
         client_args["api_key"] = key

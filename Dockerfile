@@ -45,11 +45,11 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_PYTHON_DOWNLOADS=never \
     UV_PROJECT_ENVIRONMENT=/opt/harness/.venv
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project --extra openai --no-cache
+RUN uv sync --frozen --no-dev --no-install-project --extra openai --extra gemini --no-cache
 COPY harness/ ./harness/
 # The orchestrator, for a Deployment: `python -m orchestrator` in place of the entrypoint.
 COPY orchestrator/ ./orchestrator/
-RUN uv sync --frozen --no-dev --extra openai --no-cache
+RUN uv sync --frozen --no-dev --extra openai --extra gemini --no-cache
 
 # Snapshots and offloaded blobs. Mount a volume here to make resume survive the pod.
 # The venv's python first, so `python -m harness` and `python -m orchestrator` are its.

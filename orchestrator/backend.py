@@ -119,6 +119,10 @@ class SessionSpec:
 PROVIDER_SETTINGS = ("base_url", "model_id", "context_window_limit", "model_params", "token_command", "token_file")
 
 
+# The harness's default model is a Claude one: a Gemini task names its own.
+GEMINI_MODEL = "provider gemini needs a model id (gemini-...)."
+
+
 def task_providers() -> list[str]:
     """What a task's burst can use: the built-ins and installed provider plugins."""
     return models.available()
@@ -194,6 +198,8 @@ def model_choice(base: HarnessConfig, provider: str, base_url: str, model: str, 
     if provider and provider != base.provider:
         if provider in ("llamacpp", "openai") and not base_url:
             raise SpecError(f"provider {provider} needs a base URL.")
+        if provider == "gemini" and not model:
+            raise SpecError(GEMINI_MODEL)
         defaults = HarnessConfig()
         chosen = {"provider": provider, **{name: getattr(defaults, name) for name in PROVIDER_SETTINGS}}
     for name, value in (("base_url", base_url), ("model_id", model), ("context_window_limit", context_window)):
