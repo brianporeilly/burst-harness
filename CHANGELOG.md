@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.68.0 (2026-11-28)
+
+### Features
+
+- **models**: Gemini in the image and the orchestrator
+  ([#85](https://github.com/brianporeilly/burst-harness/pull/85),
+  [`b6738dc`](https://github.com/brianporeilly/burst-harness/commit/b6738dce792ce8428f64fca4b38eeddeb4b7ddf1))
+
+
 ## v0.67.0 (2026-11-26)
 
 ### Features
