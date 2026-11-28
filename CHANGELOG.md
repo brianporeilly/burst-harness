@@ -5,6 +5,15 @@ their entries are kept without links.
 
 <!-- version list -->
 
+## v0.68.1 (2026-11-28)
+
+### Bug Fixes
+
+- **orchestrator**: The task form lists every provider from the first page load
+  ([#87](https://github.com/brianporeilly/burst-harness/pull/87),
+  [`ca68627`](https://github.com/brianporeilly/burst-harness/commit/ca68627ac1ee5d20e8d2748a4a01c70e5d9a9b75))
+
+
 ## v0.68.0 (2026-11-28)
 
 ### Features
