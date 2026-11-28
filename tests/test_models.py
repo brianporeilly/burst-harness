@@ -251,3 +251,27 @@ def test_the_server_is_asked_on_a_machine_just_started(monkeypatch):
         assert asked == ["/v1/models"]
     finally:
         stop()
+
+
+def test_a_providers_own_server_error_is_retried_as_throttling(caplog, monkeypatch):
+    """Gemini at capacity: google-genai raises its ServerError (code 503), not Strands' ModelThrottledException."""
+    import asyncio
+
+    from harness.models import retry_strategy
+
+    class ServerError(Exception):  # as google-genai's: the HTTP status as `code`
+        def __init__(self, code):
+            super().__init__(f"{code} UNAVAILABLE. This model is currently experiencing high demand.")
+            self.code = code
+
+    class APIStatusError(Exception):  # as the OpenAI SDK's: `status_code`
+        status_code = 502
+
+    strategy = retry_strategy(HarnessConfig(model_retries=0))
+    monkeypatch.setattr(strategy, "_calculate_delay", lambda attempt: 0)
+    busy, gateway, refused = _after(ServerError(503)), _after(APIStatusError("bad gateway")), _after(ServerError(400))
+    with caplog.at_level("WARNING"):
+        for event in (busy, gateway, refused):
+            asyncio.run(strategy._handle_after_model_call(event))
+    assert (busy.retry, gateway.retry, refused.retry) == (True, True, False)  # a 400 is the request's fault
+    assert "throttled" in caplog.records[0].getMessage() and "high demand" in caplog.records[0].getMessage()
