@@ -92,3 +92,13 @@ def test_a_bursts_metrics_open_from_its_row_and_the_tasks_from_its_total():
     # el() flattens its children one level: each name-value pair nested in a list was appended as text
     # ("[object HTMLElement],[object HTMLElement]").
     assert 'rows.flatMap(([name, value]) => [el("dt"' in shown
+
+
+def test_the_default_label_skips_a_provider_list_not_filled_yet():
+    """The profile form's provider list is empty until Settings is shown: labelling its first option threw, and
+    loadInfo stopped before giving the task form every provider (gemini among them), until Settings was opened."""
+    text = PAGE.read_text()
+    assert '<select name="provider"></select>' in text  # the profile form's, filled later
+    loop = re.search(r"for \(const select of document\.querySelectorAll\('select\[name=\"provider\"\]'\)\)(.*?);",
+                     text, re.S)
+    assert loop and "if (select.options.length)" in loop.group(1)

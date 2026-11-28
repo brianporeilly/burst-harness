@@ -555,7 +555,9 @@ async function loadInfo() {
   const d = info.defaults;
   defaults = d;
   const where = (d.base_url || "").replace(/^https?:\/\//, "");
-  for (const select of document.querySelectorAll('select[name="provider"]'))
+  // The profile form's is empty until Settings is first shown (its options come with the profiles): left alone, not
+  // a TypeError that ends loadInfo before the task form is given every provider.
+  for (const select of document.querySelectorAll('select[name="provider"]')) if (select.options.length)
     select.options[0].textContent = `Default (${[providerName[d.provider] || d.provider, where].filter(Boolean).join(" · ")})`;
   for (const input of document.querySelectorAll('input[name="model"]')) input.placeholder = `default (${d.model})`;
   for (const input of document.querySelectorAll('input[name="context_window"]')) input.placeholder = `default (${d.context_window})`;
